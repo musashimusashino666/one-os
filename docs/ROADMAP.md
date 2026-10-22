@@ -9,17 +9,17 @@ Work is milestone-driven. A milestone is complete only when its acceptance crite
 - [x] Host-testable no_std capability reference model.
 - [x] BIOS disk-image build tool.
 - [x] Architecture, security, development, and roadmap documents.
-- [ ] Verify boot output through QEMU on CI.
-- [ ] Add a reproducible panic and timeout test.
+- [x] Verify boot output through QEMU on CI.
+- [x] Test the serial-log validator against panic output, missing completion markers, invalid-map markers, and unexpected QEMU exit statuses.
 
 Exit criteria: the image boots repeatedly, startup output is captured in CI, and panic/timeout cases fail clearly.
 
 ## M1 — CPU and memory foundations
 
-- Parse and validate the bootloader memory map.
+- [x] Structurally validate BootInfo memory-map ranges and reject empty, inverted, or overlapping regions.
+- [ ] Define memory-region ownership and the physical page allocator.
+- [ ] Set up and test kernel virtual-memory mappings.
 - Establish exception handlers and diagnostic fault output.
-- Define a memory-region ownership model and physical page allocator.
-- Set up and test kernel virtual memory mappings.
 - Keep unsafe code small and document safety invariants.
 
 Exit criteria: allocator tests pass, invalid maps fail closed, and fault-injection tests do not corrupt unrelated memory.

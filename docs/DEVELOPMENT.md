@@ -35,8 +35,10 @@ Expected serial output includes:
     ONE OS kernel booted
     Architecture: x86_64
     Milestone: serial bootstrap
+    Memory map: structurally validated
+    ONE OS BOOTSTRAP COMPLETE
 
-The current kernel deliberately halts after writing the startup message. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures the serial output and checks the startup marker.
+The kernel rejects empty, inverted, or overlapping memory-map ranges before it emits the completion marker. It then deliberately halts; this does not mean physical allocation or virtual memory is implemented. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and checks both startup and completion markers while rejecting panic and invalid-map markers.
 
 ## Automated boot smoke test
 

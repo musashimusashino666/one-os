@@ -10,7 +10,7 @@ The first development target is x86_64 under a virtual machine. Additional archi
 
 ### 1. Hardware and boot boundary
 
-The bootloader establishes the initial CPU state and passes a BootInfo structure to the kernel. The kernel must validate every boot-provided address and memory region before use. Boot information is not yet consumed beyond accepting the entry-point parameter.
+The bootloader establishes the initial CPU state and passes a BootInfo structure to the kernel. The kernel now structurally validates the memory-map entries before reporting bootstrap completion: the map must be non-empty, each half-open range must have start < end, and no two ranges may overlap. This does not yet validate the backing pointer used by bootloader_api, classify usable memory for allocation, establish memory ownership, or validate the other BootInfo address fields. The physical page allocator and virtual-memory setup remain unimplemented.
 
 ### 2. Minimal trusted kernel
 

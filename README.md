@@ -13,8 +13,9 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 - [x] Add a no_std, testable capability-authorization model.
 - [x] Add BIOS disk-image build tooling.
 - [x] Document architecture boundaries, threat model, and roadmap.
-- [ ] Prove repeatable boot under QEMU in CI and on a documented local setup.
-- [ ] Implement memory-map handling, exception/interrupt setup, and allocation strategy.
+- [x] Prove repeatable boot under QEMU in CI and on a documented local setup.
+- [x] Validate BootInfo memory-map ranges before reporting bootstrap completion.
+- [ ] Implement exception/interrupt setup, physical allocation, and virtual-memory management.
 - [ ] Add process isolation and kernel-enforced capability/IPC.
 - [ ] Add storage, networking, drivers, and a user-space service manager.
 
