@@ -9,10 +9,10 @@ Work is milestone-driven. A milestone is complete only when its acceptance crite
 - [x] Host-testable no_std capability reference model.
 - [x] BIOS disk-image build tool.
 - [x] Architecture, security, development, and roadmap documents.
-- [x] Verify boot output through QEMU on CI.
+- [x] Verify three independent QEMU boot attempts through CI.
 - [x] Test the serial-log validator against panic output, missing completion markers, invalid-map markers, and unexpected QEMU exit statuses.
 
-Exit criteria: the image boots repeatedly, startup output is captured in CI, and panic/timeout cases fail clearly.
+Exit criteria: three independent QEMU invocations emit the expected startup markers; output is captured for each attempt, and panic, missing completion markers, or unexpected exit statuses fail clearly.
 
 ## M1 — CPU and memory foundations
 

@@ -13,7 +13,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 - [x] Add a no_std, testable capability-authorization model.
 - [x] Add BIOS disk-image build tooling.
 - [x] Document architecture boundaries, threat model, and roadmap.
-- [x] Prove repeatable boot under QEMU in CI and on a documented local setup.
+- [x] Verify three independent QEMU boots in CI and document the local boot procedure.
 - [x] Validate BootInfo memory-map ranges before reporting bootstrap completion.
 - [ ] Implement exception/interrupt setup, physical allocation, and virtual-memory management.
 - [ ] Add process isolation and kernel-enforced capability/IPC.
@@ -43,7 +43,7 @@ From the repository root:
     IMAGE_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
     qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
 
-The image directory is read from Cargo metadata, so the QEMU command follows a custom CARGO_TARGET_DIR and target-directory settings from Cargo configuration. Python 3 is required for this path lookup. The QEMU command intentionally leaves the guest running after the kernel's bootstrap-completion message; stop it with Ctrl-C. CI uses a non-default CARGO_TARGET_DIR to exercise the portable image-generation path. See docs/DEVELOPMENT.md for the automated boot check.
+The image directory is read from Cargo metadata, so the QEMU command follows a custom CARGO_TARGET_DIR and target-directory settings from Cargo configuration. Python 3 is required for this path lookup. The QEMU command intentionally leaves the guest running after the kernel's bootstrap-completion message; stop it with Ctrl-C. CI uses a non-default CARGO_TARGET_DIR to exercise the portable image-generation path and performs three independent QEMU boot attempts against the built image. See docs/DEVELOPMENT.md for the automated boot check.
 
 ## Design principles
 
@@ -59,4 +59,4 @@ The image directory is read from Cargo metadata, so the QEMU command follows a c
 
 The current kernel only initializes a serial console, reports that it has started, and halts. It does not yet implement user processes, virtual-memory management, a scheduler, filesystem, networking, or graphical interface. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.
 
-A successful compile or one successful QEMU boot is only an initial milestone, not proof of security, performance superiority, or production readiness.
+A successful compile or three successful QEMU boot attempts are only initial milestones, not proof of security, performance superiority, or production readiness.
