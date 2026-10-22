@@ -40,7 +40,7 @@ The current kernel deliberately halts after writing the startup message. Stop th
 
 ## Automated boot smoke test
 
-GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the kernel startup marker to appear. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security.
+GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the kernel startup marker to appear. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image.
 
 ## Contribution rules
 
