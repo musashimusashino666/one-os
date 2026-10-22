@@ -129,11 +129,7 @@ impl Authority {
     }
 
     /// Issues a capability for an object with exactly the supplied rights.
-    pub fn grant(
-        &self,
-        object: ObjectId,
-        rights: Rights,
-    ) -> Result<Capability, AccessError> {
+    pub fn grant(&self, object: ObjectId, rights: Rights) -> Result<Capability, AccessError> {
         if self.exhausted {
             return Err(AccessError::AuthorityExhausted);
         }
