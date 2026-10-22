@@ -338,7 +338,10 @@ mod tests {
     #[test]
     fn accepts_non_overlapping_regions_out_of_address_order() {
         let regions = [(0x3000, 0x4000), (0x1000, 0x2000)];
-        assert_eq!(validate_memory_map(regions.len(), |index| regions[index]), Ok(()));
+        assert_eq!(
+            validate_memory_map(regions.len(), |index| regions[index]),
+            Ok(())
+        );
     }
 
     #[test]
