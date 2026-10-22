@@ -18,7 +18,7 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     if INVALID_MAP_MARKER in log:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
-        return False, f"Kernel panic marker found: {PANIC_MARKER}
+        return False, f"Kernel panic marker found: {PANIC_MARKER}"
     start_index = log.find(START_MARKER)
     if start_index < 0:
         return False, f"Kernel startup marker missing: {START_MARKER}"
