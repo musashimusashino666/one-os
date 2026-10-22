@@ -40,9 +40,10 @@ From the repository root:
     cargo test --locked -p oneos-core
     cargo clippy --locked -p oneos-core --all-targets -- -D warnings
     cargo run --locked -p oneos-xtask -- image
-    qemu-system-x86_64 -drive format=raw,file=target/one-os-bios.img -serial stdio -display none -no-reboot -no-shutdown
+    IMAGE_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+    qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
 
-The QEMU command intentionally leaves the guest running after the kernel's startup message; stop it with Ctrl-C. CI uses a non-default CARGO_TARGET_DIR to exercise the portable image-generation path. See docs/DEVELOPMENT.md for the automated boot check.
+The image directory is read from Cargo metadata, so the QEMU command follows a custom CARGO_TARGET_DIR and target-directory settings from Cargo configuration. Python 3 is required for this path lookup. The QEMU command intentionally leaves the guest running after the kernel's bootstrap-completion message; stop it with Ctrl-C. CI uses a non-default CARGO_TARGET_DIR to exercise the portable image-generation path. See docs/DEVELOPMENT.md for the automated boot check.
 
 ## Design principles
 
