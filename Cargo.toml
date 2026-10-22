@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oneos-core",
+    "kernel",
+    "tools/oneos-xtask",
+]
+default-members = ["crates/oneos-core"]
+
+[workspace.package]
+edition = "2021"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1

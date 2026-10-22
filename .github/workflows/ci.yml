@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format-and-test:
+    name: Format, test, lint, and boot
+    runs-on: ubuntu-latest
+    env:
+      # Regression test for custom target directories used by oneos-xtask.
+      CARGO_TARGET_DIR: /tmp/one-os-target
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned commit
+        with:
+          toolchain: nightly-2026-10-22
+          components: rustfmt, clippy, llvm-tools-preview, rust-src
+          targets: x86_64-unknown-none
+
+      - name: Install QEMU
+        run: sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y qemu-system-x86
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run core tests
+        run: cargo test --locked -p oneos-core
+
+      - name: Lint core crate
+        run: cargo clippy --locked -p oneos-core --all-targets -- -D warnings
+
+      - name: Lint bare-metal kernel
+        run: cargo clippy --locked -p one-os-kernel --target x86_64-unknown-none -- -D warnings
+
+      - name: Lint build tool
+        run: cargo clippy --locked -p oneos-xtask --all-targets -- -D warnings
+
+      - name: Check bare-metal kernel
+        run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
+
+      - name: Build BIOS image
+        run: cargo run --locked -p oneos-xtask -- image
+
+      - name: Test QEMU serial-log validator
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
+      - name: Verify kernel startup in QEMU
+        shell: bash
+        run: |
+          set +e
+          timeout 15s qemu-system-x86_64 \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$CARGO_TARGET_DIR/qemu-serial.log" 2>&1
+          status=$?
+          set -e
+          cat "$CARGO_TARGET_DIR/qemu-serial.log"
+          python3 tools/check_qemu_serial.py \
+            --log "$CARGO_TARGET_DIR/qemu-serial.log" \
+            --exit-status "$status"

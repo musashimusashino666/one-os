@@ -1,0 +1,8 @@
+[package]
+name = "oneos-core"
+version = "0.1.0"
+edition.workspace = true
+description = "Small, no_std core primitives for the ONE OS project"
+
+[lib]
+path = "src/lib.rs"
