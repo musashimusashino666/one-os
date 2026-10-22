@@ -1,13 +1,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
 //! Small, testable security primitives for ONE OS.
 //!
 //! This crate models authorization decisions. It does not enforce access at a
 //! hardware or process boundary by itself; the kernel must implement that
 //! enforcement before these types can be relied on for system security.
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Stable identifier for a resource managed by an authority.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
