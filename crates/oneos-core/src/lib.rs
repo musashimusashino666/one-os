@@ -56,10 +56,7 @@ pub enum MemoryMapError {
 ///
 /// This checks range structure only. It does not validate the backing pointer
 /// used by the bootloader API, classify usable memory, or establish ownership.
-pub fn validate_memory_map<F>(
-    region_count: usize,
-    region_bounds: F,
-) -> Result<(), MemoryMapError>
+pub fn validate_memory_map<F>(region_count: usize, region_bounds: F) -> Result<(), MemoryMapError>
 where
     F: Fn(usize) -> (u64, u64),
 {
@@ -288,16 +285,17 @@ impl Default for Authority {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        validate_memory_map, AccessError, Authority, MemoryMapError, ObjectId, Rights,
-    };
+    use super::{validate_memory_map, AccessError, Authority, MemoryMapError, ObjectId, Rights};
 
     const FILE: ObjectId = ObjectId::new(7);
     const OTHER_FILE: ObjectId = ObjectId::new(8);
 
     #[test]
     fn rejects_empty_memory_map() {
-        assert_eq!(validate_memory_map(0, |_| (0, 0)), Err(MemoryMapError::Empty));
+        assert_eq!(
+            validate_memory_map(0, |_| (0, 0)),
+            Err(MemoryMapError::Empty)
+        );
     }
 
     #[test]
@@ -321,14 +319,20 @@ mod tests {
         let regions = [(0x3000, 0x5000), (0x1000, 0x4000)];
         assert_eq!(
             validate_memory_map(regions.len(), |index| regions[index]),
-            Err(MemoryMapError::Overlap { first_region: 0, second_region: 1 })
+            Err(MemoryMapError::Overlap {
+                first_region: 0,
+                second_region: 1
+            })
         );
     }
 
     #[test]
     fn accepts_adjacent_memory_regions() {
         let regions = [(0x1000, 0x2000), (0x2000, 0x3000)];
-        assert_eq!(validate_memory_map(regions.len(), |index| regions[index]), Ok(()));
+        assert_eq!(
+            validate_memory_map(regions.len(), |index| regions[index]),
+            Ok(())
+        );
     }
 
     #[test]
