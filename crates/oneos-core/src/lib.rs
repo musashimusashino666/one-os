@@ -138,7 +138,7 @@ impl Authority {
     /// issue or validate capabilities.
     pub fn new() -> Self {
         let domain_id = NEXT_AUTHORITY_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .ok();
