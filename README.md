@@ -36,9 +36,9 @@ Install the nightly Rust toolchain and QEMU. The repository toolchain file reque
 From the repository root:
 
     cargo fmt --all -- --check
-    cargo test -p oneos-core
-    cargo clippy -p oneos-core --all-targets -- -D warnings
-    cargo run -p oneos-xtask -- image
+    cargo test --locked -p oneos-core
+    cargo clippy --locked -p oneos-core --all-targets -- -D warnings
+    cargo run --locked -p oneos-xtask -- image
     qemu-system-x86_64 -drive format=raw,file=target/one-os-bios.img -serial stdio -display none -no-reboot -no-shutdown
 
 The QEMU command intentionally leaves the guest running after the kernel's startup message; stop it with Ctrl-C. See docs/DEVELOPMENT.md for the automated boot check.

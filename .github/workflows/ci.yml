@@ -24,9 +24,6 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview, rust-src
           targets: x86_64-unknown-none
 
-      - name: Generate lockfile for bootstrap
-        run: cargo generate-lockfile
-
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y qemu-system-x86
 
@@ -34,33 +31,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run core tests
-        run: cargo test -p oneos-core
+        run: cargo test --locked -p oneos-core
 
       - name: Lint core crate
-        run: cargo clippy -p oneos-core --all-targets -- -D warnings
+        run: cargo clippy --locked -p oneos-core --all-targets -- -D warnings
 
       - name: Check bare-metal kernel
-        run: cargo check -p one-os-kernel --target x86_64-unknown-none
+        run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
       - name: Build BIOS image
-        run: cargo run -p oneos-xtask -- image
-
-      - name: Export generated lockfile for bootstrap
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-          lock = Path("Cargo.lock")
-          if not lock.exists():
-              print("ONEOS_LOCKFILE_MISSING")
-              raise SystemExit(0)
-          payload = base64.b64encode(lock.read_bytes()).decode("ascii")
-          print("ONEOS_LOCKFILE_BEGIN")
-          for start in range(0, len(payload), 1500):
-              print(f"ONEOS_LOCKFILE_B64:{start // 1500:04d}:{payload[start:start + 1500]}")
-          print("ONEOS_LOCKFILE_END")
-          PY
+        run: cargo run --locked -p oneos-xtask -- image
 
       - name: Verify kernel startup in QEMU
         shell: bash

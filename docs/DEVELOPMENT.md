@@ -12,15 +12,15 @@
 Run these from the repository root:
 
     cargo fmt --all -- --check
-    cargo test -p oneos-core
-    cargo clippy -p oneos-core --all-targets -- -D warnings
-    cargo check -p one-os-kernel --target x86_64-unknown-none
+    cargo test --locked -p oneos-core
+    cargo clippy --locked -p oneos-core --all-targets -- -D warnings
+    cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
 ## Build a BIOS image
 
 Run:
 
-    cargo run -p oneos-xtask -- image
+    cargo run --locked -p oneos-xtask -- image
 
 The build tool compiles one-os-kernel for x86_64-unknown-none, then uses the bootloader crate to create target/one-os-bios.img. The bootloader builder needs the nightly toolchain, LLVM tools, and Rust sources so it can build its boot stages. This is a BIOS image; UEFI support is not configured yet.
 

@@ -33,7 +33,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn cargo_metadata(root: &Path) -> Result<serde_json::Value, Box<dyn Error>> {
     let output = Command::new("cargo")
         .current_dir(root)
-        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(["metadata", "--locked", "--format-version", "1", "--no-deps"])
         .output()?;
 
     if !output.status.success() {
@@ -62,6 +62,7 @@ fn build_kernel(root: &Path, target_directory: &Path) -> Result<PathBuf, Box<dyn
         .current_dir(root)
         .args([
             "build",
+            "--locked",
             "-p",
             KERNEL_PACKAGE,
             "--target",
