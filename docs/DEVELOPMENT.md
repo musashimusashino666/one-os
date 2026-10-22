@@ -46,3 +46,8 @@ The current kernel deliberately halts after writing the startup message. Stop th
 - Document every new use of unsafe and its safety invariant.
 - Avoid adding dependencies to privileged kernel code without a clear need and review.
 - Include exact commands and results when reporting validation.
+
+
+## Automated boot smoke test
+
+GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the kernel startup marker to appear. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security.
