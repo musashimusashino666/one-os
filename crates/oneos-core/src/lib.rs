@@ -1,6 +1,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 //! Small, testable security primitives for ONE OS.
 //!
 //! This crate models authorization decisions. It does not enforce access at a
@@ -76,6 +78,7 @@ impl Rights {
 /// operations and must not trust user-provided memory as a token.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capability {
+    authority_id: u64,
     object: ObjectId,
     rights: Rights,
     generation: u64,
@@ -100,6 +103,8 @@ pub enum AccessError {
     EmptyRights,
     /// The authority's generation counter can no longer advance safely.
     AuthorityExhausted,
+    /// The capability was issued by a different authority.
+    WrongAuthority,
     /// The capability belongs to an earlier generation and was revoked.
     Revoked,
     /// The capability is for a different object.
@@ -108,21 +113,38 @@ pub enum AccessError {
     InsufficientRights,
 }
 
+/// Generates process-local, never-reused authority identifiers.
+///
+/// Relaxed ordering is sufficient: the atomic operation is used only to
+/// allocate a unique number, not to publish any other memory.
+static NEXT_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Issues and checks capabilities within one revocation domain.
 ///
-/// revoke_all invalidates every capability issued by this authority. This
-/// simple generation scheme is intentionally coarse-grained; per-object
-/// revocation and delegation can be considered after kernel enforcement exists.
+/// Each instance receives a unique domain ID, and revoke_all invalidates only
+/// tokens issued by that instance. This simple generation scheme is coarse
+/// grained; per-object revocation and delegation can be considered later.
 #[derive(Debug)]
 pub struct Authority {
+    domain_id: Option<u64>,
     generation: u64,
     exhausted: bool,
 }
 
 impl Authority {
-    /// Creates a new authority.
-    pub const fn new() -> Self {
+    /// Creates a new authority with a unique process-local domain ID.
+    ///
+    /// If IDs have been exhausted, this authority fails closed and cannot
+    /// issue or validate capabilities.
+    pub fn new() -> Self {
+        let domain_id = NEXT_AUTHORITY_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok();
+
         Self {
+            domain_id,
             generation: 1,
             exhausted: false,
         }
@@ -130,7 +152,7 @@ impl Authority {
 
     /// Issues a capability for an object with exactly the supplied rights.
     pub fn grant(&self, object: ObjectId, rights: Rights) -> Result<Capability, AccessError> {
-        if self.exhausted {
+        if self.exhausted || self.domain_id.is_none() {
             return Err(AccessError::AuthorityExhausted);
         }
         if rights.is_empty() {
@@ -138,6 +160,7 @@ impl Authority {
         }
 
         Ok(Capability {
+            authority_id: self.domain_id.expect("domain ID checked above"),
             object,
             rights,
             generation: self.generation,
@@ -151,8 +174,12 @@ impl Authority {
         object: ObjectId,
         required: Rights,
     ) -> Result<(), AccessError> {
+        let authority_id = self.domain_id.ok_or(AccessError::AuthorityExhausted)?;
         if self.exhausted {
             return Err(AccessError::AuthorityExhausted);
+        }
+        if capability.authority_id != authority_id {
+            return Err(AccessError::WrongAuthority);
         }
         if capability.generation != self.generation {
             return Err(AccessError::Revoked);
@@ -248,6 +275,41 @@ mod tests {
         assert_eq!(
             authority.authorize(&capability, FILE, Rights::READ),
             Err(AccessError::Revoked)
+        );
+    }
+
+    #[test]
+    fn rejects_capabilities_issued_by_another_authority() {
+        let issuer = Authority::new();
+        let other = Authority::new();
+        let capability = issuer.grant(FILE, Rights::READ).unwrap();
+
+        assert_eq!(
+            other.authorize(&capability, FILE, Rights::READ),
+            Err(AccessError::WrongAuthority)
+        );
+    }
+
+    #[test]
+    fn revocation_is_independent_between_authorities() {
+        let mut first = Authority::new();
+        let second = Authority::new();
+        let first_capability = first.grant(FILE, Rights::READ).unwrap();
+        let second_capability = second.grant(FILE, Rights::READ).unwrap();
+
+        first.revoke_all();
+
+        assert_eq!(
+            first.authorize(&first_capability, FILE, Rights::READ),
+            Err(AccessError::Revoked)
+        );
+        assert_eq!(
+            second.authorize(&second_capability, FILE, Rights::READ),
+            Ok(())
+        );
+        assert_eq!(
+            second.authorize(&first_capability, FILE, Rights::READ),
+            Err(AccessError::WrongAuthority)
         );
     }
 
