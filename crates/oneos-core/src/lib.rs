@@ -28,6 +28,65 @@ impl ObjectId {
     }
 }
 
+/// A structural error found while validating a physical memory map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryMapError {
+    /// The map contains no regions.
+    Empty,
+    /// A region has an empty or inverted half-open range.
+    InvalidRange {
+        /// Index of the invalid region in the supplied map.
+        region_index: usize,
+    },
+    /// Two regions overlap.
+    Overlap {
+        /// Index of the earlier region in the supplied map.
+        first_region: usize,
+        /// Index of the later region in the supplied map.
+        second_region: usize,
+    },
+}
+
+/// Validates physical memory-map ranges without allocating.
+///
+/// The region_bounds callback must return stable (start, end) pairs for each
+/// index. Ranges are half-open: adjacent regions are valid, while empty,
+/// inverted, or overlapping ranges are rejected. This interface lets the
+/// kernel validate bootloader-owned entries without copying them.
+///
+/// This checks range structure only. It does not validate the backing pointer
+/// used by the bootloader API, classify usable memory, or establish ownership.
+pub fn validate_memory_map<F>(
+    region_count: usize,
+    region_bounds: F,
+) -> Result<(), MemoryMapError>
+where
+    F: Fn(usize) -> (u64, u64),
+{
+    if region_count == 0 {
+        return Err(MemoryMapError::Empty);
+    }
+
+    for region_index in 0..region_count {
+        let (start, end) = region_bounds(region_index);
+        if start >= end {
+            return Err(MemoryMapError::InvalidRange { region_index });
+        }
+
+        for other_index in 0..region_index {
+            let (other_start, other_end) = region_bounds(other_index);
+            if start < other_end && other_start < end {
+                return Err(MemoryMapError::Overlap {
+                    first_region: other_index,
+                    second_region: region_index,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Rights which can be granted over a resource.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rights(u8);
@@ -229,10 +288,54 @@ impl Default for Authority {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessError, Authority, ObjectId, Rights};
+    use super::{
+        validate_memory_map, AccessError, Authority, MemoryMapError, ObjectId, Rights,
+    };
 
     const FILE: ObjectId = ObjectId::new(7);
     const OTHER_FILE: ObjectId = ObjectId::new(8);
+
+    #[test]
+    fn rejects_empty_memory_map() {
+        assert_eq!(validate_memory_map(0, |_| (0, 0)), Err(MemoryMapError::Empty));
+    }
+
+    #[test]
+    fn rejects_empty_memory_region() {
+        assert_eq!(
+            validate_memory_map(1, |_| (0x1000, 0x1000)),
+            Err(MemoryMapError::InvalidRange { region_index: 0 })
+        );
+    }
+
+    #[test]
+    fn rejects_inverted_memory_region() {
+        assert_eq!(
+            validate_memory_map(1, |_| (0x2000, 0x1000)),
+            Err(MemoryMapError::InvalidRange { region_index: 0 })
+        );
+    }
+
+    #[test]
+    fn rejects_overlapping_memory_regions() {
+        let regions = [(0x3000, 0x5000), (0x1000, 0x4000)];
+        assert_eq!(
+            validate_memory_map(regions.len(), |index| regions[index]),
+            Err(MemoryMapError::Overlap { first_region: 0, second_region: 1 })
+        );
+    }
+
+    #[test]
+    fn accepts_adjacent_memory_regions() {
+        let regions = [(0x1000, 0x2000), (0x2000, 0x3000)];
+        assert_eq!(validate_memory_map(regions.len(), |index| regions[index]), Ok(()));
+    }
+
+    #[test]
+    fn accepts_non_overlapping_regions_out_of_address_order() {
+        let regions = [(0x3000, 0x4000), (0x1000, 0x2000)];
+        assert_eq!(validate_memory_map(regions.len(), |index| regions[index]), Ok(()));
+    }
 
     #[test]
     fn grants_and_authorizes_requested_right() {

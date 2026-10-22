@@ -15,6 +15,13 @@ class ValidateSerialOutputTests(unittest.TestCase):
         valid, _ = validate_serial_output(f"{START}\n{COMPLETE}\n", 124)
         self.assertTrue(valid)
 
+    def test_invalid_memory_map_marker_fails(self):
+        valid, reason = validate_serial_output(
+            f"{START}\n{COMPLETE}\nONE OS MEMORY MAP INVALID\n", 124
+        )
+        self.assertFalse(valid)
+        self.assertIn("memory map", reason.lower())
+
     def test_panic_after_completion_marker_fails(self):
         valid, reason = validate_serial_output(f"{START}\n{COMPLETE}\n{PANIC}\n", 124)
         self.assertFalse(valid)

@@ -6,6 +6,7 @@ description = "Experimental x86_64 bare-metal kernel for ONE OS"
 
 [dependencies]
 bootloader_api = "0.11"
+oneos-core = { path = "../crates/oneos-core" }
 
 [[bin]]
 name = "one-os-kernel"

@@ -256,6 +256,7 @@ name = "one-os-kernel"
 version = "0.1.0"
 dependencies = [
  "bootloader_api",
+ "oneos-core",
 ]
 
 [[package]]

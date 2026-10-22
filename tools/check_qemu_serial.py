@@ -10,12 +10,15 @@ from pathlib import Path
 START_MARKER = "ONE OS kernel booted"
 COMPLETE_MARKER = "ONE OS BOOTSTRAP COMPLETE"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
+INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 
 
 def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     """Return whether QEMU reached bootstrap completion without panicking."""
+    if INVALID_MAP_MARKER in log:
+        return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
-        return False, f"Kernel panic marker found: {PANIC_MARKER}"
+        return False, f"Kernel panic marker found: {PANIC_MARKER}
     start_index = log.find(START_MARKER)
     if start_index < 0:
         return False, f"Kernel startup marker missing: {START_MARKER}"

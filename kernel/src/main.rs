@@ -8,6 +8,7 @@
 //! It is not yet a complete or independently bootable OS image.
 
 use bootloader_api::{entry_point, BootInfo};
+use oneos_core::{validate_memory_map, MemoryMapError};
 use core::arch::asm;
 use core::panic::PanicInfo;
 
@@ -15,19 +16,39 @@ const COM1: u16 = 0x3F8;
 
 entry_point!(kernel_main);
 
-fn kernel_main(_boot_info: &'static mut BootInfo) -> ! {
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // SAFETY: this runs in the privileged kernel entry point on x86_64.
     // COM1 is the conventional first PC serial port.
     unsafe {
         serial_init();
     }
 
+    // Validate physical memory ranges before reporting a successful boot.
+    let region_count = boot_info.memory_regions.len();
+    if let Err(error) = validate_memory_map(region_count, |index| {
+        let region = &boot_info.memory_regions[index];
+        (region.start, region.end)
+    }) {
+        serial_write(b"\nONE OS MEMORY MAP INVALID\n");
+        match error {
+            MemoryMapError::Empty => serial_write(b"Memory map has no regions\n"),
+            MemoryMapError::InvalidRange { .. } => {
+                serial_write(b"Memory map contains an empty or inverted range\n")
+            }
+            MemoryMapError::Overlap { .. } => {
+                serial_write(b"Memory map contains overlapping ranges\n")
+            }
+        }
+        halt_forever()
+    }
+
     serial_write(b"\nONE OS kernel booted\n");
     serial_write(b"Architecture: x86_64\n");
     serial_write(b"Milestone: serial bootstrap\n");
-    serial_write(b"Status: user mode, scheduler, VM, and drivers are not implemented\n");
-    // This marker is emitted only after the bootstrap's expected startup path completes.
-    // CI requires it and rejects any later panic marker.
+    serial_write(b"Memory map: structurally validated\n");
+    serial_write(b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n");
+    // This marker is emitted only after memory-map validation and diagnostics.
+    // CI requires it and rejects panic or invalid-memory-map markers.
     serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
 
     halt_forever()
