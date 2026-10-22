@@ -24,6 +24,9 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview, rust-src
           targets: x86_64-unknown-none
 
+      - name: Generate lockfile for bootstrap
+        run: cargo generate-lockfile
+
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y qemu-system-x86
 
