@@ -6,6 +6,7 @@
 - rustfmt, clippy, llvm-tools-preview, rust-src, and the x86_64-unknown-none target. The toolchain file requests these components and target.
 - QEMU with the x86_64 system emulator. On Debian/Ubuntu, install the qemu-system-x86 package.
 - Git.
+- Python 3 (used to read Cargo's reported target directory for the QEMU command).
 
 ## Checks
 
@@ -28,7 +29,8 @@ The build tool compiles one-os-kernel for x86_64-unknown-none, discovers the act
 
 Run:
 
-    qemu-system-x86_64 -drive format=raw,file=target/one-os-bios.img -serial stdio -display none -no-reboot -no-shutdown
+    IMAGE_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
 
 Expected serial output includes:
 
@@ -42,7 +44,7 @@ The kernel rejects empty, inverted, or overlapping memory-map ranges before it e
 
 ## Automated boot smoke test
 
-GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the kernel startup marker to appear. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image.
+GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the startup and bootstrap-completion markers to appear in the correct order. Panic and invalid-memory-map markers fail the check. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image.
 
 ## Contribution rules
 
