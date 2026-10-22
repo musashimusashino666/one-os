@@ -41,7 +41,7 @@ From the repository root:
     cargo run --locked -p oneos-xtask -- image
     qemu-system-x86_64 -drive format=raw,file=target/one-os-bios.img -serial stdio -display none -no-reboot -no-shutdown
 
-The QEMU command intentionally leaves the guest running after the kernel's startup message; stop it with Ctrl-C. See docs/DEVELOPMENT.md for the automated boot check.
+The QEMU command intentionally leaves the guest running after the kernel's startup message; stop it with Ctrl-C. CI uses a non-default CARGO_TARGET_DIR to exercise the portable image-generation path. See docs/DEVELOPMENT.md for the automated boot check.
 
 ## Design principles
 
