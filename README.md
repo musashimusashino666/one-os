@@ -31,7 +31,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 
 ## Quick start
 
-Install the nightly Rust toolchain and QEMU. The repository toolchain file requests rustfmt, clippy, llvm-tools-preview, and x86_64-unknown-none.
+Install the nightly Rust toolchain and QEMU. The repository toolchain file requests rustfmt, clippy, llvm-tools-preview, rust-src, and x86_64-unknown-none.
 
 From the repository root:
 
