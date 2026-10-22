@@ -8,9 +8,9 @@
 //! It is not yet a complete or independently bootable OS image.
 
 use bootloader_api::{entry_point, BootInfo};
-use oneos_core::{validate_memory_map, MemoryMapError};
 use core::arch::asm;
 use core::panic::PanicInfo;
+use oneos_core::{validate_memory_map, MemoryMapError};
 
 const COM1: u16 = 0x3F8;
 
@@ -46,7 +46,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_write(b"Architecture: x86_64\n");
     serial_write(b"Milestone: serial bootstrap\n");
     serial_write(b"Memory map: structurally validated\n");
-    serial_write(b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n");
+    serial_write(
+        b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
+    );
     // This marker is emitted only after memory-map validation and diagnostics.
     // CI requires it and rejects panic or invalid-memory-map markers.
     serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
