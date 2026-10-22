@@ -11,17 +11,20 @@ permissions:
 
 jobs:
   format-and-test:
-    name: Format, test, and lint
+    name: Format, test, lint, and boot
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
           targets: x86_64-unknown-none
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y qemu-system-x86
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -34,3 +37,26 @@ jobs:
 
       - name: Check bare-metal kernel
         run: cargo check -p one-os-kernel --target x86_64-unknown-none
+
+      - name: Build BIOS image
+        run: cargo run -p oneos-xtask -- image
+
+      - name: Verify kernel startup in QEMU
+        shell: bash
+        run: |
+          set +e
+          timeout 15s qemu-system-x86_64 \
+            -drive format=raw,file=target/one-os-bios.img \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > target/qemu-serial.log 2>&1
+          status=$?
+          set -e
+          cat target/qemu-serial.log
+          if ! grep -Fq "ONE OS kernel booted" target/qemu-serial.log; then
+            echo "Kernel startup marker missing (QEMU exit status: $status)" >&2
+            exit 1
+          fi
+          if [[ "$status" -ne 124 && "$status" -ne 0 ]]; then
+            echo "QEMU exited unexpectedly with status $status" >&2
+            exit "$status"
+          fi

@@ -7,11 +7,12 @@ Work is milestone-driven. A milestone is complete only when its acceptance crite
 - [x] Rust workspace and formatting/CI baseline.
 - [x] x86_64 kernel entry point and COM1 diagnostics.
 - [x] Host-testable no_std capability reference model.
+- [x] BIOS disk-image build tool.
 - [x] Architecture, security, development, and roadmap documents.
-- [ ] Confirm CI passes on GitHub Actions.
-- [ ] Build a disk image and capture a repeatable QEMU boot test.
+- [ ] Verify boot output through QEMU on CI.
+- [ ] Add a reproducible panic and timeout test.
 
-Exit criteria: the image boots repeatedly, serial output is captured in CI or a documented local test, and panic/timeout cases fail clearly.
+Exit criteria: the image boots repeatedly, startup output is captured in CI, and panic/timeout cases fail clearly.
 
 ## M1 — CPU and memory foundations
 

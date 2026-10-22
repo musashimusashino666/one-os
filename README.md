@@ -10,9 +10,10 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 
 - [x] Establish a Rust workspace and automated checks.
 - [x] Add an x86_64 bare-metal kernel entry point with COM1 serial diagnostics.
-- [x] Add a small, no_std, testable capability-authorization model.
+- [x] Add a no_std, testable capability-authorization model.
+- [x] Add BIOS disk-image build tooling.
 - [x] Document architecture boundaries, threat model, and roadmap.
-- [ ] Build a bootable disk image and verify boot under QEMU.
+- [ ] Prove repeatable boot under QEMU in CI and on a documented local setup.
 - [ ] Implement memory-map handling, exception/interrupt setup, and allocation strategy.
 - [ ] Add process isolation and kernel-enforced capability/IPC.
 - [ ] Add storage, networking, drivers, and a user-space service manager.
@@ -21,23 +22,26 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 
 - crates/oneos-core — small, host-testable no_std primitives
 - kernel — x86_64 bare-metal kernel entry point
+- tools/oneos-xtask — kernel build and BIOS image tooling
 - docs/ARCHITECTURE.md — layering and design decisions
 - docs/SECURITY.md — threat model and limitations
 - docs/DEVELOPMENT.md — build and test instructions
 - docs/ROADMAP.md — incremental milestones
-- .github/workflows/ci.yml — automated checks
+- .github/workflows/ci.yml — automated checks and QEMU boot test
 
 ## Quick start
 
-Install stable Rust with rustfmt and clippy, then run these commands from the repository root:
+Install the nightly Rust toolchain and QEMU. The repository toolchain file requests rustfmt, clippy, llvm-tools-preview, and x86_64-unknown-none.
+
+From the repository root:
 
     cargo fmt --all -- --check
     cargo test -p oneos-core
     cargo clippy -p oneos-core --all-targets -- -D warnings
-    rustup target add x86_64-unknown-none
-    cargo check -p one-os-kernel --target x86_64-unknown-none
+    cargo run -p oneos-xtask -- image
+    qemu-system-x86_64 -drive format=raw,file=target/one-os-bios.img -serial stdio -display none -no-reboot -no-shutdown
 
-See docs/DEVELOPMENT.md for details.
+The QEMU command intentionally leaves the guest running after the kernel's startup message; stop it with Ctrl-C. See docs/DEVELOPMENT.md for the automated boot check.
 
 ## Design principles
 
@@ -51,6 +55,6 @@ See docs/DEVELOPMENT.md for details.
 
 ## Important limitations
 
-The current kernel only initializes a serial console, reports that it has started, and halts. It does not yet implement user processes, virtual-memory management, a scheduler, filesystem, networking, graphical interface, or disk-image generation. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.
+The current kernel only initializes a serial console, reports that it has started, and halts. It does not yet implement user processes, virtual-memory management, a scheduler, filesystem, networking, or graphical interface. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.
 
-ONE OS will be considered usable only after repeatable boot tests, automated tests, hardware testing, security review, and documented compatibility results.
+A successful compile or one successful QEMU boot is only an initial milestone, not proof of security, performance superiority, or production readiness.
