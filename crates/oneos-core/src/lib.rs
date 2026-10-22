@@ -6,6 +6,9 @@
 //! This crate models authorization decisions. It does not enforce access at a
 //! hardware or process boundary by itself; the kernel must implement that
 //! enforcement before these types can be relied on for system security.
+//!
+//! Authority identifiers are process-local, not globally unique. This model
+//! must not be used to authenticate capabilities imported from another process.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -73,9 +76,10 @@ impl Rights {
 
 /// An authorization token.
 ///
-/// Fields are private so callers cannot create arbitrary capabilities through
-/// safe Rust. A future kernel must still validate tokens at protected
-/// operations and must not trust user-provided memory as a token.
+/// The authority identifier is only process-local, not a globally unique
+/// principal identifier. Do not serialize or import this token across process
+/// boundaries as proof of provenance. A future kernel must validate tokens at
+/// protected operations and must not trust user-provided memory as a token.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capability {
     authority_id: u64,
@@ -121,9 +125,16 @@ static NEXT_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Issues and checks capabilities within one revocation domain.
 ///
-/// Each instance receives a unique domain ID, and revoke_all invalidates only
-/// tokens issued by that instance. This simple generation scheme is coarse
-/// grained; per-object revocation and delegation can be considered later.
+/// Each instance receives a unique domain ID within the current process, and
+/// revoke_all invalidates only tokens issued by that instance. Independent
+/// processes each start their own counter, so equal numeric IDs can identify
+/// different authorities. This type is therefore process-local only; the model
+/// provides no cross-process provenance or authentication. A future kernel
+/// must use kernel-managed identities and validate the token's source at every
+/// protected operation.
+///
+/// This simple generation scheme is coarse grained; per-object revocation and
+/// delegation can be considered later.
 #[derive(Debug)]
 pub struct Authority {
     domain_id: Option<u64>,
@@ -132,7 +143,11 @@ pub struct Authority {
 }
 
 impl Authority {
-    /// Creates a new authority with a unique process-local domain ID.
+    /// Creates an authority with an ID unique only within this process.
+    ///
+    /// Separate processes can allocate the same numeric ID. Never treat this
+    /// ID as a cross-process identity or as proof that a token came from a
+    /// particular process.
     ///
     /// If IDs have been exhausted, this authority fails closed and cannot
     /// issue or validate capabilities.

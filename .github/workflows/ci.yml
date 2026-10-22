@@ -18,10 +18,10 @@ jobs:
       CARGO_TARGET_DIR: /tmp/one-os-target
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned commit
         with:
           toolchain: nightly-2026-10-22
           components: rustfmt, clippy, llvm-tools-preview, rust-src
@@ -45,6 +45,9 @@ jobs:
       - name: Build BIOS image
         run: cargo run --locked -p oneos-xtask -- image
 
+      - name: Test QEMU serial-log validator
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       - name: Verify kernel startup in QEMU
         shell: bash
         run: |
@@ -56,11 +59,6 @@ jobs:
           status=$?
           set -e
           cat "$CARGO_TARGET_DIR/qemu-serial.log"
-          if ! grep -Fq "ONE OS kernel booted" "$CARGO_TARGET_DIR/qemu-serial.log"; then
-            echo "Kernel startup marker missing (QEMU exit status: $status)" >&2
-            exit 1
-          fi
-          if [[ "$status" -ne 124 && "$status" -ne 0 ]]; then
-            echo "QEMU exited unexpectedly with status $status" >&2
-            exit "$status"
-          fi
+          python3 tools/check_qemu_serial.py \
+            --log "$CARGO_TARGET_DIR/qemu-serial.log" \
+            --exit-status "$status"

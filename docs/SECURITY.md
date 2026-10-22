@@ -43,6 +43,8 @@ The crates/oneos-core crate currently models an object ID, a set of rights, a ge
 
 This model is **not a security boundary** by itself. Safe Rust visibility rules do not protect against arbitrary kernel memory corruption, unsafe code, a malicious caller with direct memory access, or a faulty kernel integration. Do not use it to protect real data until the kernel establishes and enforces the necessary isolation.
 
+Authority IDs are allocated by a process-local static counter. Independent processes start their counters independently, so numeric IDs may collide. The current model is strictly for in-process testing and must not be used to authenticate imported or serialized capabilities across process boundaries. Before process isolation or IPC can rely on capabilities, the kernel must manage authority identity in protected state and verify token provenance and rights at every protected operation.
+
 ## Security reporting
 
 Do not publish exploit details for an unpatched live deployment. For now, file reproducible, minimal reports as private communication to the maintainers where possible; do not include credentials, personal data, or production secrets in issues.

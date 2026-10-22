@@ -26,6 +26,9 @@ fn kernel_main(_boot_info: &'static mut BootInfo) -> ! {
     serial_write(b"Architecture: x86_64\n");
     serial_write(b"Milestone: serial bootstrap\n");
     serial_write(b"Status: user mode, scheduler, VM, and drivers are not implemented\n");
+    // This marker is emitted only after the bootstrap's expected startup path completes.
+    // CI requires it and rejects any later panic marker.
+    serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
 
     halt_forever()
 }
