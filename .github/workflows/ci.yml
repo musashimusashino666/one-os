@@ -39,6 +39,12 @@ jobs:
       - name: Lint core crate
         run: cargo clippy --locked -p oneos-core --all-targets -- -D warnings
 
+      - name: Lint bare-metal kernel
+        run: cargo clippy --locked -p one-os-kernel --target x86_64-unknown-none -- -D warnings
+
+      - name: Lint build tool
+        run: cargo clippy --locked -p oneos-xtask --all-targets -- -D warnings
+
       - name: Check bare-metal kernel
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
