@@ -21,7 +21,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
-            println!("      Build the kernel and create one-os-bios.img in Cargo's target directory");
+            println!(
+                "      Build the kernel and create one-os-bios.img in Cargo's target directory"
+            );
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -79,8 +81,7 @@ fn build_kernel(root: &Path, target_directory: &Path) -> Result<PathBuf, Box<dyn
         let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if message.get("reason").and_then(serde_json::Value::as_str)
-            != Some("compiler-artifact")
+        if message.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact")
             || message
                 .get("target")
                 .and_then(|target| target.get("name"))
