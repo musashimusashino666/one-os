@@ -176,10 +176,12 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 5. Establish and verify `CR0.WP` and `EFER.NXE`; fail before mutation if a required
    precondition is missing. Integrate `map_4k` / `unmap_4k` without weakening tested
    core semantics.
-6. Add dedicated QEMU memory test images. Keep fault-injection code out of the normal
-   BIOS image.
-7. Run the full CI workflow on the exact final PR head and document observed results
-   and limitations.
+6. Add dedicated QEMU memory test images for transition/TLB behavior, read-only write
+   protection, and NX instruction-fetch protection. Keep fault-injection code out of
+   the normal BIOS image and ensure the QEMU CPU configuration exposes NX.
+7. Update CI so pull requests run on `opened`, `reopened`, `ready_for_review`, and
+   every `synchronize` (new head commit), plus manual dispatch. Run the full required
+   validation on the exact final PR head and retain the serial logs and result summary.
 
 ## Acceptance tests
 
@@ -269,6 +271,37 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   P=0 (non-present page), an unexpected CR2, or any other low three-bit combination
   must fail the test. A page-fault marker or matching CR2 alone is not sufficient.
   The test must not panic or emit the normal bootstrap-completion marker.
+- Verify NX protection with a dedicated QEMU test image and serial-log validator. The
+  image must run under a QEMU CPU configuration that exposes the architectural NX
+  capability; absence of NX support is a test/configuration failure, not a skipped test.
+  Check the CPU feature before mutation, enable `EFER.NXE`, and read it back to verify
+  it is set before installing an NX leaf.
+- Prepare a known, harmless instruction payload in a data frame through a temporary
+  writable alias, then remove that alias before the execution attempt. Map the same
+  frame at a dedicated target VA as present, supervisor-only, read-only, and NX. Before
+  attempting execution, inspect the leaf and assert that it is present, points to the
+  expected frame, is not writable, and has NX set. Ensure the exception handler,
+  recovery continuation, stack, and serial code are not in the target page.
+- Arm a narrowly scoped test-only page-fault expectation immediately before a
+  controlled indirect branch to the exact target VA. Require vector 14, `CR2` equal
+  to that VA, and the saved instruction pointer equal to the attempted target VA.
+  Require the architectural page-fault error bits for a present-page instruction-fetch
+  protection violation: P=1, W/R=0, U/S=0, RSVD=0, and I/D=1; assert
+  `(error_code & 0x1f) == 0x11`. Under the declared QEMU CPU configuration, reject
+  unexpected protection-key, shadow-stack, SGX, or other error flags rather than
+  accepting a different fault cause.
+- Recover only from that one armed, fully matching NX fault by replacing the actual
+  saved exception-frame instruction pointer with a known continuation. Any wrong
+  vector, `CR2`, saved RIP, error-code bit, nested/unarmed fault, or invalid recovery
+  state must fail-stop. The target payload should cause a distinct fatal outcome (for
+  example, `UD2`) if it is ever executed; if NX enforcement is absent, the test must
+  fail rather than appear successful. Emit the NX success marker only after the handler
+  confirms the expected fault exactly once and the continuation verifies all checks.
+  Do not use the ordinary bootstrap-completion marker as a test result.
+- Keep the existing supervisor read-only write-protection test on its specified
+  fail-stop path; do not make ordinary page faults or that test generally recoverable
+  to support the NX test. The NX handler belongs only in the dedicated fault-injection
+  image.
 - Verify allocation/translation failures halt or return through the documented error
   path without publishing dangling entries or incorrectly freeing owned frames.
 - Record the TLB behavior for both successful map and unmap. The two transition tests
@@ -276,7 +309,35 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   required invalidation is a test failure.
 - Run formatting, all core tests, Clippy with warnings denied, kernel checks, image
   creation, the serial-log unit tests, repeated normal boots, exception tests, and the
-  new memory-specific QEMU tests.
+  new memory-specific QEMU tests, including the NX instruction-fetch test.
+
+## Validation and CI contract
+
+This PR specifies acceptance criteria; it does not implement the kernel integration,
+the recoverable test handlers, the NX test image, or CI jobs. The next implementation
+PR must add these tests and make them required CI gates rather than documenting them
+as manual-only checks.
+
+- CI must run on the new head commit for every pull-request `synchronize` event, as
+  well as `opened`, `reopened`, and `ready_for_review`; retain manual workflow
+  dispatch. A successful run for an earlier commit does not validate a newer head.
+- The required job must build the normal boot image and each dedicated memory-test
+  image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
+  checks, image creation, serial-log validator tests, repeated normal boots, and
+  existing exception tests. It must also run the map/unmap and TLB-transition tests,
+  the supervisor write-protection test, and the NX instruction-fetch test under QEMU.
+- Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
+  exceptions, missing or duplicate test success markers, an incorrect recovery path,
+  or the normal bootstrap-completion marker being used in place of a memory-test
+  success marker. A missing NX CPU feature or an unavailable test image must fail
+  explicitly; it must not silently skip the NX acceptance test.
+- For the exact tested commit, publish the full commit SHA and workflow-run URL, plus a
+  per-check result for host tests, Clippy, kernel checks, image builds, normal boots,
+  exception tests, map/unmap and TLB behavior, read-only protection, and NX protection.
+  Retain the relevant QEMU serial logs and validator output as CI artifacts. The
+  implementation PR description must summarize these results and disclose any
+  unrun test or environment limitation; do not claim the milestone is complete from a
+  successful build or host tests alone.
 
 ## Exit criteria
 
