@@ -101,7 +101,9 @@ class ValidateVmProtectionOutputTests(unittest.TestCase):
         self.assertIn("NX recovery marker", message)
 
     def test_nx_recovery_markers_must_precede_success_marker(self):
-        log = valid_log("nx-instruction-fetch")
+        log = valid_log("nx-instruction-fetch").replace(
+            "ONE OS VM TEST PASS: nx-instruction-fetch\n", ""
+        )
         log = log.replace(
             "ONE OS VM TEST NX RECOVERY VERIFIED\n",
             "ONE OS VM TEST PASS: nx-instruction-fetch\n"
