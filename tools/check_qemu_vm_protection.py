@@ -8,6 +8,10 @@ import re
 from pathlib import Path
 
 
+START_MARKERS = {
+    "supervisor-write-protection": "ONE OS VM TEST: supervisor-write-protection",
+    "nx-instruction-fetch": "ONE OS VM TEST: nx-instruction-fetch",
+}
 PASS_MARKERS = {
     "supervisor-write-protection": "ONE OS VM TEST PASS: supervisor-write-protection",
     "nx-instruction-fetch": "ONE OS VM TEST PASS: nx-instruction-fetch",
@@ -46,6 +50,12 @@ def validate_vm_protection_output(
         if marker in log:
             return False, f"failure marker found: {marker}"
 
+    start_marker = START_MARKERS[case_name]
+    if log.count(start_marker) != 1:
+        return False, f"expected exactly one start marker: {start_marker}"
+    expected_fault_marker = "ONE OS VM TEST EXPECTED PAGE FAULT"
+    if log.count(expected_fault_marker) != 1:
+        return False, f"expected exactly one controlled protection fault: {expected_fault_marker}"
     pass_marker = PASS_MARKERS[case_name]
     if log.count(pass_marker) != 1:
         return False, f"expected exactly one success marker: {pass_marker}"
@@ -96,8 +106,18 @@ def validate_vm_protection_output(
         if not diagnostic_end < recovery_positions[0] < recovery_positions[1]:
             return False, "NX recovery markers are missing or out of order"
 
-    # Require the positive result to be logged only after every diagnostic field.
+    # Require the expected fault and all exact diagnostic fields to precede success.
     marker_position = log.find(pass_marker)
+    if not (
+        log.find(start_marker)
+        < log.find(expected_fault_marker)
+        < log.find("Instruction pointer:")
+        < log.find("Error code:")
+        < log.find("Fault address (CR2):")
+        < marker_position
+    ):
+        return False, "start, controlled fault, diagnostics, and success markers are out of order"
+
     for label in (
         "ONE OS VM TEST TARGET",
         "ONE OS VM TEST EXPECTED RIP",
