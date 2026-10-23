@@ -1,16 +1,19 @@
+#![feature(abi_x86_interrupt)]
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 //! Initial x86_64 kernel entry point.
 //!
-//! This bootstrap currently provides serial diagnostics and a halt loop only.
-//! It is not yet a complete or independently bootable OS image.
+//! This bootstrap provides serial diagnostics, basic CPU exception handling,
+//! and a halt loop. It is not yet a complete or independently bootable OS.
 
 use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
+
+mod interrupts;
 
 const COM1: u16 = 0x3F8;
 
@@ -22,6 +25,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     unsafe {
         serial_init();
     }
+
+    interrupts::init();
 
     // Validate physical memory ranges before reporting a successful boot.
     let region_count = boot_info.memory_regions.len();
@@ -42,18 +47,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
 
-    serial_write(b"\nONE OS kernel booted\n");
-    serial_write(b"Architecture: x86_64\n");
-    serial_write(b"Milestone: serial bootstrap\n");
-    serial_write(b"Memory map: structurally validated\n");
-    serial_write(
-        b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
-    );
-    // This marker is emitted only after memory-map validation and diagnostics.
-    // CI requires it and rejects panic or invalid-memory-map markers.
-    serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
+    // Test-only feature used by CI to prove that the installed IDT catches a
+    // real CPU exception. The normal kernel build never executes this path.
+    #[cfg(feature = "test-exception")]
+    {
+        serial_write(b"ONE OS EXCEPTION TEST: triggering invalid opcode\n");
+        // SAFETY: UD2 deliberately raises #UD; the test feature is enabled
+        // only for the QEMU exception-diagnostics check.
+        unsafe { asm!("ud2", options(nomem, nostack, noreturn)) }
+    }
 
-    halt_forever()
+    #[cfg(not(feature = "test-exception"))]
+    {
+        serial_write(b"\nONE OS kernel booted\n");
+        serial_write(b"Architecture: x86_64\n");
+        serial_write(b"Milestone: serial bootstrap\n");
+        serial_write(b"Memory map: structurally validated\n");
+        serial_write(
+            b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
+        );
+        // This marker is emitted only after IDT installation and memory-map
+        // validation. CI rejects panic or invalid-map markers.
+        serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
+
+        halt_forever()
+    }
 }
 
 unsafe fn serial_init() {
