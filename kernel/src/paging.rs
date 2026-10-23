@@ -815,6 +815,26 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         // aligned physical-memory-offset alias was checked. Clearing it before
         // publication gives the hardware an initialized page table.
         unsafe { ptr::write_bytes(alias, 0, PAGE_SIZE as usize) };
+        #[cfg(feature = "test-vm-transitions")]
+        {
+            let entries = alias.cast::<u64>();
+            for index in 0..((PAGE_SIZE as usize) / size_of::<u64>()) {
+                // SAFETY: alias was validated to map this aligned, owned, unpublished
+                // frame as supervisor-writable. The frame has not yet been published
+                // through any parent entry, and the volatile read verifies each slot
+                // after zeroing via the same checked physical-memory-offset alias.
+                if unsafe { ptr::read_volatile(entries.add(index)) } != 0 {
+                    super::serial_write(
+                        b"ONE OS VM TEST FAILED: table frame not zero before publication\n",
+                    );
+                    release_registered_table_frame(physical_address);
+                    return None;
+                }
+            }
+            // This marker is emitted only after the real kernel editor has checked
+            // all 512 entries, before the core mutator can publish the parent entry.
+            super::serial_write(b"ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n");
+        }
         Some(physical_address)
     }
 
