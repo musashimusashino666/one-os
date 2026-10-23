@@ -1,8 +1,9 @@
 //! Minimal x86_64 exception and interrupt diagnostics.
 //!
 //! The IDT is installed during single-core bootstrap, before enabling external
-//! interrupts. Handlers are fail-stop: they report the saved machine state and
-//! halt rather than attempting recovery from an unknown kernel state.
+//! interrupts. Production handlers are fail-stop. Dedicated memory-acceptance
+//! images can arm one exact test fault and recover only from its validated RIP,
+//! CR2, and complete error code; every other exception remains fail-stop.
 
 use core::arch::asm;
 use core::mem::size_of;
