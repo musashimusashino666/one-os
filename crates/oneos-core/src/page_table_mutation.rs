@@ -844,14 +844,7 @@ mod tests {
         let virtual_address = 0xffff_8000_1234_5000;
         let mut tables = TestTables::new(root);
         let permissions = PagePermissions::new(true, false, false);
-        map(
-            &mut tables,
-            root,
-            virtual_address,
-            0x8000,
-            permissions,
-        )
-        .unwrap();
+        map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
 
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
