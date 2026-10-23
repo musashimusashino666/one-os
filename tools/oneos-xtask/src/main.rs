@@ -17,12 +17,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "help".to_owned());
 
     match command.as_str() {
-        "image" => build_bios_image(),
+        "image" => build_bios_image(false),
+        "image-test-exception" => build_bios_image(true),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
             println!(
-                "      Build the kernel and create one-os-bios.img in Cargo's target directory"
+                "      Build the normal kernel and create one-os-bios.img in Cargo's target directory"
+            );
+            println!("  cargo run -p oneos-xtask -- image-test-exception");
+            println!(
+                "      Build a test-only invalid-opcode kernel and create one-os-exception-test-bios.img"
             );
             Ok(())
         }
@@ -57,14 +62,25 @@ fn cargo_target_directory(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     Ok(PathBuf::from(directory))
 }
 
-fn build_kernel(root: &Path, target_directory: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let output = Command::new("cargo")
-        .current_dir(root)
+fn build_kernel(
+    root: &Path,
+    target_directory: &Path,
+    test_exception: bool,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let mut command = Command::new("cargo");
+    command.current_dir(root).args([
+        "build",
+        "--locked",
+        "-p",
+        KERNEL_PACKAGE,
+    ]);
+
+    if test_exception {
+        command.args(["--features", "test-exception"]);
+    }
+
+    let output = command
         .args([
-            "build",
-            "--locked",
-            "-p",
-            KERNEL_PACKAGE,
             "--target",
             KERNEL_TARGET,
             "--message-format=json-render-diagnostics",
@@ -124,13 +140,18 @@ fn build_kernel(root: &Path, target_directory: &Path) -> Result<PathBuf, Box<dyn
     .into())
 }
 
-fn build_bios_image() -> Result<(), Box<dyn Error>> {
+fn build_bios_image(test_exception: bool) -> Result<(), Box<dyn Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?;
     let target_directory = cargo_target_directory(&root)?;
-    let kernel_path = build_kernel(&root, &target_directory)?;
-    let image_path = target_directory.join("one-os-bios.img");
+    let kernel_path = build_kernel(&root, &target_directory, test_exception)?;
+    let image_name = if test_exception {
+        "one-os-exception-test-bios.img"
+    } else {
+        "one-os-bios.img"
+    };
+    let image_path = target_directory.join(image_name);
 
     bootloader::BiosBoot::new(&kernel_path).create_disk_image(&image_path)?;
 
