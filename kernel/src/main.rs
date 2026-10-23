@@ -10,7 +10,9 @@
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
-use core::arch::{asm, global_asm};
+use core::arch::asm;
+#[cfg(feature = "test-supervisor-write-protection")]
+use core::arch::global_asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
 
