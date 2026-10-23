@@ -1030,7 +1030,6 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
     Err(PagingError::NoUnusedVirtualAddress)
 }
 
-
 /// Holds the owned data frame and target VA for one dedicated QEMU protection test.
 /// The frame token deliberately remains alive for as long as the mapping is used.
 pub struct ProtectionTestMapping {
@@ -1074,8 +1073,7 @@ fn prepare_protection_test_mapping(
     protected_permissions: PagePermissions,
     payload: ProtectionTestPayload,
 ) -> Result<ProtectionTestMapping, PagingError> {
-    let frame =
-        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let physical_address = frame.physical_address();
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if index < 512 => index,
@@ -1238,7 +1236,8 @@ fn read_active_leaf_path(
     let mut entries = [0u64; 4];
     let mut table_physical = root_table_physical;
     for (position, level) in [4u8, 3, 2, 1].into_iter().enumerate() {
-        let index = virtual_index(virtual_address, level).ok_or(PagingError::MappingSmokeMismatch)?;
+        let index =
+            virtual_index(virtual_address, level).ok_or(PagingError::MappingSmokeMismatch)?;
         let entry = editor
             .read_entry(table_physical, index, level)
             .ok_or(PagingError::MappingSmokeMismatch)?;
