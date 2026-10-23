@@ -13,7 +13,8 @@ use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
 ))]
 use core::arch::global_asm;
 use core::panic::PanicInfo;
