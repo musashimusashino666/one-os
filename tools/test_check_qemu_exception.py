@@ -78,7 +78,9 @@ class ValidateExceptionOutputTests(unittest.TestCase):
             with self.subTest(label=label):
                 # Remove the exact sample field irrespective of its value.
                 log = "\n".join(
-                    line for line in log.splitlines() if not line.startswith(label + ":")
+                    line
+                    for line in valid_log("ud").splitlines()
+                    if not line.startswith(label + ":")
                 )
                 valid, message = validate_exception_output(log, 124, "ud")
                 self.assertFalse(valid)
