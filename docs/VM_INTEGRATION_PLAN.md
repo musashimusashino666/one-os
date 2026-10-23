@@ -187,9 +187,20 @@ separate path and must still pass the existing repeated-boot and exception check
 - Write and read a sentinel only through a deliberately writable, non-executable test
   mapping, then unmap it and verify that the virtual address is no longer mapped.
 - Verify W^X rejection and that no existing ancestor permissions are widened.
-- In a dedicated fault-injection image, attempt a supervisor-mode write through a
-  read-only mapping and require a page-fault diagnostic with the expected fault
-  address. The test must not emit the normal bootstrap-completion marker.
+- In a dedicated fault-injection image, create a present supervisor-readable,
+  supervisor-read-only mapping to a known physical data frame and initialize a known
+  sentinel through a separate writable alias before removing that writable alias.
+  Before attempting the protected write, read the sentinel successfully through the
+  exact target virtual address and verify by page-table inspection that the target leaf
+  is present, points to the expected frame, and is not writable. These setup checks
+  must pass before the fault-trigger instruction executes.
+- Attempt the supervisor-mode write using a controlled instruction sequence. Require
+  page-fault vector 14, CR2 equal to the exact target virtual address, and a page-fault
+  error code with P=1 (protection violation), W/R=1 (write access), and U/S=0
+  (supervisor access); explicitly assert `(error_code & 0x7) == 0x3`. A fault with
+  P=0 (non-present page), an unexpected CR2, or any other low three-bit combination
+  must fail the test. A page-fault marker or matching CR2 alone is not sufficient.
+  The test must not panic or emit the normal bootstrap-completion marker.
 - Verify allocation/translation failures halt or return through the documented error
   path without publishing dangling entries or incorrectly freeing owned frames.
 - Validate TLB invalidation behavior for the tested unmap/permission-change cases.
