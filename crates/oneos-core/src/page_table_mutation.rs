@@ -420,9 +420,12 @@ mod tests {
         LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, PROTECTION_KEY_FIELD_MASK,
         USER_ACCESSIBLE, WRITABLE,
     };
-    use crate::{translate_4level, PageTableError, PAGE_SIZE};
+    use crate::{
+        translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE,
+    };
     use std::boxed::Box;
     use std::collections::BTreeMap;
+    use std::vec::Vec;
 
     struct TestTables {
         pages: BTreeMap<u64, Box<[u64; 512]>>,
@@ -481,6 +484,125 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    struct RegistryTestFrame {
+        physical_address: u64,
+        token_id: u64,
+    }
+
+    impl FrameToken for RegistryTestFrame {
+        fn frame_address(&self) -> u64 {
+            self.physical_address
+        }
+    }
+
+    struct RegistryTestTables<const CAPACITY: usize> {
+        pages: BTreeMap<u64, Box<[u64; 512]>>,
+        next_physical: u64,
+        next_token_id: u64,
+        allocations_remaining: Option<usize>,
+        physical_address_bits: u8,
+        registry: PageTableFrameRegistry<RegistryTestFrame, CAPACITY>,
+        allocation_attempts: usize,
+        created_frame_tokens: usize,
+        zeroed_table_frames: usize,
+        released_token_ids: Vec<u64>,
+        allocated_addresses: Vec<u64>,
+    }
+
+    impl<const CAPACITY: usize> RegistryTestTables<CAPACITY> {
+        fn new(root: u64) -> Self {
+            let mut pages = BTreeMap::new();
+            pages.insert(root, Box::new([0; 512]));
+            Self {
+                pages,
+                next_physical: 0x10_000,
+                next_token_id: 1,
+                allocations_remaining: None,
+                physical_address_bits: 48,
+                registry: PageTableFrameRegistry::new(),
+                allocation_attempts: 0,
+                created_frame_tokens: 0,
+                zeroed_table_frames: 0,
+                released_token_ids: Vec::new(),
+                allocated_addresses: Vec::new(),
+            }
+        }
+
+        fn read_any(&self, table: u64, index: usize) -> Option<u64> {
+            self.pages.get(&table).map(|page| page[index])
+        }
+    }
+
+    impl<const CAPACITY: usize> PageTableEditor for RegistryTestTables<CAPACITY> {
+        fn physical_address_bits(&self) -> u8 {
+            self.physical_address_bits
+        }
+
+        fn read_entry(&mut self, table: u64, index: usize, _level: u8) -> Option<u64> {
+            self.read_any(table, index)
+        }
+
+        fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
+            if let Some(page) = self.pages.get_mut(&table) {
+                page[index] = value;
+            }
+            if value & PRESENT != 0 {
+                let child = value & PHYSICAL_ADDRESS_FIELD_MASK;
+                if self.registry.contains(child) {
+                    self.registry
+                        .mark_published(child)
+                        .expect("registered child table must be owned");
+                }
+            }
+        }
+
+        fn allocate_table(&mut self) -> Option<u64> {
+            self.allocation_attempts += 1;
+            if let Some(remaining) = self.allocations_remaining.as_mut() {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining -= 1;
+            }
+
+            // The slot is reserved before any physical-frame allocation is
+            // simulated, matching the kernel editor's ownership invariant.
+            let slot = self.registry.reserve_slot()?;
+            let physical = self.next_physical;
+            let token_id = self.next_token_id;
+            self.next_physical += PAGE_SIZE;
+            self.next_token_id += 1;
+            let frame = RegistryTestFrame {
+                physical_address: physical,
+                token_id,
+            };
+            if let Err((_error, _frame)) = self.registry.install_reserved(slot, frame) {
+                self.registry
+                    .cancel_reservation(slot)
+                    .expect("failed installation must retain the reservation");
+                return None;
+            }
+
+            let page = Box::new([0; 512]);
+            assert!(page.iter().all(|entry| *entry == 0));
+            self.zeroed_table_frames += 1;
+            self.created_frame_tokens += 1;
+            self.allocated_addresses.push(physical);
+            self.pages.insert(physical, page);
+            Some(physical)
+        }
+
+        fn free_table(&mut self, physical: u64) {
+            assert!(self.pages.remove(&physical).is_some());
+            let frame = self
+                .registry
+                .take_unpublished(physical)
+                .expect("transaction rollback may release only unpublished frames");
+            self.released_token_ids.push(frame.token_id);
+        }
+    }
+
     fn map(
         tables: &mut TestTables,
         root: u64,
@@ -497,6 +619,107 @@ mod tests {
         virtual_address: u64,
     ) -> Result<UnmappedPage, PageTableMutationError> {
         unmap_4k(root, virtual_address, tables)
+    }
+
+    #[test]
+    fn ownership_registry_rolls_back_capacity_exhaustion_before_publishing_any_entry() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = RegistryTestTables::<2>::new(root);
+
+        assert_eq!(
+            map_4k(
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, false, false),
+                &mut tables,
+            ),
+            Err(PageTableMutationError::AllocationFailed)
+        );
+
+        let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
+        assert_eq!(tables.read_any(root, root_index), Some(0));
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.allocation_attempts, 3);
+        assert_eq!(tables.created_frame_tokens, 2);
+        assert_eq!(tables.zeroed_table_frames, 2);
+        assert_eq!(tables.released_token_ids, vec![1, 2]);
+        assert_eq!(tables.registry.available_slots(), 2);
+        assert!(tables.allocated_addresses.iter().all(|address| {
+            !tables.registry.contains(*address)
+        }));
+    }
+
+    #[test]
+    fn ownership_registry_rolls_back_allocator_failure_and_returns_each_token_once() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = RegistryTestTables::<3>::new(root);
+        tables.allocations_remaining = Some(1);
+
+        assert_eq!(
+            map_4k(
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, false, false),
+                &mut tables,
+            ),
+            Err(PageTableMutationError::AllocationFailed)
+        );
+
+        let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
+        assert_eq!(tables.read_any(root, root_index), Some(0));
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.created_frame_tokens, 1);
+        assert_eq!(tables.released_token_ids, vec![1]);
+        assert_eq!(tables.registry.available_slots(), 3);
+        assert_eq!(
+            tables.registry.take_unpublished(0x10_000),
+            Err(crate::FrameRegistryError::FrameNotFound)
+        );
+    }
+
+    #[test]
+    fn mapping_publishes_only_zeroed_owned_tables_and_leaf_unmap_does_not_release_data_frames() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let data_frame = 0x8000;
+        let permissions = PagePermissions::new(true, false, false);
+        let mut tables = RegistryTestTables::<3>::new(root);
+
+        map_4k(
+            root,
+            virtual_address,
+            data_frame,
+            permissions,
+            &mut tables,
+        )
+        .unwrap();
+
+        assert_eq!(tables.pages.len(), 4);
+        assert_eq!(tables.created_frame_tokens, 3);
+        assert_eq!(tables.zeroed_table_frames, 3);
+        assert!(tables.allocated_addresses.iter().all(|address| {
+            tables.registry.contains(*address)
+                && !tables.registry.contains_unpublished(*address)
+        }));
+        assert!(!tables.registry.contains(data_frame));
+        assert!(tables.released_token_ids.is_empty());
+
+        assert_eq!(
+            unmap_4k(root, virtual_address, &mut tables),
+            Ok(UnmappedPage {
+                physical_address: data_frame,
+                permissions,
+            })
+        );
+        assert_eq!(tables.released_token_ids.len(), 0);
+        assert!(!tables.registry.contains(data_frame));
+        assert!(tables.allocated_addresses.iter().all(|address| {
+            tables.registry.contains(*address)
+        }));
     }
 
     #[test]
