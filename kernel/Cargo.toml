@@ -13,6 +13,9 @@ test-general-protection = []
 test-page-fault = []
 # Test-only invalid-stack fault injection to exercise the double-fault IST stack.
 test-double-fault = []
+# Dedicated hardware memory-protection acceptance images (terminal expected #PF).
+test-supervisor-write-protection = []
+test-nx-protection = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
