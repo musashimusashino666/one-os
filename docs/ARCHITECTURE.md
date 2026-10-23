@@ -2,7 +2,7 @@
 
 ## Status
 
-This document describes the intended architecture, not a claim that each subsystem already exists. The current bootstrap kernel initializes COM1, disables maskable interrupts, masks the legacy PIC, installs an x86_64 IDT with fail-stop diagnostic handlers, structurally validates BootInfo memory-map ranges, prints a completion marker, and halts. QEMU fault-injection tests for #UD, #GP, and #PF/CR2 are being added to CI; their behavior is not considered verified until the current CI run passes. The handlers still use the active stack, so a dedicated IST stack for reliable double-fault diagnosis is not implemented. The capability crate is a standalone reference model and is not wired into kernel enforcement.
+This document describes the intended architecture, not a claim that each subsystem already exists. The current bootstrap kernel initializes COM1, disables maskable interrupts, masks the legacy PIC, installs an x86_64 IDT with fail-stop diagnostic handlers, structurally validates BootInfo memory-map ranges, prints a completion marker, and halts. Before `interrupts::init()` loads the new IDT, the kernel temporarily relies on the bootloader-provided IDTR and descriptors; `cli` does not suppress synchronous exceptions, NMI, or machine-check events, so diagnostics are not guaranteed during this early window. QEMU fault-injection tests for #UD, #GP, and #PF/CR2 are being added to CI; their behavior is not considered verified until the current CI run passes. The handlers still use the active stack, so a dedicated IST stack for reliable double-fault diagnosis is not implemented. The capability crate is a standalone reference model and is not wired into kernel enforcement.
 
 ## Target architecture
 
