@@ -20,9 +20,13 @@ const COM1: u16 = 0x3F8;
 entry_point!(kernel_main);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    // SAFETY: this runs in the privileged kernel entry point on x86_64.
-    // COM1 is the conventional first PC serial port.
+    // Establish the interrupt state before any peripheral or IDT setup.
+    // SAFETY: this is privileged x86_64 kernel entry code. Maskable interrupts
+    // stay disabled throughout this bootstrap; the legacy PIC is also masked.
     unsafe {
+        asm!("cli", options(nomem, nostack));
+        outb(0x21, u8::MAX);
+        outb(0xA1, u8::MAX);
         serial_init();
     }
 
@@ -47,17 +51,46 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
 
-    // Test-only feature used by CI to prove that the installed IDT catches a
-    // real CPU exception. The normal kernel build never executes this path.
+    // Fault-injection configurations are compiled only for dedicated QEMU
+    // tests. The normal BIOS image never executes these paths.
     #[cfg(feature = "test-exception")]
     {
         serial_write(b"ONE OS EXCEPTION TEST: triggering invalid opcode\n");
-        // SAFETY: UD2 deliberately raises #UD; the test feature is enabled
-        // only for the QEMU exception-diagnostics check.
+        // SAFETY: UD2 deliberately raises #UD in the dedicated test image.
         unsafe { asm!("ud2", options(nomem, nostack, noreturn)) }
     }
 
-    #[cfg(not(feature = "test-exception"))]
+    #[cfg(feature = "test-general-protection")]
+    {
+        serial_write(b"ONE OS EXCEPTION TEST: triggering general protection fault\n");
+        // SAFETY: the deliberately invalid selector must raise #GP in this
+        // dedicated test image before the next instruction can execute.
+        unsafe {
+            asm!(
+                "mov ds, ax",
+                in("ax") 0xffff_u16,
+                options(nomem, nostack, noreturn)
+            )
+        }
+    }
+
+    #[cfg(feature = "test-page-fault")]
+    {
+        const FAULT_ADDRESS: usize = 0x0000_4000_0000_0000;
+        serial_write(b"ONE OS EXCEPTION TEST: triggering page fault\n");
+        // SAFETY: this unmapped canonical address is deliberately read only in
+        // the dedicated fault-injection image to exercise #PF and CR2 logging.
+        unsafe {
+            core::ptr::read_volatile(FAULT_ADDRESS as *const u64);
+        }
+        halt_forever()
+    }
+
+    #[cfg(not(any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault"
+    )))]
     {
         serial_write(b"\nONE OS kernel booted\n");
         serial_write(b"Architecture: x86_64\n");
@@ -67,7 +100,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
         );
         // This marker is emitted only after IDT installation and memory-map
-        // validation. CI rejects panic or invalid-map markers.
+        // validation. CI rejects exception, panic, and invalid-map markers.
         serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
 
         halt_forever()
