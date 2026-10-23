@@ -19,9 +19,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     match command.as_str() {
         "image" => build_bios_image(None),
         "image-test-exception" => build_bios_image(Some("test-exception")),
-        "image-test-general-protection" => {
-            build_bios_image(Some("test-general-protection"))
-        }
+        "image-test-general-protection" => build_bios_image(Some("test-general-protection")),
         "image-test-page-fault" => build_bios_image(Some("test-page-fault")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
