@@ -7,6 +7,8 @@
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
@@ -155,7 +157,11 @@ error_handler!(segment_not_present_handler, 11, "segment not present");
 error_handler!(stack_segment_fault_handler, 12, "stack-segment fault");
 error_handler!(general_protection_handler, 13, "general protection fault");
 
-extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: u64) -> ! {
+#[cfg(not(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")))]
+extern "x86-interrupt" fn page_fault_handler(
+    frame: InterruptStackFrame,
+    error_code: u64,
+) -> ! {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
@@ -164,6 +170,88 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
             out(reg) fault_address,
             options(nomem, nostack, preserves_flags)
         );
+    }
+
+    report_exception(
+        Some(14),
+        "page fault",
+        frame,
+        Some(error_code),
+        Some(fault_address),
+    )
+}
+
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+static EXPECTED_PROTECTION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+static EXPECTED_PROTECTION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+static EXPECTED_PROTECTION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Arms exactly one known, terminal page-fault expectation in a dedicated QEMU image.
+/// The ordinary production page-fault handler remains fail-stop.
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+pub(super) fn arm_expected_protection_page_fault(target: u64, instruction_pointer: u64) {
+    EXPECTED_PROTECTION_FAULT_ADDRESS.store(target, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_RIP.store(instruction_pointer, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_SEEN.store(false, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_ARMED.store(true, Ordering::Release);
+}
+
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+extern "x86-interrupt" fn page_fault_handler(
+    frame: InterruptStackFrame,
+    error_code: u64,
+) -> ! {
+    let fault_address: u64;
+    // SAFETY: CR2 is read in the x86_64 page-fault exception context.
+    unsafe {
+        asm!(
+            "mov {}, cr2",
+            out(reg) fault_address,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    #[cfg(feature = "test-supervisor-write-protection")]
+    let expected_error_code = 0x3;
+    #[cfg(feature = "test-nx-protection")]
+    let expected_error_code = 0x11;
+
+    let armed = EXPECTED_PROTECTION_FAULT_ARMED.swap(false, Ordering::AcqRel);
+    let previously_seen = EXPECTED_PROTECTION_FAULT_SEEN.swap(true, Ordering::AcqRel);
+    let expected_address = EXPECTED_PROTECTION_FAULT_ADDRESS.load(Ordering::Relaxed);
+    let expected_rip = EXPECTED_PROTECTION_FAULT_RIP.load(Ordering::Relaxed);
+
+    if armed
+        && !previously_seen
+        && error_code == expected_error_code
+        && fault_address == expected_address
+        && frame.instruction_pointer == expected_rip
+    {
+        super::serial_write(b"\nONE OS VM TEST EXPECTED PAGE FAULT\n");
+        write_hex(b"Instruction pointer: ", frame.instruction_pointer);
+        write_hex(b"Error code: ", error_code);
+        write_hex(b"Fault address (CR2): ", fault_address);
+
+        #[cfg(feature = "test-supervisor-write-protection")]
+        super::serial_write(b"ONE OS VM TEST PASS: supervisor-write-protection\n");
+        #[cfg(feature = "test-nx-protection")]
+        super::serial_write(b"ONE OS VM TEST PASS: nx-instruction-fetch\n");
+
+        // QEMU is launched with isa-debug-exit. Value 0x10 yields status 33,
+        // making a terminal expected fault distinguishable from timeout/fail-stop.
+        unsafe {
+            asm!(
+                "out dx, al",
+                in("dx") 0xf4u16,
+                in("al") 0x10u8,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        super::halt_forever()
     }
 
     report_exception(
