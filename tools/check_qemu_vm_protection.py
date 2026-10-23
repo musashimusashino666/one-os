@@ -79,6 +79,23 @@ def validate_vm_protection_output(
     if case_name == "nx-instruction-fetch" and expected_rip != target:
         return False, "NX instruction-fetch saved RIP must equal the target VA"
 
+    # For the NX case, require proof that IRETQ resumed at the known continuation
+    # and the caller observed the armed fault before reporting the success marker.
+    if case_name == "nx-instruction-fetch":
+        recovery_markers = (
+            "ONE OS VM TEST NX FAULT MATCHED",
+            "ONE OS VM TEST NX RECOVERY VERIFIED",
+        )
+        recovery_positions = []
+        for marker in recovery_markers:
+            if log.count(marker) != 1:
+                return False, f"expected exactly one NX recovery marker: {marker}"
+            recovery_positions.append(log.find(marker))
+
+        diagnostic_end = log.find("Fault address (CR2):")
+        if not diagnostic_end < recovery_positions[0] < recovery_positions[1]:
+            return False, "NX recovery markers are missing or out of order"
+
     # Require the positive result to be logged only after every diagnostic field.
     marker_position = log.find(pass_marker)
     for label in (
@@ -91,6 +108,9 @@ def validate_vm_protection_output(
         field_position = log.find(label + ":")
         if field_position < 0 or field_position > marker_position:
             return False, f"success marker appeared before diagnostic field: {label}"
+
+    if case_name == "nx-instruction-fetch" and recovery_positions[1] > marker_position:
+        return False, "NX recovery was not verified before the success marker"
 
     return True, f"{case_name}: exact protection fault and isa-debug-exit status verified"
 
