@@ -10,7 +10,7 @@
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
 
@@ -20,7 +20,12 @@ use oneos_core::{validate_memory_map, MemoryMapError};
     all(feature = "test-exception", feature = "test-double-fault"),
     all(feature = "test-general-protection", feature = "test-page-fault"),
     all(feature = "test-general-protection", feature = "test-double-fault"),
-    all(feature = "test-page-fault", feature = "test-double-fault")
+    all(feature = "test-page-fault", feature = "test-double-fault"),
+    all(feature = "test-exception", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
+    all(feature = "test-general-protection", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
+    all(feature = "test-page-fault", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
+    all(feature = "test-double-fault", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
+    all(feature = "test-supervisor-write-protection", feature = "test-nx-protection")
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
 
@@ -36,6 +41,25 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     config.mappings.physical_memory = Some(Mapping::Dynamic);
     config
 };
+
+
+#[cfg(feature = "test-supervisor-write-protection")]
+global_asm!(
+    ".global oneos_vm_test_supervisor_write",
+    ".global oneos_vm_test_supervisor_write_fault_ip",
+    "oneos_vm_test_supervisor_write:",
+    "mov rax, rdi",
+    "mov rdx, rsi",
+    "oneos_vm_test_supervisor_write_fault_ip:",
+    "mov qword ptr [rax], rdx",
+    "ret",
+);
+
+#[cfg(feature = "test-supervisor-write-protection")]
+unsafe extern "C" {
+    fn oneos_vm_test_supervisor_write(target: u64, value: u64);
+    static oneos_vm_test_supervisor_write_fault_ip: u8;
+}
 
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
@@ -144,6 +168,58 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
     serial_write(b"ONE OS VM MAPPING SMOKE TEST READY\n");
+
+    #[cfg(feature = "test-supervisor-write-protection")]
+    {
+        serial_write(b"ONE OS VM TEST: supervisor-write-protection\n");
+        let mapping = match paging::install_supervisor_write_protection_test(boot_info) {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                serial_write(b"ONE OS VM TEST FAILED: setup\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        // SAFETY: this exported assembly label is the exact faulting store in
+        // the dedicated test-only write sequence.
+        let expected_ip =
+            unsafe { core::ptr::addr_of!(oneos_vm_test_supervisor_write_fault_ip) as u64 };
+        interrupts::write_hex(b"ONE OS VM TEST TARGET: ", mapping.virtual_address);
+        interrupts::write_hex(b"ONE OS VM TEST EXPECTED RIP: ", expected_ip);
+        interrupts::arm_expected_protection_page_fault(mapping.virtual_address, expected_ip);
+        // SAFETY: this test-only store deliberately writes to the read-only
+        // target mapping. The armed handler accepts only its exact RIP, CR2,
+        // and complete error_code == 0x3, then exits QEMU via isa-debug-exit.
+        unsafe {
+            oneos_vm_test_supervisor_write(mapping.virtual_address, 0x4f4e_455f_524f_5750);
+        }
+        serial_write(b"ONE OS VM TEST FAILED: protected write returned\n");
+        halt_forever()
+    }
+
+    #[cfg(feature = "test-nx-protection")]
+    {
+        serial_write(b"ONE OS VM TEST: nx-instruction-fetch\n");
+        let mapping = match paging::install_nx_execution_protection_test(boot_info) {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                serial_write(b"ONE OS VM TEST FAILED: setup\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        let expected_ip = mapping.virtual_address;
+        interrupts::write_hex(b"ONE OS VM TEST TARGET: ", mapping.virtual_address);
+        interrupts::write_hex(b"ONE OS VM TEST EXPECTED RIP: ", expected_ip);
+        interrupts::arm_expected_protection_page_fault(mapping.virtual_address, expected_ip);
+        // SAFETY: the target contains UD2 but is mapped NX. The dedicated #PF
+        // handler accepts only error_code == 0x11 at this exact CR2/RIP.
+        let entry: extern "C" fn() =
+            unsafe { core::mem::transmute(mapping.virtual_address as usize) };
+        entry();
+        serial_write(b"ONE OS VM TEST FAILED: NX target executed\n");
+        halt_forever()
+    }
 
     #[cfg(feature = "test-exception")]
     {
