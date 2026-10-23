@@ -321,6 +321,38 @@ mod tests {
     }
 
     #[test]
+    fn recursive_alias_resolution_handles_multiple_canonical_virtual_paths() {
+        let virtual_addresses = [
+            0xffff_8123_4567_89ab,
+            0xffff_ffff_ffff_f123,
+            0x0000_7fff_fedc_ba98,
+        ];
+        let aliases: [[u64; 4]; 3] = virtual_addresses.map(|virtual_address| {
+            [
+                recursive_table_page_virtual_address(510, virtual_address, 4).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 3).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 2).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 1).unwrap(),
+            ]
+        });
+
+        for alias_set in &aliases {
+            for &alias in alias_set {
+                assert!(is_canonical_4level(alias));
+                assert_eq!(alias & (PAGE_SIZE - 1), 0);
+            }
+        }
+
+        // The PML4 page alias is shared, while lower-level table aliases follow
+        // the target VA's PML4/PDPTE/PDE path and must not collide across paths.
+        assert_eq!(aliases[0][0], aliases[1][0]);
+        assert_ne!(aliases[0][1], aliases[1][1]);
+        assert_ne!(aliases[0][2], aliases[1][2]);
+        assert_ne!(aliases[0][3], aliases[1][3]);
+        assert_ne!(aliases[0][3], aliases[2][3]);
+    }
+
+    #[test]
     fn rejects_invalid_recursive_mapping_inputs() {
         assert_eq!(
             recursive_table_page_virtual_address(512, 0xffff_8000_0000_0000, 4),
