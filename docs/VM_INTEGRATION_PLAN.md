@@ -215,15 +215,10 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 - Test the recursive-alias helper with each page-table level and multiple target VAs,
   including canonical boundaries, invalid indices/levels, checked entry-offset
   arithmetic, and alignment requirements.
-- Test the concrete editor's ownership registry and lifecycle using a test backend:
-  fresh frames are zero-filled, tokens are retained before publication, failed
-  allocations are returned exactly once, and foreign/double releases fail closed.
-- Test registry exhaustion when no slot is available before allocation and when
-  capacity is insufficient for a mapping requiring multiple intermediate tables.
-  The failure must leave all pre-existing table entries unchanged, remove all
-  reservations, and return every physical frame acquired by that operation exactly
-  once. Include allocation/free counters or equivalent ownership assertions.
-- Test that no leaf-data frame is freed merely because its mapping was removed.
+- [x] Add host-testable fixed-capacity ownership-registry tests covering reserve-before-allocation, full-capacity rejection without invoking allocation, non-Copy token retention, single release of unpublished frames, published-frame retention, duplicate physical-address rejection, invalid/foreign release rejection, and metadata-slot reuse.
+- [ ] Add a test backend around the concrete `KernelPageTableEditor` that validates fresh table pages are zeroed and tokens are registered before publication; failed multi-intermediate allocations must roll back table entries, release every acquired frame exactly once, and leave the registry unchanged.
+- [ ] Add registry-capacity-exhaustion tests for mappings requiring multiple intermediate tables, with explicit allocation/free counters to prove all reservations and frames are rolled back exactly once.
+- [ ] Keep data-frame ownership independent from page-table mutation: unmapping must return the removed physical address and permissions without releasing the data frame token. Add an explicit owner-lifecycle test.
 - Test that invalid CPU capability data or a missing required control-state precondition
   prevents mutation.
 
@@ -370,10 +365,13 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 
 PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
 supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
-test-only fault handlers; exact serial validators; required CI steps; and retained QEMU
-logs. M1 remains open until these tests pass on the latest PR head. The transition test
-must verify the exact non-present fault metadata, recovery order, remap to a distinct
-physical frame, and observable TLB behavior.
+test-only fault handlers; exact serial validators; required CI steps; retained QEMU
+logs; and host-testable fixed-capacity frame ownership registry logic. CI run #306
+passed the three dedicated QEMU cases at commit `3805ac8f021204a905a64d0817e9260d2ed1dc2b`.
+The shared-registry refactor and its new unit tests were committed afterwards, so M1
+remains open until the complete required suite is green on the current PR head. The
+transition test verifies exact non-present fault metadata, recovery order, remapping to
+a distinct physical frame, and observable TLB behavior.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
