@@ -68,10 +68,7 @@ pub enum FrameAllocatorError {
     /// No usable region contains a complete, non-zero physical frame.
     NoUsableFrames,
     /// The supplied region metadata cannot describe every usable segment.
-    SegmentStorageTooSmall {
-        required: usize,
-        available: usize,
-    },
+    SegmentStorageTooSmall { required: usize, available: usize },
     /// The supplied bitmap cannot represent every usable frame.
     BitmapTooSmall {
         required_words: usize,
@@ -271,10 +268,7 @@ impl<'a> FrameAllocator<'a> {
     ///
     /// The token is consumed, preventing ordinary safe Rust code from freeing
     /// the same frame twice or returning it to two allocator instances.
-    pub fn free_frame(
-        &mut self,
-        frame: Frame,
-    ) -> Result<(), (FrameAllocatorError, Frame)> {
+    pub fn free_frame(&mut self, frame: Frame) -> Result<(), (FrameAllocatorError, Frame)> {
         if frame.allocator_id != self.allocator_id {
             return Err((FrameAllocatorError::ForeignFrame, frame));
         }
@@ -366,10 +360,7 @@ impl<'a> FrameAllocator<'a> {
 
 /// Aligns a region inward to complete 4 KiB frames and excludes physical frame
 /// zero. Regions without a complete non-zero frame are ignored.
-fn aligned_frame_range(
-    start: u64,
-    end: u64,
-) -> Result<Option<(u64, usize)>, FrameAllocatorError> {
+fn aligned_frame_range(start: u64, end: u64) -> Result<Option<(u64, usize)>, FrameAllocatorError> {
     let start = start.max(PAGE_SIZE);
     let Some(aligned_start) = start
         .checked_add(PAGE_SIZE - 1)
@@ -404,12 +395,7 @@ mod tests {
         slots: &'a mut [FrameSegment],
         bitmap: &'a mut [u64],
     ) -> Result<FrameAllocator<'a>, FrameAllocatorError> {
-        FrameAllocator::initialize(
-            regions.len(),
-            |index| regions[index],
-            slots,
-            bitmap,
-        )
+        FrameAllocator::initialize(regions.len(), |index| regions[index], slots, bitmap)
     }
 
     #[test]

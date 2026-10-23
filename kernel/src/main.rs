@@ -96,8 +96,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
     serial_write(b"ONE OS FRAME ALLOCATOR READY\n");
-    write_hex(b"Usable physical frames: ", allocator_stats.total_frames as u64);
-    write_hex(b"Usable physical regions: ", allocator_stats.usable_regions as u64);
+    write_hex(
+        b"Usable physical frames: ",
+        allocator_stats.total_frames as u64,
+    );
+    write_hex(
+        b"Usable physical regions: ",
+        allocator_stats.usable_regions as u64,
+    );
 
     #[cfg(feature = "test-exception")]
     {

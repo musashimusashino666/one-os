@@ -116,9 +116,8 @@ pub fn initialize(
         )
     };
     // SAFETY: same exclusivity and static-lifetime argument as segment_storage.
-    let bitmap_storage: &'static mut [u64] = unsafe {
-        core::slice::from_raw_parts_mut(GLOBAL.bitmap.get().cast::<u64>(), BITMAP_WORDS)
-    };
+    let bitmap_storage: &'static mut [u64] =
+        unsafe { core::slice::from_raw_parts_mut(GLOBAL.bitmap.get().cast::<u64>(), BITMAP_WORDS) };
 
     let allocator: FrameAllocator<'static> = FrameAllocator::initialize(
         regions.len(),
@@ -159,9 +158,7 @@ pub fn allocate_frame() -> Result<Frame, MemoryError> {
     // SAFETY: the initialized flag was published after writing the allocator,
     // and the lock provides exclusive access for the duration of this call.
     let allocator = unsafe { (&mut *GLOBAL.allocator.get()).assume_init_mut() };
-    allocator
-        .allocate_frame()
-        .map_err(MemoryError::Allocator)
+    allocator.allocate_frame().map_err(MemoryError::Allocator)
 }
 
 /// Frees a frame token previously returned by this global allocator.
