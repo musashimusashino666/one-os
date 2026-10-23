@@ -14,9 +14,9 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame,
-    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
-    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PAGE_SIZE,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame, FrameRegistryError,
+    PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -448,9 +448,7 @@ unsafe impl Sync for TableFrameRegistry {}
 impl TableFrameRegistry {
     const fn new() -> Self {
         Self {
-            registry: core::cell::UnsafeCell::new(
-                PageTableFrameRegistry::new(),
-            ),
+            registry: core::cell::UnsafeCell::new(PageTableFrameRegistry::new()),
         }
     }
 }
