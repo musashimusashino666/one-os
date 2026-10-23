@@ -21,6 +21,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [x] Enable the bootloader recursive page-table mapping and inspect the active four-level page tables read-only; check sampled translations for kernel code, the active stack, and BootInfo without claiming segment-by-segment ELF mapping verification.
 - [ ] Set up and test kernel virtual-memory mappings, including map/unmap operations and permission enforcement.
 - [x] Add host-testable 4 KiB map/unmap mutation primitives with W^X policy and allocation-failure rollback tests; active-kernel integration and QEMU mapping/protection tests remain open.
+- [ ] Integrate the mutation primitives with the active kernel page tables and add dedicated QEMU mapping/protection tests. Follow the [kernel VM integration contract](VM_INTEGRATION_PLAN.md) for page-table access, frame-token ownership, CPU paging state, TLB invalidation, and acceptance criteria.
 - [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting (verified in CI Run #120 at `892b9268c9a6774229189c60557be4d0d22bf541`).
 - [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).
 - Keep unsafe code small and document safety invariants.
