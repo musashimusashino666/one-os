@@ -8,7 +8,7 @@ from check_qemu_exception import validate_exception_output
 def valid_log(case: str, *, error_code: str | None = None, fault_address: str | None = None) -> str:
     cases = {
         "ud": ("invalid opcode", "0x0000000000000006", "ONE OS EXCEPTION TEST: triggering invalid opcode"),
-        "gp": ("general protection fault", "0x000000000000000d", "ONE OS EXCEPTION TEST: triggering reserved MSR read"),
+        "gp": ("general protection fault", "0x000000000000000d", "ONE OS EXCEPTION TEST: triggering non-canonical address access"),
         "pf": ("page fault", "0x000000000000000e", "ONE OS EXCEPTION TEST: triggering page fault"),
     }
     description, vector, trigger = cases[case]
@@ -36,7 +36,7 @@ class ValidateExceptionOutputTests(unittest.TestCase):
         valid, message = validate_exception_output(valid_log("ud"), 124, "ud")
         self.assertTrue(valid, message)
 
-    def test_reserved_msr_general_protection_error_code_is_zero(self):
+    def test_non_canonical_access_general_protection_error_code_is_zero(self):
         log = valid_log("gp", error_code="0x0000000000000000")
         self.assertTrue(validate_exception_output(log, 124, "gp")[0])
 
@@ -108,6 +108,13 @@ class ValidateExceptionOutputTests(unittest.TestCase):
             valid, message = validate_exception_output(valid_log("ud") + marker + "\n", 124, "ud")
             self.assertFalse(valid)
             self.assertIn("marker", message.lower())
+
+    def test_returning_exception_trigger_marker_fails(self):
+        log = valid_log("gp", error_code="0x0000000000000000")
+        log += "ONE OS EXCEPTION TEST FAILED: non-canonical load returned\r\n"
+        valid, message = validate_exception_output(log, 124, "gp")
+        self.assertFalse(valid)
+        self.assertIn("trigger unexpectedly returned", message)
 
     def test_unexpected_exit_status_fails(self):
         valid, message = validate_exception_output(valid_log("ud"), 0, "ud")
