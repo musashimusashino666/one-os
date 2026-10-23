@@ -11,7 +11,10 @@ def valid_log() -> str:
     second_rip = "0xffffffff80202020"
     return (
         "ONE OS kernel booted\n"
-        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n"
+        "ONE OS VM TABLE FRAME ALLOCATED: 0x0000000000100000\n"
+        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000100000\n"
+        "ONE OS VM TABLE FRAME ALLOCATED: 0x0000000000101000\n"
+        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000101000\n"
         "ONE OS VM MAPPING SMOKE TEST READY\n"
         "ONE OS VM TEST: mapping-transitions\n"
         f"ONE OS VM TRANSITION TARGET: {target}\n"
@@ -42,13 +45,32 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
         valid, message = validate_vm_transition_output(valid_log(), 33)
         self.assertTrue(valid, message)
 
-    def test_missing_prepublication_zero_assertion_fails(self):
+    def test_every_allocated_table_frame_requires_its_zero_verification(self):
         log = valid_log().replace(
-            "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n", ""
+            "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000101000\n",
+            "",
         )
         valid, message = validate_vm_transition_output(log, 33)
         self.assertFalse(valid)
-        self.assertIn("checked offset alias", message)
+        self.assertIn("do not match zero-verified frames", message)
+
+    def test_zero_verification_must_match_the_allocated_frame_address(self):
+        log = valid_log().replace(
+            "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000101000",
+            "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000102000",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("do not match zero-verified frames", message)
+
+    def test_duplicate_table_allocation_marker_fails(self):
+        log = valid_log().replace(
+            "ONE OS VM TABLE FRAME ALLOCATED: 0x0000000000101000\n",
+            "ONE OS VM TABLE FRAME ALLOCATED: 0x0000000000100000\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("duplicate physical frame", message)
 
     def test_physical_frames_must_be_distinct(self):
         log = valid_log().replace(
