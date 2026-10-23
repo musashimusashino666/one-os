@@ -51,8 +51,7 @@ struct Gdtr {
 
 static mut GDT: [u64; MAX_GDT_ENTRIES] = [0; MAX_GDT_ENTRIES];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
-static mut DOUBLE_FAULT_STACK: DoubleFaultStack =
-    DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
 
 #[derive(Clone, Copy)]
 #[repr(C)]
