@@ -37,7 +37,8 @@ Exit criteria: allocator, ownership-registry, registry-backed mutation rollback,
 - [ ] Implement a kernel-controlled ring 3 entry/return path with validated registers, selectors, user stack, and a kernel entry stack.
 - [ ] Create independent user address spaces while keeping any required shared kernel mappings supervisor-only; prevent user access to page tables and recursive aliases.
 - [ ] Add adversarial QEMU tests proving user code cannot access kernel-only memory or another process's private frames, including same-virtual-address/different-frame cases.
-- [ ] Verify effective U/S, R/W, NX, W^X, CR0.WP, EFER.NXE, and address-space-switch/TLB behavior; keep the existing M1 suite green on the exact PR head.
+- [ ] Test physical-frame-wide W^X: reject writable and executable aliases of the same frame in either mapping order, within one address space and across address spaces; verify kernel/direct-map and overlapping large-page aliases, and verify write-to-execute transitions only after writable aliases are removed and TLB invalidation completes.
+- [ ] Verify effective U/S, R/W, NX, CR0.WP, EFER.NXE, and address-space-switch/TLB behavior; enforce physical-frame-wide W^X across all aliases, address spaces, kernel/direct-map aliases, and large-page overlaps; keep the existing M1 suite green on the exact PR head.
 - [ ] Implement a minimal scheduler and thread lifecycle only after the entry/exit and isolation acceptance tests pass.
 - [ ] Define IPC message framing, length and memory-ownership validation, sender/receiver identity, and failure behavior.
 - [ ] Introduce kernel-enforced capability checks at every protected operation; do not trust user-supplied IDs or serialized capability data as proof of authority.
