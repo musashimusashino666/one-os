@@ -99,6 +99,19 @@ pub fn recursive_table_page_virtual_address(
     }
 }
 
+/// Checks whether a PML4 entry is a valid self-reference to the active root table.
+///
+/// The caller must ensure that the entry value was read safely. This helper checks
+/// the entry's present bit, reserved large-page bit, and physical frame address.
+pub const fn recursive_entry_matches_root(entry: u64, root_table_physical: u64) -> bool {
+    root_table_physical != 0
+        && root_table_physical & (PAGE_SIZE - 1) == 0
+        && root_table_physical & !PHYSICAL_ADDRESS_MASK == 0
+        && entry & PRESENT != 0
+        && entry & LARGE_PAGE == 0
+        && entry & PHYSICAL_ADDRESS_MASK == root_table_physical
+}
+
 /// Returns whether a complete 4 KiB physical page is contained in one allowed region.
 ///
 /// The region callback's third element must be true only for memory kinds that
@@ -245,7 +258,7 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_canonical_4level, physical_page_is_in_allowed_region,
+        is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
         recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
@@ -325,6 +338,18 @@ mod tests {
             recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 5),
             None
         );
+    }
+
+    #[test]
+    fn recursive_entry_must_be_present_and_reference_the_root_frame() {
+        let root = 0x1234_5000;
+        let valid_entry = root | 1 | (1 << 1) | (1 << 63);
+        assert!(recursive_entry_matches_root(valid_entry, root));
+        assert!(!recursive_entry_matches_root(0, root));
+        assert!(!recursive_entry_matches_root(0x2345_6003, root));
+        assert!(!recursive_entry_matches_root(root | 1 | (1 << 7), root));
+        assert!(!recursive_entry_matches_root(valid_entry, 0));
+        assert!(!recursive_entry_matches_root(valid_entry, root + 1));
     }
 
     #[test]
