@@ -9,7 +9,8 @@ use core::mem::size_of;
 use core::ptr;
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
 ))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -317,6 +318,95 @@ extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, err
     report_exception(
         Some(14),
         "page fault",
+        frame,
+        Some(error_code),
+        Some(fault_address),
+    )
+}
+
+
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_PHASE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-vm-transitions")]
+static TRANSITION_FAULT_SEEN_PHASE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "test-vm-transitions")]
+pub(super) fn arm_expected_transition_page_fault(
+    target: u64,
+    instruction_pointer: u64,
+    recovery_instruction_pointer: u64,
+    phase: u64,
+) {
+    EXPECTED_TRANSITION_FAULT_ADDRESS.store(target, Ordering::Relaxed);
+    EXPECTED_TRANSITION_FAULT_RIP.store(instruction_pointer, Ordering::Relaxed);
+    EXPECTED_TRANSITION_RECOVERY_RIP.store(recovery_instruction_pointer, Ordering::Relaxed);
+    EXPECTED_TRANSITION_PHASE.store(phase, Ordering::Relaxed);
+    EXPECTED_TRANSITION_FAULT_ARMED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "test-vm-transitions")]
+pub(super) fn transition_page_fault_was_seen(phase: u64) -> bool {
+    TRANSITION_FAULT_SEEN_PHASE.load(Ordering::Acquire) == phase
+}
+
+#[cfg(feature = "test-vm-transitions")]
+extern "x86-interrupt" fn page_fault_handler(
+    mut frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    let fault_address: u64;
+    // SAFETY: CR2 is read in the x86_64 page-fault exception context.
+    unsafe {
+        asm!(
+            "mov {}, cr2",
+            out(reg) fault_address,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    let armed = EXPECTED_TRANSITION_FAULT_ARMED.swap(false, Ordering::AcqRel);
+    let expected_address = EXPECTED_TRANSITION_FAULT_ADDRESS.load(Ordering::Relaxed);
+    let expected_rip = EXPECTED_TRANSITION_FAULT_RIP.load(Ordering::Relaxed);
+    let recovery_rip = EXPECTED_TRANSITION_RECOVERY_RIP.load(Ordering::Relaxed);
+    let phase = EXPECTED_TRANSITION_PHASE.load(Ordering::Relaxed);
+    if armed
+        && error_code == 0
+        && fault_address == expected_address
+        && frame.instruction_pointer == expected_rip
+        && recovery_rip != 0
+        && (phase == 1 || phase == 2)
+    {
+        super::serial_write(b"\nONE OS VM TRANSITION EXPECTED PAGE FAULT\n");
+        write_hex(b"Instruction pointer: ", frame.instruction_pointer);
+        write_hex(b"Error code: ", error_code);
+        write_hex(b"Fault address (CR2): ", fault_address);
+
+        // SAFETY: the one armed non-present fault matched the exact target,
+        // saved RIP, and complete error_code == 0. This recovery label is paired
+        // with the faulting assembly load and returns to its C caller.
+        unsafe {
+            ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
+        }
+        if phase == 1 {
+            super::serial_write(b"ONE OS VM TRANSITION FAULT MATCHED: initial-unmapped\n");
+        } else {
+            super::serial_write(b"ONE OS VM TRANSITION FAULT MATCHED: after-unmap\n");
+        }
+        TRANSITION_FAULT_SEEN_PHASE.store(phase, Ordering::Release);
+        return;
+    }
+
+    report_exception(
+        Some(14),
+        "unexpected page fault during mapping-transition test",
         frame,
         Some(error_code),
         Some(fault_address),
