@@ -6,8 +6,9 @@ on:
   #
   # Merge protection is enforced by GitHub's active "Protect main" ruleset, not by
   # these comments. The ruleset must require the named CI check, strict up-to-date checks,
-  # and at least one approving review; review threads must be resolved and stale approvals
-  # dismissed after new commits. Repository rulesets are GitHub-side settings, not YAML.
+  # with review threads resolved. Required approving reviews are intentionally zero while
+  # this is a single-maintainer repository; requiring one would block self-authored PR merges.
+  # Raise that threshold only after an independent reviewer is available. Rulesets are GitHub-side settings, not YAML.
   #
   # Verification before merge: ensure the required check is green for the latest PR HEAD
   # and the branch is up to date with main. workflow_dispatch runs are diagnostic only;
