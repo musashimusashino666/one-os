@@ -1273,6 +1273,44 @@ enum TransitionTestState {
     UnmappedAfterSecond,
 }
 
+/// Releases a test frame unless setup transfers its ownership into the test context.
+#[cfg(feature = "test-vm-transitions")]
+struct TransitionTestFrameGuard(Option<Frame>);
+
+#[cfg(feature = "test-vm-transitions")]
+impl TransitionTestFrameGuard {
+    fn new(frame: Frame) -> Self {
+        Self(Some(frame))
+    }
+
+    fn physical_address(&self) -> u64 {
+        self.0.as_ref().expect("guard owns a frame").physical_address()
+    }
+
+    fn into_frame(mut self) -> Frame {
+        self.0.take().expect("guard owns a frame")
+    }
+
+    fn disarm(mut self) {
+        // Used only if allocator uniqueness is violated and the address appears twice.
+        // Do not attempt to return two tokens that alias the same physical frame.
+        let _ = self.0.take();
+    }
+}
+
+#[cfg(feature = "test-vm-transitions")]
+impl Drop for TransitionTestFrameGuard {
+    fn drop(&mut self) {
+        if let Some(frame) = self.0.take() {
+            if let Err((_error, frame)) = super::memory::free_frame(frame) {
+                // Do not panic while unwinding a test setup error. Keep the token
+                // from being discarded if the allocator is unexpectedly unavailable.
+                core::mem::forget(frame);
+            }
+        }
+    }
+}
+
 /// Owns both data frames for the dedicated active map/unmap/remap QEMU case.
 /// The same virtual address is first mapped to one frame and then to a distinct
 /// frame so stale TLB translations are observable as stale payload data.
@@ -1290,13 +1328,18 @@ pub struct MappingTransitionTest {
 pub fn prepare_mapping_transition_test(
     boot_info: &BootInfo,
 ) -> Result<MappingTransitionTest, PagingError> {
-    let first_frame =
-        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
-    let second_frame =
-        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let first_frame = TransitionTestFrameGuard::new(
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?,
+    );
+    let second_frame = TransitionTestFrameGuard::new(
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?,
+    );
     let first_physical_address = first_frame.physical_address();
     let second_physical_address = second_frame.physical_address();
     if first_physical_address == second_physical_address {
+        // A duplicate address violates allocator uniqueness. Release only one
+        // token so this failure path cannot attempt a duplicate free.
+        second_frame.disarm();
         return Err(PagingError::MappingSmokeMismatch);
     }
 
@@ -1343,8 +1386,8 @@ pub fn prepare_mapping_transition_test(
                     virtual_address: candidate,
                     first_physical_address,
                     second_physical_address,
-                    first_frame,
-                    second_frame,
+                    first_frame: first_frame.into_frame(),
+                    second_frame: second_frame.into_frame(),
                     state: TransitionTestState::Unmapped,
                 });
             }
