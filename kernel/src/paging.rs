@@ -1289,6 +1289,7 @@ const TRANSITION_FIRST_SENTINEL: u64 = 0x4f4e_455f_564d_4131;
 #[cfg(feature = "test-vm-transitions")]
 const TRANSITION_SECOND_SENTINEL: u64 = 0x4f4e_455f_564d_4232;
 
+#[cfg(feature = "test-vm-transitions")]
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TransitionTestState {
     Unmapped,
