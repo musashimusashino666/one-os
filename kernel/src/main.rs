@@ -11,7 +11,10 @@
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 use core::arch::global_asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
@@ -23,11 +26,38 @@ use oneos_core::{validate_memory_map, MemoryMapError};
     all(feature = "test-general-protection", feature = "test-page-fault"),
     all(feature = "test-general-protection", feature = "test-double-fault"),
     all(feature = "test-page-fault", feature = "test-double-fault"),
-    all(feature = "test-exception", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
-    all(feature = "test-general-protection", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
-    all(feature = "test-page-fault", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
-    all(feature = "test-double-fault", any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")),
-    all(feature = "test-supervisor-write-protection", feature = "test-nx-protection")
+    all(
+        feature = "test-exception",
+        any(
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection"
+        )
+    ),
+    all(
+        feature = "test-general-protection",
+        any(
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection"
+        )
+    ),
+    all(
+        feature = "test-page-fault",
+        any(
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection"
+        )
+    ),
+    all(
+        feature = "test-double-fault",
+        any(
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection"
+        )
+    ),
+    all(
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection"
+    )
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
 
@@ -43,7 +73,6 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     config.mappings.physical_memory = Some(Mapping::Dynamic);
     config
 };
-
 
 #[cfg(feature = "test-supervisor-write-protection")]
 global_asm!(
