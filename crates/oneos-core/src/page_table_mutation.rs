@@ -741,7 +741,8 @@ mod tests {
         // Bits 58:52 are ignored/software-available. Bits 62:59 may contain
         // protection keys on leaf mappings. Neither range is a physical-address
         // field, so these values must not make an otherwise valid entry fail.
-        let optional_attributes = 0x7ff0_0000_0000_0000;
+        let software_available = 0x07f0_0000_0000_0000;
+        let protection_key = 0x7800_0000_0000_0000;
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
@@ -751,10 +752,10 @@ mod tests {
         let l4 = tables.read_any(root, indices[0]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let l3 = tables.read_any(l4, indices[1]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
-        tables.pages.get_mut(&root).unwrap()[indices[0]] |= optional_attributes;
-        tables.pages.get_mut(&l4).unwrap()[indices[1]] |= optional_attributes;
-        tables.pages.get_mut(&l3).unwrap()[indices[2]] |= optional_attributes;
-        tables.pages.get_mut(&l2).unwrap()[indices[3]] |= optional_attributes;
+        tables.pages.get_mut(&root).unwrap()[indices[0]] |= software_available;
+        tables.pages.get_mut(&l4).unwrap()[indices[1]] |= software_available;
+        tables.pages.get_mut(&l3).unwrap()[indices[2]] |= software_available;
+        tables.pages.get_mut(&l2).unwrap()[indices[3]] |= software_available | protection_key;
 
         map(
             &mut tables,
