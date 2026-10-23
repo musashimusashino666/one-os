@@ -114,16 +114,21 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         if log.count(marker) != 1:
             return False, f"expected exactly one mapping verification marker: {marker}"
 
+    mapping_smoke_marker = "ONE OS VM MAPPING SMOKE TEST READY"
+    mapping_smoke_position = log.find(mapping_smoke_marker)
     transition_start_position = log.find(START_MARKER)
-    first_mapping_position = log.find(FIRST_MAPPING_MARKER)
     zero_verified_before_publication = any(
-        transition_start_position < match.start() < first_mapping_position
+        match.start() < mapping_smoke_position
         for match in re.finditer(re.escape(TABLE_ZERO_MARKER), log)
     )
+    if mapping_smoke_position < 0 or log.count(mapping_smoke_marker) != 1:
+        return False, "expected exactly one successful active-mapping smoke-test marker"
+    if mapping_smoke_position >= transition_start_position:
+        return False, "active-mapping smoke test must finish before transition tests start"
     if not zero_verified_before_publication:
         return False, (
-            "the real kernel editor must verify all table entries are zero through "
-            "the checked offset alias before the first mapping succeeds"
+            "the transition image must verify allocated table entries are zero via "
+            "the checked offset alias before the mapping smoke test completes"
         )
 
     first_fault_position = log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT")
