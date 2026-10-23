@@ -204,7 +204,7 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         if log.find(label + ":") > first_fault_position:
             return False, f"expected transition metadata must precede the first fault: {label}"
 
-    return True, "mapping transitions, exact non-present faults, recovery, remap data, and TLB checks verified"
+    return True, (f"{len(allocated_frames)} table frames individually zero-verified; " "mapping transitions, exact non-present faults, recovery, remap data, and TLB checks verified")
 
 
 def main() -> int:
