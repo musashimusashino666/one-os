@@ -19,7 +19,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [x] Structurally validate BootInfo memory-map ranges and reject empty, inverted, or overlapping regions.
 - [ ] Define memory-region ownership and the physical page allocator.
 - [ ] Set up and test kernel virtual-memory mappings.
-- [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting.
+- [ ] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting.
 - Keep unsafe code small and document safety invariants.
 
 Exit criteria: allocator tests pass, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, and memory-fault tests do not corrupt unrelated memory.
