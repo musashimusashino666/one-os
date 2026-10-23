@@ -217,25 +217,6 @@ pub fn map_4k<E: PageTableEditor>(
         allocated[allocation_index] = physical;
     }
 
-    if let Some(missing_index) = missing_parent {
-        for allocation_index in 0..allocation_count {
-            let parent_table = if allocation_index == 0 {
-                tables[missing_index]
-            } else {
-                allocated[allocation_index - 1]
-            };
-            let entry_index = indices[missing_index + allocation_index];
-            let level = 4 - (missing_index + allocation_index) as u8;
-            editor.write_entry(
-                parent_table,
-                entry_index,
-                level,
-                allocated[allocation_index] | TABLE_ENTRY_FLAGS,
-            );
-        }
-        tables[3] = allocated[allocation_count - 1];
-    }
-
     let leaf_entry = physical_address
         | PRESENT
         | if permissions.writable { WRITABLE } else { 0 }
@@ -249,7 +230,41 @@ pub fn map_4k<E: PageTableEditor>(
         } else {
             NO_EXECUTE
         };
-    editor.write_entry(tables[3], indices[3], 1, leaf_entry);
+
+    if let Some(missing_index) = missing_parent {
+        // Initialize the complete missing subtree while every new table frame is
+        // still unpublished. The editor must be able to access these reserved
+        // Usable frames through its checked physical-memory-offset path.
+        //
+        // Once staging starts, write_entry is infallible by contract: each
+        // destination has already been reached safely during the walk or was
+        // validated and zeroed by allocate_table. Publish only the highest
+        // missing parent after the child links and leaf are fully initialized.
+        for allocation_index in 0..allocation_count {
+            let table = allocated[allocation_index];
+            if allocation_index + 1 < allocation_count {
+                let child_path_index = missing_index + allocation_index + 1;
+                editor.write_entry(
+                    table,
+                    indices[child_path_index],
+                    4 - child_path_index as u8,
+                    allocated[allocation_index + 1] | TABLE_ENTRY_FLAGS,
+                );
+            } else {
+                editor.write_entry(table, indices[3], 1, leaf_entry);
+            }
+        }
+
+        let parent_level = 4 - missing_index as u8;
+        editor.write_entry(
+            tables[missing_index],
+            indices[missing_index],
+            parent_level,
+            allocated[0] | TABLE_ENTRY_FLAGS,
+        );
+    } else {
+        editor.write_entry(tables[3], indices[3], 1, leaf_entry);
+    }
     Ok(())
 }
 
