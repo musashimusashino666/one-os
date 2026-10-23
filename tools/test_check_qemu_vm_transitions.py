@@ -22,6 +22,7 @@ def valid_log() -> str:
         f"Fault address (CR2): {target}\n"
         "ONE OS VM TRANSITION FAULT MATCHED: initial-unmapped\n"
         "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n"
+        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n"
         "ONE OS VM TRANSITION FIRST MAPPING VERIFIED\n"
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT\n"
         f"Instruction pointer: {second_rip}\n"
