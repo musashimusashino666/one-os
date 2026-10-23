@@ -9,10 +9,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Normalize push and pull_request events to the same source branch.
+  # Include the head repository to avoid collisions between forks with equal branch names.
+  group: one-os-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   format-and-test:
     name: Format, test, lint, and boot
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # Regression test for custom target directories used by oneos-xtask.
       CARGO_TARGET_DIR: /tmp/one-os-target
@@ -21,7 +28,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned commit
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned upstream master snapshot; no matching release tag
         with:
           toolchain: nightly-2026-10-22
           components: rustfmt, clippy, llvm-tools-preview, rust-src
@@ -54,17 +61,21 @@ jobs:
       - name: Test QEMU serial-log validator
         run: python3 -m unittest discover -s tools -p 'test_*.py'
 
-      - name: Verify kernel startup in QEMU
+      - name: Verify kernel startup in QEMU (three independent boots)
         shell: bash
         run: |
-          set +e
-          timeout 15s qemu-system-x86_64 \
-            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-bios.img" \
-            -serial stdio -display none -no-reboot -no-shutdown \
-            > "$CARGO_TARGET_DIR/qemu-serial.log" 2>&1
-          status=$?
-          set -e
-          cat "$CARGO_TARGET_DIR/qemu-serial.log"
-          python3 tools/check_qemu_serial.py \
-            --log "$CARGO_TARGET_DIR/qemu-serial.log" \
-            --exit-status "$status"
+          for attempt in 1 2 3; do
+            echo "QEMU boot attempt ${attempt}/3"
+            log="$CARGO_TARGET_DIR/qemu-serial-${attempt}.log"
+            set +e
+            timeout 10s qemu-system-x86_64 \
+              -drive format=raw,file="$CARGO_TARGET_DIR/one-os-bios.img" \
+              -serial stdio -display none -no-reboot -no-shutdown \
+              > "$log" 2>&1
+            status=$?
+            set -e
+            cat "$log"
+            python3 tools/check_qemu_serial.py \
+              --log "$log" \
+              --exit-status "$status"
+          done

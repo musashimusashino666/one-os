@@ -30,7 +30,7 @@ The build tool compiles one-os-kernel for x86_64-unknown-none, discovers the act
 Run:
 
     IMAGE_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
-qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
+    qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
 
 Expected serial output includes:
 
@@ -44,7 +44,7 @@ The kernel rejects empty, inverted, or overlapping memory-map ranges before it e
 
 ## Automated boot smoke test
 
-GitHub Actions builds a BIOS disk image, launches it in QEMU, captures serial output, and requires the startup and bootstrap-completion markers to appear in the correct order. Panic and invalid-memory-map markers fail the check. The timeout is expected because the bootstrap kernel intentionally halts instead of powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image.
+GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup and bootstrap-completion markers to appear in the correct order. Panic, invalid-memory-map markers, missing completion markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
 ## Contribution rules
 

@@ -179,6 +179,14 @@ pub enum AccessError {
 /// allocate a unique number, not to publish any other memory.
 static NEXT_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
+fn allocate_authority_id(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+}
+
 /// Issues and checks capabilities within one revocation domain.
 ///
 /// Each instance receives a unique domain ID within the current process, and
@@ -208,11 +216,7 @@ impl Authority {
     /// If IDs have been exhausted, this authority fails closed and cannot
     /// issue or validate capabilities.
     pub fn new() -> Self {
-        let domain_id = NEXT_AUTHORITY_ID
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .ok();
+        let domain_id = allocate_authority_id(&NEXT_AUTHORITY_ID);
 
         Self {
             domain_id,
@@ -285,10 +289,62 @@ impl Default for Authority {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_memory_map, AccessError, Authority, MemoryMapError, ObjectId, Rights};
+    use super::{
+        allocate_authority_id, validate_memory_map, AccessError, Authority, MemoryMapError,
+        ObjectId, Rights,
+    };
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     const FILE: ObjectId = ObjectId::new(7);
     const OTHER_FILE: ObjectId = ObjectId::new(8);
+
+    #[test]
+    fn refuses_authority_id_allocation_when_counter_is_exhausted() {
+        // Use an isolated counter so this test cannot exhaust the process-wide ID source.
+        let counter = AtomicU64::new(u64::MAX);
+
+        assert_eq!(allocate_authority_id(&counter), None);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn domain_id_exhaustion_fails_closed() {
+        let issuer = Authority::new();
+        let capability = issuer.grant(FILE, Rights::READ).unwrap();
+        let exhausted = Authority {
+            domain_id: None,
+            generation: 1,
+            exhausted: false,
+        };
+
+        assert_eq!(
+            exhausted.grant(FILE, Rights::READ),
+            Err(AccessError::AuthorityExhausted)
+        );
+        assert_eq!(
+            exhausted.authorize(&capability, FILE, Rights::READ),
+            Err(AccessError::AuthorityExhausted)
+        );
+    }
+
+    #[test]
+    fn generation_overflow_fails_closed() {
+        let mut authority = Authority::new();
+        let capability = authority.grant(FILE, Rights::READ).unwrap();
+
+        authority.generation = u64::MAX;
+        authority.revoke_all();
+
+        assert!(authority.exhausted);
+        assert_eq!(
+            authority.grant(FILE, Rights::READ),
+            Err(AccessError::AuthorityExhausted)
+        );
+        assert_eq!(
+            authority.authorize(&capability, FILE, Rights::READ),
+            Err(AccessError::AuthorityExhausted)
+        );
+    }
 
     #[test]
     fn rejects_empty_memory_map() {
