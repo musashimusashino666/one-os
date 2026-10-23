@@ -13,10 +13,12 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame, FrameRegistryError,
+    is_canonical_4level, map_4k, physical_page_is_in_allowed_region,
+    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
+    unmap_4k, validate_cr0_write_protect, validate_efer_nx_enable,
+    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame, FrameRegistryError,
     PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PAGE_SIZE,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -25,7 +27,6 @@ const EFER_MSR: u32 = 0xc000_0080;
 const EFER_NXE: u64 = 1 << 11;
 const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
-const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
 #[cfg(any(
     feature = "test-supervisor-write-protection",
@@ -172,9 +173,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     }
     // With CR0.WP clear, supervisor writes can bypass read-only PTEs. Require
     // write protection before treating R/W=0 as an enforced kernel restriction.
-    if cr0 & CR0_WP == 0 {
-        return Err(PagingError::SupervisorWriteProtectionDisabled);
-    }
+    validate_cr0_write_protect(cr0).map_err(map_paging_precondition_error)?;
 
     let root_table_physical = cr3 & PHYSICAL_ADDRESS_MASK;
     let regions: &[MemoryRegion] = &boot_info.memory_regions;
@@ -366,21 +365,14 @@ fn translate_virtual_address(
 pub fn initialize_paging_controls() -> Result<(), PagingError> {
     // SAFETY: CPUID is available at the x86_64 kernel privilege level.
     let maximum_extended_leaf = __cpuid(0x8000_0000).eax;
-    if maximum_extended_leaf < CPUID_PHYSICAL_ADDRESS_WIDTH {
-        return Err(PagingError::UnsupportedNx);
-    }
+    validate_extended_cpuid_leaf(maximum_extended_leaf, CPUID_PHYSICAL_ADDRESS_WIDTH)
+        .map_err(map_paging_precondition_error)?;
     // SAFETY: the maximum extended CPUID leaf was checked above.
     let features = __cpuid(CPUID_EXTENDED_FEATURES);
-    if features.edx & NX_FEATURE == 0 {
-        return Err(PagingError::UnsupportedNx);
-    }
     // SAFETY: the extended physical-address-width CPUID leaf was checked above.
     let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
-    if !(32..=52).contains(&physical_address_bits) {
-        return Err(PagingError::InvalidPhysicalAddressWidth {
-            bits: physical_address_bits,
-        });
-    }
+    validate_paging_cpu_capabilities(features.edx, physical_address_bits)
+        .map_err(map_paging_precondition_error)?;
 
     let mut cr0: u64;
     // SAFETY: reading and writing CR0 is valid in privileged kernel execution.
@@ -430,11 +422,23 @@ pub fn initialize_paging_controls() -> Result<(), PagingError> {
         }
         efer = (u64::from(high) << 32) | u64::from(low);
     }
-    if efer & EFER_NXE == 0 {
-        return Err(PagingError::UnsupportedNx);
-    }
+    validate_efer_nx_enable(efer).map_err(map_paging_precondition_error)?;
 
     Ok(())
+}
+
+fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError {
+    match error {
+        PagingPreconditionError::ExtendedLeafUnavailable { .. }
+        | PagingPreconditionError::NxUnsupported
+        | PagingPreconditionError::NxEnableDisabled => PagingError::UnsupportedNx,
+        PagingPreconditionError::InvalidPhysicalAddressWidth { bits } => {
+            PagingError::InvalidPhysicalAddressWidth { bits }
+        }
+        PagingPreconditionError::SupervisorWriteProtectionDisabled => {
+            PagingError::SupervisorWriteProtectionDisabled
+        }
+    }
 }
 
 struct TableFrameRegistry {
