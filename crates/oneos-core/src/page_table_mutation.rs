@@ -133,10 +133,10 @@ pub fn map_4k<E: PageTableEditor>(
     tables[0] = root_table_physical;
     let mut missing_parent = None;
 
-    for path_index in 0..3 {
+    for (path_index, &entry_index) in indices.iter().take(3).enumerate() {
         let level = 4 - path_index as u8;
         let entry = editor
-            .read_entry(tables[path_index], indices[path_index], level)
+            .read_entry(tables[path_index], entry_index, level)
             .ok_or(PageTableMutationError::TableUnavailable { level })?;
 
         if entry & PRESENT == 0 {
@@ -260,10 +260,10 @@ pub fn unmap_4k<E: PageTableEditor>(
     let mut effective_user = true;
     let mut effective_executable = true;
 
-    for path_index in 0..3 {
+    for (path_index, &entry_index) in indices.iter().take(3).enumerate() {
         let level = 4 - path_index as u8;
         let entry = editor
-            .read_entry(table_physical, indices[path_index], level)
+            .read_entry(table_physical, entry_index, level)
             .ok_or(PageTableMutationError::TableUnavailable { level })?;
         if entry & PRESENT == 0 {
             if entry != 0 {
@@ -294,7 +294,7 @@ pub fn unmap_4k<E: PageTableEditor>(
         return Err(PageTableMutationError::NotMapped { level: 1 });
     }
     let leaf_physical_address = leaf & PHYSICAL_ADDRESS_FIELD_MASK;
-    if !valid_physical_page(leaf_physical_address, physical_address_bits) {
+    if !valid_physical_address(leaf_physical_address, physical_address_bits) {
         return Err(PageTableMutationError::MalformedEntry { level: 1 });
     }
 
@@ -343,11 +343,15 @@ fn physical_address_mask(bits: u8) -> Option<u64> {
     Some(((1u64 << bits) - 1) & PHYSICAL_ADDRESS_FIELD_MASK)
 }
 
-fn valid_physical_page(address: u64, physical_address_bits: u8) -> bool {
+fn valid_physical_address(address: u64, physical_address_bits: u8) -> bool {
     let Some(mask) = physical_address_mask(physical_address_bits) else {
         return false;
     };
-    address != 0 && address & (PAGE_SIZE - 1) == 0 && address & !mask == 0
+    address & (PAGE_SIZE - 1) == 0 && address & !mask == 0
+}
+
+fn valid_physical_page(address: u64, physical_address_bits: u8) -> bool {
+    address != 0 && valid_physical_address(address, physical_address_bits)
 }
 
 fn ancestor_allows(entry: u64, permissions: PagePermissions) -> bool {
@@ -832,6 +836,46 @@ mod tests {
             unmap(&mut tables, root, virtual_address),
             Err(PageTableMutationError::InvalidPhysicalAddressWidth { bits: 53 })
         );
+    }
+
+    #[test]
+    fn unmaps_a_present_leaf_mapping_to_physical_address_zero() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+        let permissions = PagePermissions::new(true, false, false);
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            0x8000,
+            permissions,
+        )
+        .unwrap();
+
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let l4 = tables.read_any(root, indices[0]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l3 = tables.read_any(l4, indices[1]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let leaf = tables.read_any(l2, indices[3]).unwrap();
+        tables.pages.get_mut(&l2).unwrap()[indices[3]] = leaf & !PHYSICAL_ADDRESS_FIELD_MASK;
+
+        let present_zero_mapping = tables.read_any(l2, indices[3]).unwrap();
+        assert_ne!(present_zero_mapping & PRESENT, 0);
+        assert_eq!(present_zero_mapping & PHYSICAL_ADDRESS_FIELD_MASK, 0);
+        assert_eq!(
+            unmap(&mut tables, root, virtual_address),
+            Ok(UnmappedPage {
+                physical_address: 0,
+                permissions,
+            })
+        );
+        assert_eq!(tables.read_any(l2, indices[3]), Some(0));
     }
 
     #[test]
