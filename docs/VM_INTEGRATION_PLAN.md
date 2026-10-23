@@ -145,7 +145,18 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 - Establish and verify `EFER.NXE` before installing mappings whose NX bit is set.
   If a required CPU feature is unavailable, fail closed before changing active tables.
 - Retain the existing W^X policy. Never widen existing ancestor permissions to make a
-  requested mapping succeed.
+  requested mapping succeed. Validate both the bits in each entry and the resulting
+  effective permissions across the complete walk. For a 4 KiB mapping, effective
+  writable and user-accessible permissions require the corresponding bit to be set at
+  every level; effective executable permission requires NX=0 at every level. A leaf
+  PTE with U/S=0 is supervisor-only even when an ancestor U/S bit is 1.
+- Preserve compatibility with the current `map_4k` behavior: newly allocated
+  intermediate entries are written with PRESENT | WRITABLE | USER_ACCESSIBLE, while
+  leaf permissions come from `PagePermissions`. Therefore acceptance tests must not
+  require ancestor U/S=0 unless a separately reviewed implementation change also
+  changes this policy and updates host tests. For tests isolating a leaf write or NX
+  restriction, require ancestors to permit the operation in question and verify that
+  the effective access restriction comes from the intended leaf bit.
 - Serialize page-table mutations. The bootstrap currently has a single CPU with
   maskable interrupts disabled; encode that as an explicit temporary precondition
   rather than pretending it provides SMP safety. Before SMP, add cross-CPU coordination
@@ -272,19 +283,31 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   separate writable alias before removing that writable alias. Before attempting the
   protected write, read the sentinel successfully through the exact target virtual
   address and inspect the complete four-level walk. Require every entry to be present;
-  require the PML4E, PDPTE, and PDE to have R/W=1 and U/S=0, while the target PTE
-  has R/W=0 and U/S=0 and points to the expected frame. Reject large-page entries in
-  the ancestor path. Verify `CR0.WP=1`. These checks prove the write denial comes
-  from the leaf PTE rather than an ancestor permission, and must pass before the
-  fault-trigger instruction executes.
-- Attempt the supervisor-mode write using a controlled instruction sequence. Require
-  page-fault vector 14, CR2 equal to the exact target virtual address, and the complete
-  error code `error_code == 0x3`: P=1 (protection violation), W/R=1 (write), U/S=0
-  (supervisor), with RSVD=0, I/D=0, and all other defined or reserved bits clear.
-  Exact equality is required; a masked low-bit comparison is insufficient. A fault
-  with P=0, an unexpected CR2, an unexpected error-code bit, or an ancestor denying
-  writes must fail the test. A page-fault marker or matching CR2 alone is not enough.
-  The dedicated test must not panic or emit the normal bootstrap-completion marker.
+  require the PML4E, PDPTE, and PDE to have R/W=1 and NX=0. Do not require their U/S
+  bits to be 0: the current `map_4k` creates intermediate entries with
+  `USER_ACCESSIBLE=1`, and supervisor-only effective access is established by the
+  leaf PTE's U/S=0. Require the leaf PTE to have R/W=0 and U/S=0 and to point to the
+  expected frame. Reject large-page entries in the ancestor path and verify
+  `CR0.WP=1`. These checks prove the write denial comes from the leaf PTE's R/W bit,
+  rather than an ancestor denying writes, and must pass before the faulting instruction
+  executes.
+- Attempt the supervisor-mode write using a controlled instruction sequence. The
+  dedicated image must use a test-only #PF handler armed for that one target VA and
+  known faulting instruction. Require vector 14, CR2 equal to the exact target virtual
+  address, the saved RIP equal to the intended write instruction, and complete error
+  code `error_code == 0x3`: P=1 (protection violation), W/R=1 (write), U/S=0
+  (supervisor), RSVD=0, I/D=0, and all other defined or reserved bits clear. Exact
+  equality is required; a masked comparison is insufficient. A fault with P=0, wrong
+  CR2/RIP, an unexpected error-code bit, or an ancestor denying writes must fail.
+- On that fully matching expected fault only, do not retry or recover to the faulting
+  instruction. Emit exactly one `ONE OS VM TEST PASS: supervisor-write-protection`
+  marker, then terminate the test through QEMU's `isa-debug-exit` device: launch the
+  image with `-device isa-debug-exit,iobase=0xf4,iosize=0x04`, and write the agreed
+  success value `0x10` to I/O port `0xf4`. The harness must require the resulting
+  QEMU process exit status `33` (=(0x10 << 1) | 1) and the unique success marker.
+  This is a controlled terminal pass, not general page-fault recovery. Any unarmed
+  fault, wrong vector/CR2/RIP/error code, missing/duplicate marker, timeout, panic,
+  or fail-stop path must fail CI. Never emit the normal bootstrap-completion marker.
 - Verify NX protection with a dedicated QEMU test image and serial-log validator. The
   image must run under a QEMU CPU configuration that exposes the architectural NX
   capability; absence of NX support is a test/configuration failure, not a skipped test.
@@ -295,11 +318,13 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   frame at a dedicated target VA as present, supervisor-only, read-only, and NX. Before
   attempting execution, inspect the complete four-level walk. Require every entry to
   be present; require the PML4E, PDPTE, and PDE to have NX=0 (execution permitted at
-  all ancestor levels), R/W=1, and U/S=0; require the target PTE to point to the expected
-  frame with NX=1, R/W=0, and U/S=0. Reject large-page entries in the ancestor path.
-  This proves that the leaf PTE's NX bit, rather than an ancestor NX bit, prevents
-  instruction fetch. Ensure the exception handler, recovery continuation, stack, and
-  serial code are not in the target page.
+  all ancestor levels) and R/W=1. Do not require ancestor U/S=0: the current
+  `map_4k` sets `USER_ACCESSIBLE=1` on newly created intermediate tables. Require
+  the target PTE to point to the expected frame with NX=1, R/W=0, and U/S=0. Reject
+  large-page entries in the ancestor path. This proves that the leaf PTE's NX bit,
+  rather than an ancestor NX bit, prevents instruction fetch; the leaf U/S bit also
+  ensures the effective mapping is supervisor-only. Ensure the exception handler,
+  recovery continuation, stack, and serial code are not in the target page.
 - Arm a narrowly scoped test-only page-fault expectation immediately before a
   controlled indirect branch to the exact target VA. Require vector 14, `CR2` equal
   to that VA, and the saved instruction pointer equal to the attempted target VA.
@@ -355,8 +380,13 @@ as manual-only checks.
 - Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
   exceptions, missing or duplicate test success markers, an incorrect recovery path,
   or the normal bootstrap-completion marker being used in place of a memory-test
-  success marker. A missing NX CPU feature or an unavailable test image must fail
-  explicitly; it must not silently skip the NX acceptance test.
+  success marker. For the supervisor write-protection case, the expected #PF is a
+  controlled terminal pass only after vector, CR2, saved RIP, and complete
+  `error_code == 0x3` validation: require its unique success marker and QEMU
+  `isa-debug-exit` status 33 together. Do not classify this one explicitly validated
+  completion as an unexpected fail-stop; every other timeout/fail-stop remains failure.
+  A missing NX CPU feature or an unavailable test image must fail explicitly; it must
+  not silently skip the NX acceptance test.
 - For the exact tested commit, publish the full commit SHA and workflow-run URL, plus a
   per-check result for host tests, Clippy, kernel checks, image builds, normal boots,
   exception tests, map/unmap and TLB behavior, read-only protection, and NX protection.
