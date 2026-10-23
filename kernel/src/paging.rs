@@ -103,7 +103,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
     }
     let addresses = [
-        inspect_boot_mappings as usize as u64,
+        inspect_boot_mappings as *const () as usize as u64,
         stack_pointer,
         boot_info as *const BootInfo as usize as u64,
     ];
