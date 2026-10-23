@@ -13,11 +13,10 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, map_4k, physical_page_is_in_allowed_region,
-    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
-    unmap_4k, validate_cr0_write_protect, validate_efer_nx_enable,
-    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame, FrameRegistryError,
-    PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
+    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
+    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PAGE_SIZE,
 };
 
