@@ -94,6 +94,24 @@ pub enum PageTableMutationError {
     AncestorPermissionConflict { level: u8 },
 }
 
+impl PageTableMutationError {
+    /// Returns whether this error makes only the current mapping candidate
+    /// unusable and is safe to retry without undoing page-table changes.
+    ///
+    /// These cases are detected while walking existing entries, before
+    /// allocating tables or writing any entry. Allocation and structural
+    /// errors deliberately remain fatal to the caller.
+    pub const fn is_retryable_for_mapping_candidate(self) -> bool {
+        matches!(
+            self,
+            Self::TableUnavailable { .. }
+                | Self::LargePageConflict { .. }
+                | Self::AlreadyMapped
+                | Self::AncestorPermissionConflict { .. }
+        )
+    }
+}
+
 /// The leaf mapping removed by unmap_4k.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UnmappedPage {
@@ -982,6 +1000,37 @@ mod tests {
             ),
             Err(PageTableMutationError::TableUnavailable { level: 3 })
         );
+
+        // Candidate inspection failed before allocation or mutation.
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(
+            tables.read_any(root, root_index),
+            Some(0x2000 | PRESENT | WRITABLE)
+        );
+        assert_eq!(tables.next_physical, 0x10_000);
+    }
+
+    #[test]
+    fn only_candidate_local_mapping_errors_are_retryable() {
+        assert!(PageTableMutationError::TableUnavailable { level: 3 }
+            .is_retryable_for_mapping_candidate());
+        assert!(PageTableMutationError::AlreadyMapped
+            .is_retryable_for_mapping_candidate());
+        assert!(PageTableMutationError::LargePageConflict { level: 2 }
+            .is_retryable_for_mapping_candidate());
+        assert!(PageTableMutationError::AncestorPermissionConflict { level: 3 }
+            .is_retryable_for_mapping_candidate());
+
+        assert!(!PageTableMutationError::MalformedEntry { level: 3 }
+            .is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::InvalidRootTable
+            .is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::InvalidPageTableFrame
+            .is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::AllocationFailed
+            .is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::WritableExecutable
+            .is_retryable_for_mapping_candidate());
     }
 
     #[test]
