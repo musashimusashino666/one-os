@@ -127,3 +127,8 @@ The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagno
 - Document every new use of unsafe and its safety invariant.
 - Avoid adding dependencies to privileged kernel code without a clear need and review.
 - Include exact commands and results when reporting validation.
+
+
+### Page-table ownership registry validation
+
+The core crate now exposes a fixed-capacity page-table frame ownership registry used by the kernel editor. Its host tests cover reservation before allocation, capacity exhaustion without allocation, ownership-token retention, unpublished-frame release exactly once, published-frame retention, duplicate-address rejection, invalid/foreign releases, and slot reuse. A host test backend for concrete-editor zeroing and multi-table rollback, plus an explicit test proving that unmapping a leaf does not free its data-frame token, remain acceptance work. The dedicated QEMU protection and transition cases passed CI run #306 at commit `3805ac8f021204a905a64d0817e9260d2ed1dc2b`; the current refactor must be revalidated on the latest PR head.
