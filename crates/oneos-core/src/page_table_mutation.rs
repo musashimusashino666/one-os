@@ -229,6 +229,10 @@ pub fn map_4k<E: PageTableEditor>(
                 .contains(&physical)
             || allocated[..allocation_index].contains(&physical);
         if aliases_existing {
+            // Do not free `physical`: it aliases the root, an existing table,
+            // or a frame already tracked in `allocated`. Releasing it here could
+            // free a frame that is still reachable or invalidate a prior token.
+            // Only the distinct frames in `allocated` are ours to roll back.
             release_allocated(&allocated, allocation_index, editor);
             return Err(PageTableMutationError::InvalidPageTableFrame);
         }
