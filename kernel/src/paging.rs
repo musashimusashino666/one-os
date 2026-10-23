@@ -1355,6 +1355,10 @@ pub fn prepare_mapping_transition_test(
                     state: TransitionTestState::Unmapped,
                 });
             }
+            // A recursive alias may be unavailable for this candidate without
+            // implying that the active page tables are malformed. Keep searching.
+            Err(error) if error.is_retryable_for_mapping_candidate() => continue,
+            // Structural translation errors must never be treated as an empty slot.
             Err(error) => return Err(PagingError::Translation(error)),
             Ok(_) => {}
         }
