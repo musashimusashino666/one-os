@@ -15,6 +15,12 @@ def valid_log(case: str) -> str:
         expected_rip = target
         error_code = "0x0000000000000011"
         marker = "ONE OS VM TEST PASS: nx-instruction-fetch"
+    recovery = (
+        "ONE OS VM TEST NX FAULT MATCHED\n"
+        "ONE OS VM TEST NX RECOVERY VERIFIED\n"
+        if case == "nx-instruction-fetch"
+        else ""
+    )
     return (
         f"ONE OS VM TEST: {case}\n"
         f"ONE OS VM TEST TARGET: {target}\n"
@@ -23,6 +29,7 @@ def valid_log(case: str) -> str:
         f"Instruction pointer: {expected_rip}\n"
         f"Error code: {error_code}\n"
         f"Fault address (CR2): {target}\n"
+        f"{recovery}"
         f"{marker}\n"
     )
 
@@ -85,6 +92,25 @@ class ValidateVmProtectionOutputTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("exactly one success marker", message)
 
+    def test_nx_requires_both_recovery_markers(self):
+        log = valid_log("nx-instruction-fetch").replace(
+            "ONE OS VM TEST NX RECOVERY VERIFIED\n", ""
+        )
+        valid, message = validate_vm_protection_output(log, 33, "nx-instruction-fetch")
+        self.assertFalse(valid)
+        self.assertIn("NX recovery marker", message)
+
+    def test_nx_recovery_markers_must_precede_success_marker(self):
+        log = valid_log("nx-instruction-fetch")
+        log = log.replace(
+            "ONE OS VM TEST NX RECOVERY VERIFIED\n",
+            "ONE OS VM TEST PASS: nx-instruction-fetch\n"
+            "ONE OS VM TEST NX RECOVERY VERIFIED\n",
+        )
+        valid, message = validate_vm_protection_output(log, 33, "nx-instruction-fetch")
+        self.assertFalse(valid)
+        self.assertIn("before the success marker", message)
+
     def test_normal_boot_completion_marker_fails(self):
         log = valid_log("nx-instruction-fetch") + "ONE OS BOOTSTRAP COMPLETE\n"
         valid, message = validate_vm_protection_output(log, 33, "nx-instruction-fetch")
@@ -101,7 +127,7 @@ class ValidateVmProtectionOutputTests(unittest.TestCase):
         )
         valid, message = validate_vm_protection_output(log, 33, "nx-instruction-fetch")
         self.assertFalse(valid)
-        self.assertIn("saved RIP", message.lower())
+        self.assertIn("saved rip", message.lower())
 
 
 if __name__ == "__main__":
