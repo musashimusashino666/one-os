@@ -40,6 +40,8 @@ impl TaskStateSegment {
     }
 }
 
+// The CPU consumes this buffer through TSS.IST1 rather than Rust field reads.
+#[allow(dead_code)]
 #[repr(align(16))]
 struct DoubleFaultStack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
