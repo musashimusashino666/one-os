@@ -17,8 +17,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "help".to_owned());
 
     match command.as_str() {
-        "image" => build_bios_image(false),
-        "image-test-exception" => build_bios_image(true),
+        "image" => build_bios_image(None),
+        "image-test-exception" => build_bios_image(Some("test-exception")),
+        "image-test-general-protection" => {
+            build_bios_image(Some("test-general-protection"))
+        }
+        "image-test-page-fault" => build_bios_image(Some("test-page-fault")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
@@ -26,9 +30,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 "      Build the normal kernel and create one-os-bios.img in Cargo's target directory"
             );
             println!("  cargo run -p oneos-xtask -- image-test-exception");
-            println!(
-                "      Build a test-only invalid-opcode kernel and create one-os-exception-test-bios.img"
-            );
+            println!("      Build a test-only invalid-opcode exception image");
+            println!("  cargo run -p oneos-xtask -- image-test-general-protection");
+            println!("      Build a test-only general-protection exception image");
+            println!("  cargo run -p oneos-xtask -- image-test-page-fault");
+            println!("      Build a test-only page-fault exception image");
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -65,18 +71,15 @@ fn cargo_target_directory(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
 fn build_kernel(
     root: &Path,
     target_directory: &Path,
-    test_exception: bool,
+    test_feature: Option<&str>,
 ) -> Result<PathBuf, Box<dyn Error>> {
     let mut command = Command::new("cargo");
-    command.current_dir(root).args([
-        "build",
-        "--locked",
-        "-p",
-        KERNEL_PACKAGE,
-    ]);
+    command
+        .current_dir(root)
+        .args(["build", "--locked", "-p", KERNEL_PACKAGE]);
 
-    if test_exception {
-        command.args(["--features", "test-exception"]);
+    if let Some(feature) = test_feature {
+        command.args(["--features", feature]);
     }
 
     let output = command
@@ -140,16 +143,18 @@ fn build_kernel(
     .into())
 }
 
-fn build_bios_image(test_exception: bool) -> Result<(), Box<dyn Error>> {
+fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?;
     let target_directory = cargo_target_directory(&root)?;
-    let kernel_path = build_kernel(&root, &target_directory, test_exception)?;
-    let image_name = if test_exception {
-        "one-os-exception-test-bios.img"
-    } else {
-        "one-os-bios.img"
+    let kernel_path = build_kernel(&root, &target_directory, test_feature)?;
+    let image_name = match test_feature {
+        None => "one-os-bios.img",
+        Some("test-exception") => "one-os-exception-test-bios.img",
+        Some("test-general-protection") => "one-os-general-protection-test-bios.img",
+        Some("test-page-fault") => "one-os-page-fault-test-bios.img",
+        Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
     let image_path = target_directory.join(image_name);
 
