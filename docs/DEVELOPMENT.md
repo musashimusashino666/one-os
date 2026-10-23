@@ -75,6 +75,9 @@ NX permissions, and manage the lifetime of allocated page-table frames. When
 read-only mappings must block supervisor-mode writes, the caller must also
 ensure CR0.WP is enabled on every CPU that can execute with these page tables.
 The primitives cannot inspect or enable either CR0.WP or EFER.NXE themselves.
+When integrating them into the kernel, paging initialization must explicitly
+establish and verify these CPU-control preconditions before relying on read-only
+or non-executable mappings, and retain them on every CPU that can use the tables.
 Both map and unmap reject repeated physical table frames encountered during a
 walk, failing closed on recursive/cyclic references rather than treating them
 as ordinary paging levels. Unmap clears the leaf entry but does not reclaim
