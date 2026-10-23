@@ -71,10 +71,15 @@ yet integrated with kernel/src/paging.rs. The callback implementation must make
 table reads and writes safe, return distinct zero-filled table frames, and
 retain ownership of frames committed to page-table use. The caller must perform
 TLB invalidation, serialize mutations, ensure EFER.NXE is enabled before using
-NX permissions, and manage the lifetime of allocated page-table frames. Unmap
-clears the leaf entry but does not reclaim now-empty intermediate tables. This
-is a host-testable algorithm milestone, not yet hardware-enforced memory
-protection or process isolation.
+NX permissions, and manage the lifetime of allocated page-table frames. When
+read-only mappings must block supervisor-mode writes, the caller must also
+ensure CR0.WP is enabled on every CPU that can execute with these page tables.
+The primitives cannot inspect or enable either CR0.WP or EFER.NXE themselves.
+Both map and unmap reject repeated physical table frames encountered during a
+walk, failing closed on recursive/cyclic references rather than treating them
+as ordinary paging levels. Unmap clears the leaf entry but does not reclaim
+now-empty intermediate tables. This is a host-testable algorithm milestone,
+not yet hardware-enforced memory protection or process isolation.
 
 The PageTableEditor contract must report the active processor's MAXPHYADDR,
 typically CPUID.80000008H:EAX[7:0]. Root, leaf, and intermediate-table physical
