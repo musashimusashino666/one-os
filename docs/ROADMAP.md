@@ -22,7 +22,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [ ] Set up and test kernel virtual-memory mappings, including map/unmap operations and permission enforcement.
 - [x] Add host-testable 4 KiB map/unmap mutation primitives with W^X policy and allocation-failure rollback tests.
 - [x] Connect an active-kernel editor, establish CR0.WP/EFER.NXE, and run a normal-boot map/access/unmap smoke cycle.
-- [ ] Pass dedicated QEMU supervisor-write-protection and NX-instruction-fetch tests, plus exact not-present/map/unmap/remap transition and TLB tests.
+- [ ] Pass dedicated QEMU supervisor-write-protection and NX-instruction-fetch tests, plus the exact not-present/map/unmap/remap transition and TLB test image added in PR #11.
 - [ ] Complete the active-kernel mapping/protection acceptance suite. PR #11 adds test images for supervisor-write and NX enforcement; dedicated transition/TLB QEMU tests and a green CI run on the final head are still required. Follow the [kernel VM integration contract](VM_INTEGRATION_PLAN.md) for page-table access, frame-token ownership, CPU paging state, TLB invalidation, and acceptance criteria.
 - [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting (verified in CI Run #120 at `892b9268c9a6774229189c60557be4d0d22bf541`).
 - [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).
