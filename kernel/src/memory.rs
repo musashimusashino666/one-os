@@ -19,6 +19,8 @@ pub enum MemoryError {
     Busy,
     AlreadyInitialized,
     NotInitialized,
+    KernelImageRangeInvalid,
+    KernelImageMarkedUsable,
     Allocator(FrameAllocatorError),
 }
 
@@ -28,6 +30,8 @@ impl MemoryError {
             Self::Busy => b"Physical allocator is busy\n",
             Self::AlreadyInitialized => b"Physical allocator was initialized twice\n",
             Self::NotInitialized => b"Physical allocator is not initialized\n",
+            Self::KernelImageRangeInvalid => b"Kernel physical image range is invalid\n",
+            Self::KernelImageMarkedUsable => b"Kernel image overlaps allocatable memory\n",
             Self::Allocator(error) => error.message(),
         }
     }
@@ -79,10 +83,28 @@ static GLOBAL: GlobalAllocator = GlobalAllocator::new();
 /// Only regions explicitly marked Usable are eligible. Bootloader and unknown
 /// regions remain reserved. The core allocator excludes physical frame zero
 /// and rounds each region inward to complete 4 KiB frames.
-pub fn initialize(regions: &[MemoryRegion]) -> Result<FrameAllocatorStats, MemoryError> {
+pub fn initialize(
+    regions: &[MemoryRegion],
+    kernel_physical_start: u64,
+    kernel_physical_len: u64,
+) -> Result<FrameAllocatorStats, MemoryError> {
     let _guard = GLOBAL.acquire()?;
     if GLOBAL.initialized.load(Ordering::Acquire) {
         return Err(MemoryError::AlreadyInitialized);
+    }
+
+    let kernel_physical_end = kernel_physical_start
+        .checked_add(kernel_physical_len)
+        .filter(|_| kernel_physical_len != 0)
+        .ok_or(MemoryError::KernelImageRangeInvalid)?;
+    if regions.iter().any(|region| {
+        matches!(region.kind, MemoryRegionKind::Usable)
+            && region.start < kernel_physical_end
+            && kernel_physical_start < region.end
+    }) {
+        // Refuse to manage a map that would permit the kernel image, including
+        // this static metadata, to be reallocated as free physical frames.
+        return Err(MemoryError::KernelImageMarkedUsable);
     }
 
     // SAFETY: GLOBAL has static storage; its lock is held; the arrays are

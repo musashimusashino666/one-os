@@ -68,7 +68,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // tests. The normal BIOS image never executes these paths.
     serial_write(b"\nONE OS kernel booted\n");
 
-    let allocator_stats = match memory::initialize(&boot_info.memory_regions) {
+    let allocator_stats = match memory::initialize(
+        &boot_info.memory_regions,
+        boot_info.kernel_addr,
+        boot_info.kernel_len,
+    ) {
         Ok(stats) => stats,
         Err(error) => {
             serial_write(b"\nONE OS FRAME ALLOCATOR FAILED\n");
