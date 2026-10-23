@@ -113,6 +113,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         allocator_stats.usable_regions as u64,
     );
 
+    if let Err(error) = paging::initialize_paging_controls() {
+        serial_write(b"\nONE OS PAGING CONTROL INITIALIZATION FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+
     let paging_stats = match paging::inspect_boot_mappings(boot_info) {
         Ok(stats) => stats,
         Err(error) => {
@@ -130,6 +136,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"Validated bootstrap mappings: ",
         paging_stats.validated_mappings as u64,
     );
+
+    if let Err(error) = paging::verify_mapping_smoke_test(boot_info) {
+        serial_write(b"\nONE OS PAGING MUTATION FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+    serial_write(b"ONE OS VM MAPPING SMOKE TEST READY\n");
 
     #[cfg(feature = "test-exception")]
     {
