@@ -10,6 +10,49 @@ use core::ptr;
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
+const DOUBLE_FAULT_IST_INDEX: u8 = 1;
+const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+const MAX_GDT_ENTRIES: usize = 256;
+
+#[repr(C, packed)]
+struct TaskStateSegment {
+    reserved0: u32,
+    rsp: [u64; 3],
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
+    iomap_base: u16,
+}
+
+impl TaskStateSegment {
+    const fn new() -> Self {
+        Self {
+            reserved0: 0,
+            rsp: [0; 3],
+            reserved1: 0,
+            ist: [0; 7],
+            reserved2: 0,
+            reserved3: 0,
+            // Place the I/O-map base beyond the TSS limit: no I/O bitmap exists.
+            iomap_base: size_of::<Self>() as u16,
+        }
+    }
+}
+
+#[repr(align(16))]
+struct DoubleFaultStack([u8; DOUBLE_FAULT_STACK_SIZE]);
+
+#[repr(C, packed)]
+struct Gdtr {
+    limit: u16,
+    base: u64,
+}
+
+static mut GDT: [u64; MAX_GDT_ENTRIES] = [0; MAX_GDT_ENTRIES];
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
+static mut DOUBLE_FAULT_STACK: DoubleFaultStack =
+    DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -44,12 +87,12 @@ impl IdtEntry {
         reserved: 0,
     };
 
-    fn new(handler: usize, selector: u16) -> Self {
+    fn new(handler: usize, selector: u16, ist: u8) -> Self {
         let address = handler as u64;
         Self {
             offset_low: address as u16,
             selector,
-            ist: 0,
+            ist: ist & 0b111,
             attributes: GATE_INTERRUPT,
             offset_middle: (address >> 16) as u16,
             offset_high: (address >> 32) as u32,
@@ -640,9 +683,20 @@ const DEFAULT_INTERRUPT_HANDLERS: [InterruptHandler; 224] = [
 /// The vector must be in range and the handler must use the ABI expected by
 /// the processor for that vector's stack frame.
 unsafe fn install_gate(vector: usize, handler: usize, selector: u16) {
-    let entry = IdtEntry::new(handler, selector);
-    // SAFETY: the caller supplies a valid vector, and initialization occurs
-    // before this IDT is loaded or external interrupts are enabled.
+    // SAFETY: callers install a valid vector before this IDT is loaded.
+    unsafe { install_gate_with_ist(vector, handler, selector, 0) };
+}
+
+/// Installs an interrupt gate using the requested 1-based IST stack index.
+///
+/// # Safety
+///
+/// The vector must be in range, the handler must use the processor's stack
+/// frame ABI for that vector, and a non-zero IST index must name a configured
+/// TSS stack.
+unsafe fn install_gate_with_ist(vector: usize, handler: usize, selector: u16, ist: u8) {
+    let entry = IdtEntry::new(handler, selector, ist);
+    // SAFETY: the caller supplies a valid vector and a valid handler/IST pair.
     unsafe {
         ptr::addr_of_mut!(IDT)
             .cast::<IdtEntry>()
@@ -651,8 +705,90 @@ unsafe fn install_gate(vector: usize, handler: usize, selector: u16) {
     }
 }
 
+/// Installs the current GDT plus a TSS descriptor and configures the dedicated
+/// double-fault IST stack.
+///
+/// The current GDT entries are copied unchanged so the bootloader-provided CS
+/// selector and all existing selectors retain their descriptor indices.
+fn initialize_tss_and_gdt() {
+    let mut old_gdtr = Gdtr { limit: 0, base: 0 };
+    // SAFETY: SGDT writes the active descriptor-table pointer into this buffer.
+    unsafe {
+        asm!(
+            "sgdt [{}]",
+            in(reg) ptr::addr_of_mut!(old_gdtr),
+            options(nostack, preserves_flags)
+        );
+    }
+    // These fields are packed, so read them without creating aligned references.
+    let old_limit = unsafe { ptr::addr_of!(old_gdtr.limit).read_unaligned() };
+    let old_base = unsafe { ptr::addr_of!(old_gdtr.base).read_unaligned() };
+    let old_bytes = usize::from(old_limit) + 1;
+
+    if old_bytes % size_of::<u64>() != 0 {
+        super::serial_write(b"ONE OS TSS INIT FAILED: unaligned GDT limit\n");
+        super::halt_forever();
+    }
+    let old_entries = old_bytes / size_of::<u64>();
+    if old_entries == 0 || old_entries + 2 > MAX_GDT_ENTRIES {
+        super::serial_write(b"ONE OS TSS INIT FAILED: GDT exceeds bootstrap capacity\n");
+        super::halt_forever();
+    }
+
+    let gdt_base = ptr::addr_of_mut!(GDT).cast::<u64>();
+    let tss_pointer = ptr::addr_of_mut!(TSS);
+    // SAFETY: bootstrap runs single-core with the bootloader GDT mapped and
+    // accessible. We preserve its descriptors and append two TSS descriptor
+    // slots into our writable, statically allocated GDT.
+    unsafe {
+        ptr::copy_nonoverlapping(old_base as *const u8, gdt_base.cast::<u8>(), old_bytes);
+
+        let stack_base = ptr::addr_of_mut!(DOUBLE_FAULT_STACK).cast::<u8>();
+        let stack_top = stack_base.add(size_of::<DoubleFaultStack>()) as u64;
+        ptr::addr_of_mut!((*tss_pointer).ist[0]).write_unaligned(stack_top);
+
+        let tss_base = tss_pointer as u64;
+        let tss_limit = (size_of::<TaskStateSegment>() - 1) as u64;
+        // 64-bit available TSS descriptor (type 0x9, present, DPL 0).
+        let descriptor_low = (tss_limit & 0xffff)
+            | ((tss_base & 0x00ff_ffff) << 16)
+            | (0x9 << 40)
+            | (1 << 47)
+            | ((tss_limit & 0x000f_0000) << 32)
+            | ((tss_base & 0xff00_0000) << 32);
+        let descriptor_high = tss_base >> 32;
+        gdt_base.add(old_entries).write(descriptor_low);
+        gdt_base.add(old_entries + 1).write(descriptor_high);
+    }
+
+    let tss_selector = (old_entries << 3) as u16;
+    let new_gdtr = Gdtr {
+        limit: ((old_entries + 2) * size_of::<u64>() - 1) as u16,
+        base: gdt_base as u64,
+    };
+    // SAFETY: the new GDT retains the previous descriptors and contains a valid
+    // 64-bit TSS descriptor. LTR marks the descriptor busy as required.
+    unsafe {
+        asm!(
+            "lgdt [{}]",
+            in(reg) ptr::addr_of!(new_gdtr),
+            options(readonly, nostack, preserves_flags)
+        );
+        asm!("ltr {0:x}", in(reg) tss_selector, options(nostack, preserves_flags));
+    }
+}
+
 /// Installs exception gates and safe fail-stop defaults for other vectors.
-pub fn init() {
+///
+/// # Safety
+///
+/// Call exactly once during single-core bootstrap, before any code enables
+/// external interrupts. This function replaces the active GDT and IDT and
+/// loads the task register with the bootstrap TSS.
+pub unsafe fn init() {
+    initialize_tss_and_gdt();
+
+    let selector: u16;
     let selector: u16;
     // SAFETY: reading CS is valid in the current x86_64 kernel context.
     unsafe {
@@ -672,7 +808,7 @@ pub fn init() {
         for vector in 0..IDT_ENTRIES {
             idt_base
                 .add(vector)
-                .write(IdtEntry::new(default_handler, selector));
+                .write(IdtEntry::new(default_handler, selector, 0));
         }
 
         macro_rules! install {
@@ -689,7 +825,12 @@ pub fn init() {
         install!(5, bound_range_handler);
         install!(6, invalid_opcode_handler);
         install!(7, device_not_available_handler);
-        install!(8, double_fault_handler);
+        install_gate_with_ist(
+            8,
+            double_fault_handler as *const () as usize,
+            selector,
+            DOUBLE_FAULT_IST_INDEX,
+        );
         install!(9, coprocessor_segment_handler);
         install!(10, invalid_tss_handler);
         install!(11, segment_not_present_handler);
