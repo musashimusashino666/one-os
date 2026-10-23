@@ -86,12 +86,8 @@ jobs:
           verify_exception_case() {
             local command="$1"
             local image="$2"
-            local trigger_marker="$3"
-            local exception_name="$4"
-            local vector="$5"
-            local expects_error_code="$6"
-            local expected_fault_address="$7"
-            local log="$CARGO_TARGET_DIR/"$command".log"
+            local case_name="$3"
+            local log="$CARGO_TARGET_DIR/$command.log"
 
             cargo run --locked -p oneos-xtask -- "$command"
             set +e
@@ -103,54 +99,12 @@ jobs:
             set -e
             cat "$log"
 
-            if [ "$status" -ne 124 ]; then
-              echo "Expected QEMU to remain halted after $exception_name (timeout status 124); got $status" >&2
-              return 1
-            fi
-
-            grep -F "$trigger_marker" "$log"
-            grep -F "Exception: $exception_name" "$log"
-            grep -F "Exception vector: $vector" "$log"
-            grep -F "Instruction pointer: 0x" "$log"
-            grep -F "ONE OS EXCEPTION HALTED" "$log"
-            if [ "$expects_error_code" = "yes" ]; then
-              grep -F "Error code: 0x" "$log"
-            fi
-            if [ -n "$expected_fault_address" ]; then
-              grep -F "Fault address (CR2): $expected_fault_address" "$log"
-            fi
-
-            if grep -Fq "ONE OS BOOTSTRAP COMPLETE" "$log"; then
-              echo "Fault-injection image incorrectly reported successful bootstrap" >&2
-              return 1
-            fi
-            if grep -Fq "ONE OS KERNEL PANIC" "$log"; then
-              echo "Exception test unexpectedly entered the Rust panic handler" >&2
-              return 1
-            fi
+            python3 tools/check_qemu_exception.py \
+              --log "$log" \
+              --exit-status "$status" \
+              --case "$case_name"
           }
 
-          verify_exception_case \
-            image-test-exception \
-            one-os-exception-test-bios.img \
-            "ONE OS EXCEPTION TEST: triggering invalid opcode" \
-            "invalid opcode" \
-            "0x0000000000000006" \
-            "no" \
-            ""
-          verify_exception_case \
-            image-test-general-protection \
-            one-os-general-protection-test-bios.img \
-            "ONE OS EXCEPTION TEST: triggering general protection fault" \
-            "general protection fault" \
-            "0x000000000000000d" \
-            "yes" \
-            ""
-          verify_exception_case \
-            image-test-page-fault \
-            one-os-page-fault-test-bios.img \
-            "ONE OS EXCEPTION TEST: triggering page fault" \
-            "page fault" \
-            "0x000000000000000e" \
-            "yes" \
-            "0x0000400000000000"
+          verify_exception_case image-test-exception one-os-exception-test-bios.img ud
+          verify_exception_case image-test-general-protection one-os-general-protection-test-bios.img gp
+          verify_exception_case image-test-page-fault one-os-page-fault-test-bios.img pf
