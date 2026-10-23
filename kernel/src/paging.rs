@@ -28,6 +28,7 @@ const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
+const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const TABLE_FRAME_CAPACITY: usize = 512;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
@@ -1027,6 +1028,234 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 
     let _ = release_data_frame(data_frame);
     Err(PagingError::NoUnusedVirtualAddress)
+}
+
+
+/// Holds the owned data frame and target VA for one dedicated QEMU protection test.
+/// The frame token deliberately remains alive for as long as the mapping is used.
+pub struct ProtectionTestMapping {
+    pub virtual_address: u64,
+    pub physical_address: u64,
+    _frame: Frame,
+}
+
+#[derive(Clone, Copy)]
+enum ProtectionTestPayload {
+    Sentinel,
+    Ud2,
+}
+
+/// Prepare a supervisor-readable, supervisor-read-only mapping whose attempted
+/// supervisor write must raise a protection-violation page fault.
+pub fn install_supervisor_write_protection_test(
+    boot_info: &BootInfo,
+) -> Result<ProtectionTestMapping, PagingError> {
+    prepare_protection_test_mapping(
+        boot_info,
+        PagePermissions::new(false, false, true),
+        ProtectionTestPayload::Sentinel,
+    )
+}
+
+/// Prepare a supervisor-readable, supervisor-read-only, NX mapping containing
+/// UD2. A successful instruction fetch would therefore fail the test with #UD.
+pub fn install_nx_execution_protection_test(
+    boot_info: &BootInfo,
+) -> Result<ProtectionTestMapping, PagingError> {
+    prepare_protection_test_mapping(
+        boot_info,
+        PagePermissions::new(false, false, false),
+        ProtectionTestPayload::Ud2,
+    )
+}
+
+fn prepare_protection_test_mapping(
+    boot_info: &BootInfo,
+    protected_permissions: PagePermissions,
+    payload: ProtectionTestPayload,
+) -> Result<ProtectionTestMapping, PagingError> {
+    let frame =
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let physical_address = frame.physical_address();
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if index < 512 => index,
+        Optional::Some(_) => {
+            return Err(PagingError::InvalidRecursiveIndex);
+        }
+        Optional::None => {
+            return Err(PagingError::RecursiveMappingUnavailable);
+        }
+    };
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => {
+            return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+        }
+    };
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end)
+    else {
+        return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+    };
+    let root_table_physical = active_root_table_physical();
+    let temporary_permissions = PagePermissions::new(true, false, false);
+
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
+            continue;
+        }
+
+        let mut editor = match KernelPageTableEditor::new(boot_info, candidate) {
+            Ok(editor) => editor,
+            Err(error) => return Err(error),
+        };
+
+        // First install a temporary writable, NX mapping, initialize the data,
+        // and remove that mapping. Then remap the same VA with the protected
+        // leaf permissions. The bootloader physical-memory-offset direct map is
+        // maintained; the access tested below is always through the target VA.
+        match map_4k(
+            root_table_physical,
+            candidate,
+            physical_address,
+            temporary_permissions,
+            &mut editor,
+        ) {
+            Ok(()) => {}
+            Err(PageTableMutationError::AlreadyMapped)
+            | Err(PageTableMutationError::LargePageConflict { .. })
+            | Err(PageTableMutationError::AncestorPermissionConflict { .. }) => continue,
+            Err(error) => return Err(PagingError::MappingMutation(error)),
+        }
+
+        invalidate_local_tlb(candidate);
+        // SAFETY: the temporary supervisor-only writable mapping was just
+        // installed to this allocator-owned frame and its TLB entry invalidated.
+        unsafe {
+            match payload {
+                ProtectionTestPayload::Sentinel => {
+                    ptr::write_volatile(candidate as *mut u64, MAPPING_SMOKE_SENTINEL);
+                }
+                ProtectionTestPayload::Ud2 => {
+                    // x86 UD2 encoding is 0x0f, 0x0b in little-endian order.
+                    ptr::write_volatile(candidate as *mut u16, 0x0b0f);
+                }
+            }
+        }
+
+        let temporary_unmap = unmap_4k(root_table_physical, candidate, &mut editor);
+        if temporary_unmap.is_err() {
+            // Do not free the data frame while a mapping may still reference it.
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        invalidate_local_tlb(candidate);
+        if !matches!(
+            translate_with_editor(&mut editor, root_table_physical, candidate),
+            Err(PageTableError::NotPresent { .. })
+        ) {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+
+        match map_4k(
+            root_table_physical,
+            candidate,
+            physical_address,
+            protected_permissions,
+            &mut editor,
+        ) {
+            Ok(()) => {}
+            Err(error) => return Err(PagingError::MappingMutation(error)),
+        }
+        invalidate_local_tlb(candidate);
+
+        let entries = read_active_leaf_path(&mut editor, root_table_physical, candidate)?;
+        let ancestor_permissions_valid = entries[..3]
+            .iter()
+            .all(|entry| entry & PRESENT != 0 && entry & WRITABLE != 0 && entry & NO_EXECUTE == 0);
+        let leaf = entries[3];
+        let leaf_permissions_valid = leaf & PRESENT != 0
+            && leaf & PHYSICAL_ADDRESS_MASK == physical_address
+            && leaf & WRITABLE == 0
+            && leaf & USER_ACCESSIBLE == 0
+            && (leaf & NO_EXECUTE != 0) == !protected_permissions.executable;
+        let cr0: u64;
+        // SAFETY: reading CR0 is valid in privileged x86_64 kernel execution.
+        unsafe {
+            asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        }
+        if !ancestor_permissions_valid || !leaf_permissions_valid || cr0 & CR0_WP == 0 {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+
+        let mapped_value_valid = match payload {
+            // SAFETY: reads are allowed through the present supervisor read-only mapping.
+            ProtectionTestPayload::Sentinel => unsafe {
+                ptr::read_volatile(candidate as *const u64) == MAPPING_SMOKE_SENTINEL
+            },
+            // Data reads remain legal on NX pages; only instruction fetch is denied.
+            ProtectionTestPayload::Ud2 => unsafe {
+                ptr::read_volatile(candidate as *const u16) == 0x0b0f
+            },
+        };
+        let translation = translate_with_editor(&mut editor, root_table_physical, candidate);
+        let effective_permissions_valid = translation.is_ok_and(|result| {
+            result.physical_address == physical_address
+                && result.page_size == PAGE_SIZE
+                && !result.writable
+                && !result.user_accessible
+                && result.executable == protected_permissions.executable
+        });
+        if !mapped_value_valid || !effective_permissions_valid {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+
+        return Ok(ProtectionTestMapping {
+            virtual_address: candidate,
+            physical_address,
+            _frame: frame,
+        });
+    }
+
+    Err(PagingError::NoUnusedVirtualAddress)
+}
+
+fn read_active_leaf_path(
+    editor: &mut KernelPageTableEditor<'_>,
+    root_table_physical: u64,
+    virtual_address: u64,
+) -> Result<[u64; 4], PagingError> {
+    let mut entries = [0u64; 4];
+    let mut table_physical = root_table_physical;
+    for (position, level) in [4u8, 3, 2, 1].into_iter().enumerate() {
+        let index = virtual_index(virtual_address, level).ok_or(PagingError::MappingSmokeMismatch)?;
+        let entry = editor
+            .read_entry(table_physical, index, level)
+            .ok_or(PagingError::MappingSmokeMismatch)?;
+        if entry & PRESENT == 0 || (level > 1 && entry & LARGE_PAGE != 0) {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        entries[position] = entry;
+        if level > 1 {
+            table_physical = entry & PHYSICAL_ADDRESS_MASK;
+            if !valid_physical_page(table_physical, editor.physical_address_bits())
+                || !editor.is_table_frame(table_physical)
+            {
+                return Err(PagingError::MappingSmokeMismatch);
+            }
+        }
+    }
+    Ok(entries)
 }
 
 fn invalidate_local_tlb(virtual_address: u64) {
