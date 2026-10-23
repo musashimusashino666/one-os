@@ -163,7 +163,10 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         || code_translation.writable
         || code_translation.user_accessible
         || !code_translation.executable
-        || !is_bootloader_owned_physical_address(regions, code_translation.physical_address)
+        || !is_kernel_owned_page(
+            regions,
+            code_translation.physical_address & !(PAGE_SIZE - 1),
+        )
     {
         return Err(PagingError::InvalidKernelCodeMapping);
     }
@@ -175,7 +178,6 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         || !stack_translation.writable
         || stack_translation.user_accessible
         || stack_translation.executable
-        || !is_bootloader_owned_physical_address(regions, stack_translation.physical_address)
     {
         return Err(PagingError::InvalidStackMapping);
     }
@@ -191,7 +193,6 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         || !boot_info_translation.writable
         || boot_info_translation.user_accessible
         || boot_info_translation.executable
-        || !is_bootloader_owned_physical_address(regions, boot_info_translation.physical_address)
     {
         return Err(PagingError::InvalidBootInfoMapping);
     }
@@ -210,14 +211,6 @@ fn translation_preserves_page_offset(virtual_address: u64, translation: PageTran
             == virtual_address & (translation.page_size - 1)
 }
 
-fn is_bootloader_owned_physical_address(regions: &[MemoryRegion], physical_address: u64) -> bool {
-    regions.iter().any(|region| {
-        region.start <= physical_address
-            && physical_address < region.end
-            && matches!(region.kind, MemoryRegionKind::Bootloader)
-    })
-}
-
 fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
     physical_page_is_in_allowed_region(page_physical, regions.len(), |index| {
         let region = regions[index];
@@ -225,6 +218,17 @@ fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> boo
             region.start,
             region.end,
             matches!(region.kind, MemoryRegionKind::Bootloader),
+        )
+    })
+}
+
+fn is_kernel_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
+    physical_page_is_in_allowed_region(page_physical, regions.len(), |index| {
+        let region = regions[index];
+        (
+            region.start,
+            region.end,
+            matches!(region.kind, MemoryRegionKind::Kernel),
         )
     })
 }
