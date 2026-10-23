@@ -329,7 +329,6 @@ extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, err
     )
 }
 
-
 #[cfg(feature = "test-vm-transitions")]
 static EXPECTED_TRANSITION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-vm-transitions")]
