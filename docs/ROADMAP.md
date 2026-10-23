@@ -25,7 +25,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).
 - Keep unsafe code small and document safety invariants.
 
-Exit criteria: allocator tests pass, reserved and unknown regions are never allocated, insufficient metadata fails closed, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, read-only page-table walks complete their documented structural and sampled-address checks for essential bootstrap addresses without claiming exact ELF PT_LOAD correspondence or system-wide memory-protection enforcement, ; host-tested map/unmap mutation primitives now exist, but M1 cannot exit until these are integrated with the active kernel page tables and dedicated QEMU mapping/protection tests pass.
+Exit criteria: allocator tests pass, reserved and unknown regions are never allocated, insufficient metadata fails closed, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, read-only page-table walks complete their documented structural and sampled-address checks for essential bootstrap addresses without claiming exact ELF PT_LOAD correspondence or system-wide memory-protection enforcement; host-tested map/unmap mutation primitives now exist, but M1 cannot exit until these are integrated with the active kernel page tables and dedicated QEMU mapping/protection tests pass.
 
 ## M2 — Isolation and IPC
 
