@@ -920,7 +920,8 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
         .iter()
         .map(|region| region.end)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(1u64 << 32);
     let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end) else {
         let _ = release_data_frame(data_frame);
         return Err(PagingError::PhysicalMemoryOffsetUnavailable);
