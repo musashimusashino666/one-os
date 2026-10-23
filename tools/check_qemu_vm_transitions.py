@@ -25,7 +25,8 @@ RECOVERY_MARKERS = (
     "ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap",
 )
 START_MARKER = "ONE OS VM TEST: mapping-transitions"
-TABLE_ZERO_MARKER = "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED"
+TABLE_ALLOCATED_PREFIX = "ONE OS VM TABLE FRAME ALLOCATED: "
+TABLE_ZERO_PREFIX = "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: "
 FIRST_MAPPING_MARKER = "ONE OS VM TRANSITION FIRST MAPPING VERIFIED"
 SECOND_MAPPING_MARKER = "ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED"
 PASS_MARKER = "ONE OS VM TEST PASS: mapping-transitions"
@@ -46,6 +47,20 @@ def _single_hex_field(log: str, label: str) -> tuple[str | None, str | None]:
     if len(values) != 1:
         return None, f"expected exactly one '{label}' field, found {len(values)}"
     return values[0], None
+
+
+def _physical_frame_markers(
+    log: str, prefix: str
+) -> tuple[list[str], list[int], str | None]:
+    """Read frame-address markers and reject malformed marker lines."""
+    pattern = re.compile(rf"^{re.escape(prefix)}(0x[0-9a-fA-F]{{16}})\\r?$", re.MULTILINE)
+    matches = list(pattern.finditer(log))
+    occurrences = [line for line in log.splitlines() if line.startswith(prefix)]
+    if len(matches) != len(occurrences):
+        return [], [], f"found malformed physical-frame marker for '{prefix.rstrip()}:'"
+    values = [match.group(1).lower() for match in matches]
+    positions = [match.start() for match in matches]
+    return values, positions, None
 
 
 def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str]:
@@ -114,12 +129,40 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         if log.count(marker) != 1:
             return False, f"expected exactly one mapping verification marker: {marker}"
 
+    allocated_frames, allocated_positions, error = _physical_frame_markers(
+        log, TABLE_ALLOCATED_PREFIX
+    )
+    if error:
+        return False, error
+    verified_frames, verified_positions, error = _physical_frame_markers(
+        log, TABLE_ZERO_PREFIX
+    )
+    if error:
+        return False, error
+    if not allocated_frames:
+        return False, "expected per-frame table-allocation markers"
+    if len(set(allocated_frames)) != len(allocated_frames):
+        return False, "duplicate physical frame in table-allocation markers"
+    if len(set(verified_frames)) != len(verified_frames):
+        return False, "duplicate physical frame in table zero-verification markers"
+    if allocated_frames != verified_frames:
+        return False, (
+            "allocated table frames do not match zero-verified frames: "
+            f"allocated={len(allocated_frames)}, verified={len(verified_frames)}"
+        )
+    for index, (allocated_at, verified_at) in enumerate(
+        zip(allocated_positions, verified_positions, strict=True)
+    ):
+        if allocated_at >= verified_at:
+            return False, "table frame was verified before its allocation marker"
+        if index and verified_positions[index - 1] >= allocated_at:
+            return False, "table frame verifications are not paired with allocations in order"
+
     mapping_smoke_marker = "ONE OS VM MAPPING SMOKE TEST READY"
     mapping_smoke_position = log.find(mapping_smoke_marker)
     transition_start_position = log.find(START_MARKER)
     zero_verified_before_publication = any(
-        match.start() < mapping_smoke_position
-        for match in re.finditer(re.escape(TABLE_ZERO_MARKER), log)
+        position < mapping_smoke_position for position in verified_positions
     )
     if mapping_smoke_position < 0 or log.count(mapping_smoke_marker) != 1:
         return False, "expected exactly one successful active-mapping smoke-test marker"
@@ -127,8 +170,8 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         return False, "active-mapping smoke test must finish before transition tests start"
     if not zero_verified_before_publication:
         return False, (
-            "the transition image must verify allocated table entries are zero via "
-            "the checked offset alias before the mapping smoke test completes"
+            "the transition image must verify an individually identified table frame "
+            "through the checked offset alias before the mapping smoke test completes"
         )
 
     first_fault_position = log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT")
