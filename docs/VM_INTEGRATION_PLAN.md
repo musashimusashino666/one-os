@@ -71,6 +71,25 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 - If the editor cannot establish a safe virtual alias for the exact table it was asked
   to access, it must fail closed before publishing a new mapping. Do not assume a
   physical address can be dereferenced as a virtual address.
+- The current `PageTableEditor::write_entry` API returns `()`, so the core primitive
+  cannot observe a failed store. Before the first page-table entry is changed, the
+  concrete editor must preflight every write destination needed by the operation:
+  validate the table frame and index/level, derive and validate the virtual address,
+  check alignment and checked offset arithmetic, and prove that the full target table
+  page is currently writable through the chosen alias. Newly allocated, unlinked
+  tables must be preflighted through the checked Usable-frame access path. Complete
+  all fallible alias resolution, allocation, ownership-registry reservation, and
+  entry validation before publishing any parent entry. A preflight failure must leave
+  existing table entries unchanged and return through the documented error path.
+- After successful preflight, `write_entry` is contractually infallible. An unexpected
+  memory fault or other violation while performing a store must fail-stop through the
+  kernel's exception path; it must never be reported as a successful map/unmap or
+  allow execution to continue using a partially modified hierarchy. Preserve the
+  current single-CPU, interrupts-disabled mutation precondition until explicit
+  synchronization is implemented. If the implementation cannot provide an
+  infallible-after-preflight store, change the editor API to return a `Result` and
+  implement/test rollback for partial writes; do not return an error while leaving
+  published entries or ownership tokens in an ambiguous state.
 - Keep the editor's access logic in one implementation and document the safety
   invariants for each unsafe pointer operation.
 
@@ -131,9 +150,14 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
   maskable interrupts disabled; encode that as an explicit temporary precondition
   rather than pretending it provides SMP safety. Before SMP, add cross-CPU coordination
   and shootdowns.
-- Invalidate the local TLB as required after changes, especially unmaps and permission
-  changes. Document that local invalidation is not sufficient for future shared
-  address spaces on multiple CPUs.
+- Invalidate the local TLB for the target virtual address after every successful
+  map or unmap that changes a paging entry, before returning to code that may access
+  the address. Treat a previously non-present translation as potentially cached too:
+  installing a present mapping is not exempt merely because the prior access faulted.
+  Use a checked, documented invalidation operation (for example, `INVLPG` for the
+  target VA) and define its ordering relative to entry stores.
+- Document that local invalidation is not sufficient for future shared address spaces
+  on multiple CPUs; SMP requires coordination and remote TLB shootdowns.
 - Do not treat a successful page-table entry write as proof that the CPU is enforcing
   the intended permissions; test the hardware-visible behavior.
 
@@ -187,6 +211,16 @@ separate path and must still pass the existing repeated-boot and exception check
 - Write and read a sentinel only through a deliberately writable, non-executable test
   mapping, then unmap it and verify that the virtual address is no longer mapped.
 - Verify W^X rejection and that no existing ancestor permissions are widened.
+- Verify the not-present-to-present transition in a dedicated test image:
+  access a canonical target VA before it is mapped and require the expected #PF with
+  P=0; then map a known frame at that same VA, verify the page-table entry is present,
+  and immediately read/write a sentinel successfully through the target VA. The map
+  operation must invalidate any cached non-present translation before returning.
+- Verify unmap and remap at the same target VA: map frame A and confirm its sentinel,
+  unmap it and invalidate the target translation, access while unmapped and require a
+  non-present #PF, then map distinct frame B at the same VA and immediately read B's
+  sentinel successfully. Also verify the new translation points to B, not A. Fail if
+  a stale positive or negative translation is observed.
 - In a dedicated fault-injection image, create a present supervisor-readable,
   supervisor-read-only mapping to a known physical data frame and initialize a known
   sentinel through a separate writable alias before removing that writable alias.
@@ -203,7 +237,9 @@ separate path and must still pass the existing repeated-boot and exception check
   The test must not panic or emit the normal bootstrap-completion marker.
 - Verify allocation/translation failures halt or return through the documented error
   path without publishing dangling entries or incorrectly freeing owned frames.
-- Validate TLB invalidation behavior for the tested unmap/permission-change cases.
+- Record the TLB behavior for both successful map and unmap. The two transition tests
+  above must pass on the exact reviewed commit; a page-table update without the
+  required invalidation is a test failure.
 - Run formatting, all core tests, Clippy with warnings denied, kernel checks, image
   creation, the serial-log unit tests, repeated normal boots, exception tests, and the
   new memory-specific QEMU tests.
