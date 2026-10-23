@@ -49,6 +49,16 @@ The kernel rejects empty, inverted, or overlapping memory-map ranges before init
 
 GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup, physical-frame-allocator-ready, and bootstrap-completion markers to appear in the correct order. Allocator failure, panic, invalid-memory-map markers, missing markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
+## Read-only page-table inspection
+
+The normal BIOS image requests a dynamic physical-memory mapping from the bootloader. Before the bootstrap-completion marker, the kernel reads CR3/CR4, rejects five-level paging, and walks the current four-level page tables without modifying them. It verifies that the inspector code, current stack, and BootInfo each translate successfully. Every table page is checked against the boot memory map before an entry is read. The serial output must include:
+
+    ONE OS FRAME ALLOCATOR READY
+    ONE OS PAGE TABLE INSPECTION READY
+    ONE OS BOOTSTRAP COMPLETE
+
+The host-side tests for oneos-core exercise 4 KiB, 2 MiB, and 1 GiB translations, canonical-address boundaries, absent entries, unavailable table pages, invalid roots, and malformed large-page alignment bits. This is an inspection-only milestone: it does not allocate page-table frames, create or remove mappings, enforce page permissions, or establish process isolation.
+
 ## Exception diagnostics test
 
 The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The bootstrap installs a TSS with IST1 pointing to a dedicated double-fault stack; the double-fault IDT gate selects IST1. Other exception handlers continue to use the active stack. The dedicated `image-test-double-fault` image sets RSP to a non-canonical value before raising #UD, testing that exception delivery escalates to #DF and reaches the handler on IST1.
