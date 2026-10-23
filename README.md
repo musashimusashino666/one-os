@@ -15,7 +15,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 - [x] Document architecture boundaries, threat model, and roadmap.
 - [x] Verify three independent QEMU boots in CI and document the local boot procedure.
 - [x] Validate BootInfo memory-map ranges before reporting bootstrap completion.
-- [ ] Verify CPU exception diagnostics with QEMU fault injection for #UD, #GP, and #PF/CR2.
+- [x] Verify CPU exception diagnostics with QEMU fault injection for #UD, #GP, and #PF/CR2 (CI Run #120, commit `892b9268c9a6774229189c60557be4d0d22bf541`).
 - [ ] Define memory-region ownership and implement the physical page allocator.
 - [ ] Set up and test kernel virtual-memory mappings.
 - [ ] Add process isolation and kernel-enforced capability/IPC.
@@ -63,6 +63,6 @@ ONE OS is licensed under either the [MIT license](LICENSE-MIT) or the [Apache Li
 
 ## Important limitations
 
-The bootstrap kernel initializes COM1, disables maskable interrupts and masks the legacy PIC, installs a fail-stop x86_64 IDT, structurally validates the boot memory map, reports startup status, and halts. The dedicated #UD, #GP, and #PF/CR2 QEMU checks are part of the current CI change and must pass before their behavior is considered verified. All exception handlers still use the active stack; robust double-fault diagnosis with a dedicated IST stack is not implemented. The kernel does not yet implement user processes, physical allocation, virtual-memory management, a scheduler, filesystem, networking, or graphical interface. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.
+The bootstrap kernel initializes COM1, disables maskable interrupts and masks the legacy PIC, installs a fail-stop x86_64 IDT, structurally validates the boot memory map, reports startup status, and halts. The dedicated #UD, #GP, and #PF/CR2 QEMU checks passed in CI Run #120 at commit `892b9268c9a6774229189c60557be4d0d22bf541`; this verifies only controlled injection cases in the CI QEMU environment, not general hardware exception robustness. All exception handlers still use the active stack; robust double-fault diagnosis with a dedicated IST stack is not implemented. The kernel does not yet implement user processes, physical allocation, virtual-memory management, a scheduler, filesystem, networking, or graphical interface. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.
 
 A successful compile or three successful QEMU boot attempts are only initial milestones, not proof of security, performance superiority, or production readiness.
