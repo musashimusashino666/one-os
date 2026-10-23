@@ -125,10 +125,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     }
 
     /// Marks an owned frame as published in the active page-table tree.
-    pub fn mark_published(
-        &mut self,
-        physical_address: u64,
-    ) -> Result<(), FrameRegistryError> {
+    pub fn mark_published(&mut self, physical_address: u64) -> Result<(), FrameRegistryError> {
         for slot in &mut self.slots {
             if let FrameSlot::Owned { token, published } = slot {
                 if token.frame_address() == physical_address {
@@ -145,10 +142,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     /// Published frames are deliberately retained; callers must not use unmap
     /// as a reason to free page-table frames that can still be reached by a
     /// recursive alias or by another mapping.
-    pub fn take_unpublished(
-        &mut self,
-        physical_address: u64,
-    ) -> Result<T, FrameRegistryError> {
+    pub fn take_unpublished(&mut self, physical_address: u64) -> Result<T, FrameRegistryError> {
         let Some(index) = self.slots.iter().position(|slot| {
             matches!(
                 slot,
