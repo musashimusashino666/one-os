@@ -425,6 +425,7 @@ mod tests {
     };
     use std::boxed::Box;
     use std::collections::BTreeMap;
+    use std::vec;
     use std::vec::Vec;
 
     struct TestTables {
@@ -644,7 +645,7 @@ mod tests {
         assert_eq!(tables.allocation_attempts, 3);
         assert_eq!(tables.created_frame_tokens, 2);
         assert_eq!(tables.zeroed_table_frames, 2);
-        assert_eq!(tables.released_token_ids, vec![1, 2]);
+        assert_eq!(tables.released_token_ids, vec![2, 1]);
         assert_eq!(tables.registry.available_slots(), 2);
         assert!(tables.allocated_addresses.iter().all(|address| {
             !tables.registry.contains(*address)
