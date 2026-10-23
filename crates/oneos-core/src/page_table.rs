@@ -98,6 +98,32 @@ pub fn recursive_table_page_virtual_address(
     }
 }
 
+/// Returns whether a complete 4 KiB physical page is contained in one allowed region.
+///
+/// The region callback's third element must be true only for memory kinds that
+/// are approved for page-table storage. The full half-open page range is checked;
+/// merely containing its starting address is insufficient.
+pub fn physical_page_is_in_allowed_region<F>(
+    page_physical: u64,
+    region_count: usize,
+    mut region_bounds: F,
+) -> bool
+where
+    F: FnMut(usize) -> (u64, u64, bool),
+{
+    if page_physical == 0 || page_physical & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    let Some(page_end) = page_physical.checked_add(PAGE_SIZE) else {
+        return false;
+    };
+
+    (0..region_count).any(|index| {
+        let (start, end, allowed) = region_bounds(index);
+        allowed && start <= page_physical && page_end <= end
+    })
+}
+
 /// Walks an existing x86_64 four-level page table without changing it.
 ///
 /// root_table_physical must be the physical base address of the PML4 table.
@@ -222,8 +248,8 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_canonical_4level, recursive_table_page_virtual_address, translate_4level,
-        PageTableError, PageTranslation,
+        is_canonical_4level, physical_page_is_in_allowed_region,
+        recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
 
@@ -302,6 +328,34 @@ mod tests {
             recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 5),
             None
         );
+    }
+
+    #[test]
+    fn permits_only_full_pages_inside_an_approved_region() {
+        let regions = [(0x1000, 0x5000, true), (0x5000, 0x9000, false)];
+        assert!(physical_page_is_in_allowed_region(0x2000, regions.len(), |index| {
+            regions[index]
+        }));
+        assert!(!physical_page_is_in_allowed_region(0x4000, regions.len(), |index| {
+            regions[index]
+        }));
+        assert!(!physical_page_is_in_allowed_region(0x5000, regions.len(), |index| {
+            regions[index]
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_or_unaligned_page_ranges() {
+        let regions = [(0x1000, 0x5000, true)];
+        assert!(!physical_page_is_in_allowed_region(0, regions.len(), |index| regions[index]));
+        assert!(!physical_page_is_in_allowed_region(0x1001, regions.len(), |index| {
+            regions[index]
+        }));
+        assert!(!physical_page_is_in_allowed_region(
+            0xffff_ffff_ffff_f000,
+            regions.len(),
+            |index| regions[index]
+        ));
     }
 
     #[test]
