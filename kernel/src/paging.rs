@@ -58,7 +58,10 @@ pub enum PagingError {
     UnsupportedFiveLevelPaging,
     SupervisorWriteProtectionDisabled,
     UnsupportedNx,
-    ExtendedCpuidLeafUnavailable { required_leaf: u32, maximum_leaf: u32 },
+    ExtendedCpuidLeafUnavailable {
+        required_leaf: u32,
+        maximum_leaf: u32,
+    },
     NxEnableDisabled,
     InvalidPhysicalAddressWidth { bits: u8 },
     PhysicalMemoryOffsetUnavailable,
@@ -1284,7 +1287,10 @@ impl TransitionTestFrameGuard {
     }
 
     fn physical_address(&self) -> u64 {
-        self.0.as_ref().expect("guard owns a frame").physical_address()
+        self.0
+            .as_ref()
+            .expect("guard owns a frame")
+            .physical_address()
     }
 
     fn into_frame(mut self) -> Frame {
