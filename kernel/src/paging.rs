@@ -661,6 +661,19 @@ impl<'a> KernelPageTableEditor<'a> {
         {
             return None;
         }
+        // Prove that the physical-memory offset actually maps this complete
+        // Usable frame to the expected physical page and permits supervisor
+        // writes before zeroing an unpublished page-table frame.
+        let translation = translate_virtual_address(
+            address,
+            self.root_table_physical,
+            self.recursive_index,
+            self.regions,
+        )
+        .ok()?;
+        if translation.physical_address != physical_address || !translation.writable {
+            return None;
+        }
         let pointer = usize::try_from(address).ok()? as *mut u8;
         Some(pointer)
     }
@@ -922,7 +935,8 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
         .max()
         .unwrap_or(0)
         .max(1u64 << 32);
-    let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end) else {
+    let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end)
+    else {
         let _ = release_data_frame(data_frame);
         return Err(PagingError::PhysicalMemoryOffsetUnavailable);
     };
