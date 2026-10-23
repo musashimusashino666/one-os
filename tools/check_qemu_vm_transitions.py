@@ -24,6 +24,9 @@ RECOVERY_MARKERS = (
     "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped",
     "ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap",
 )
+START_MARKER = "ONE OS VM TEST: mapping-transitions"
+FIRST_MAPPING_MARKER = "ONE OS VM TRANSITION FIRST MAPPING VERIFIED"
+SECOND_MAPPING_MARKER = "ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED"
 PASS_MARKER = "ONE OS VM TEST PASS: mapping-transitions"
 
 
@@ -52,6 +55,8 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         if marker in log:
             return False, f"failure marker found: {marker}"
 
+    if log.count(START_MARKER) != 1:
+        return False, f"expected exactly one start marker: {START_MARKER}"
     if log.count(PASS_MARKER) != 1:
         return False, f"expected exactly one success marker: {PASS_MARKER}"
     if log.count("ONE OS VM TRANSITION EXPECTED PAGE FAULT") != 2:
@@ -64,6 +69,19 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
     target, error = _single_hex_field(log, "ONE OS VM TRANSITION TARGET")
     if error:
         return False, error
+    first_frame, error = _single_hex_field(log, "ONE OS VM TRANSITION FIRST FRAME")
+    if error:
+        return False, error
+    second_frame, error = _single_hex_field(log, "ONE OS VM TRANSITION SECOND FRAME")
+    if error:
+        return False, error
+    first_frame_value = int(first_frame, 16)
+    second_frame_value = int(second_frame, 16)
+    if first_frame_value == 0 or second_frame_value == 0 or first_frame_value == second_frame_value:
+        return False, "transition requires two non-zero, distinct physical frames"
+    if first_frame_value % 4096 or second_frame_value % 4096:
+        return False, "transition physical frame addresses must be 4 KiB aligned"
+
     first_expected_rip, error = _single_hex_field(log, "ONE OS VM TRANSITION FIRST EXPECTED RIP")
     if error:
         return False, error
@@ -91,24 +109,37 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
     if fault_addresses != [target, target]:
         return False, f"both CR2 values must equal the transition target {target}: {fault_addresses}"
 
+    first_fault_position = log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT")
+    second_fault_position = log.find(
+        "ONE OS VM TRANSITION EXPECTED PAGE FAULT", first_fault_position + 1
+    )
+    first_mapping_position = log.find(FIRST_MAPPING_MARKER)
+    second_mapping_position = log.find(SECOND_MAPPING_MARKER)
     positions = [
-        log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT"),
+        first_fault_position,
         log.find(MATCHED_MARKERS[0]),
         log.find(RECOVERY_MARKERS[0]),
-        log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT", log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT") + 1),
+        first_mapping_position,
+        second_fault_position,
         log.find(MATCHED_MARKERS[1]),
         log.find(RECOVERY_MARKERS[1]),
+        second_mapping_position,
         log.find(PASS_MARKER),
     ]
     if any(position < 0 for position in positions) or positions != sorted(positions):
-        return False, "transition faults, their recovery markers, and final success are out of order"
+        return False, "transition faults, mapping verifications, recoveries, and final success are out of order"
+    for marker in (FIRST_MAPPING_MARKER, SECOND_MAPPING_MARKER):
+        if log.count(marker) != 1:
+            return False, f"expected exactly one mapping verification marker: {marker}"
 
     for label in (
         "ONE OS VM TRANSITION TARGET",
+        "ONE OS VM TRANSITION FIRST FRAME",
+        "ONE OS VM TRANSITION SECOND FRAME",
         "ONE OS VM TRANSITION FIRST EXPECTED RIP",
         "ONE OS VM TRANSITION SECOND EXPECTED RIP",
     ):
-        if log.find(label + ":") > positions[0]:
+        if log.find(label + ":") > first_fault_position:
             return False, f"expected transition metadata must precede the first fault: {label}"
 
     return True, "mapping transitions, exact non-present faults, recovery, remap data, and TLB checks verified"
