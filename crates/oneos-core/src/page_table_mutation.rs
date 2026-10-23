@@ -147,11 +147,7 @@ pub fn map_4k<E: PageTableEditor>(
             break;
         }
         if entry & LARGE_PAGE != 0 {
-            return Err(if entry & LARGE_PAGE != 0 {
-                PageTableMutationError::LargePageConflict { level }
-            } else {
-                PageTableMutationError::MalformedEntry { level }
-            });
+            return Err(PageTableMutationError::LargePageConflict { level });
         }
         if !valid_physical_page(entry & PHYSICAL_ADDRESS_FIELD_MASK, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
@@ -159,7 +155,7 @@ pub fn map_4k<E: PageTableEditor>(
         if !ancestor_allows(entry, permissions) {
             return Err(PageTableMutationError::AncestorPermissionConflict { level });
         }
-        tables[path_index + 1] = entry & PHYSICAL_ADDRESS_MASK;
+        tables[path_index + 1] = entry & PHYSICAL_ADDRESS_FIELD_MASK;
     }
 
     if missing_parent.is_none() {
@@ -282,7 +278,7 @@ pub fn unmap_4k<E: PageTableEditor>(
         effective_user &= entry & USER_ACCESSIBLE != 0;
         effective_executable &= entry & NO_EXECUTE == 0;
 
-        table_physical = entry & PHYSICAL_ADDRESS_MASK;
+        table_physical = entry & PHYSICAL_ADDRESS_FIELD_MASK;
         if !valid_physical_page(table_physical, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
         }
