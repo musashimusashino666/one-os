@@ -53,7 +53,7 @@ def _physical_frame_markers(
     log: str, prefix: str
 ) -> tuple[list[str], list[int], str | None]:
     """Read frame-address markers and reject malformed marker lines."""
-    pattern = re.compile(rf"^{re.escape(prefix)}(0x[0-9a-fA-F]{{16}})\\r?$", re.MULTILINE)
+    pattern = re.compile(rf"^{re.escape(prefix)}(0x[0-9a-fA-F]{{16}})\r?$", re.MULTILINE)
     matches = list(pattern.finditer(log))
     occurrences = [line for line in log.splitlines() if line.startswith(prefix)]
     if len(matches) != len(occurrences):
