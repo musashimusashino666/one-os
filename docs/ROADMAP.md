@@ -17,7 +17,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 ## M1 — CPU and memory foundations
 
 - [x] Structurally validate BootInfo memory-map ranges and reject empty, inverted, or overlapping regions.
-- [x] Define initial memory-region ownership and implement a fixed-capacity 4 KiB bitmap physical-frame allocator; host tests cover reserved-region exclusion, alignment, exhaustion, release/reuse, foreign tokens, and capacity failures.
+- [x] Define initial memory-region ownership and implement a fixed-capacity 4 KiB bitmap physical-frame allocator; host tests cover kernel-image overlap rejection, invalid ranges/maps, usable-region/frame capacity exhaustion, reserved-region exclusion, alignment, exhaustion, release/reuse, and foreign tokens.
 - [ ] Set up and test kernel virtual-memory mappings.
 - [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting (verified in CI Run #120 at `892b9268c9a6774229189c60557be4d0d22bf541`).
 - [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).

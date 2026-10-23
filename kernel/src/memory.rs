@@ -4,7 +4,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use oneos_core::{
-    Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
+    validate_boot_memory_policy, BootMemoryPolicyError, Frame, FrameAllocator,
+    FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
 
 /// Bootstrap metadata limit: 16 GiB of aggregate usable RAM and 256 usable
@@ -19,8 +20,7 @@ pub enum MemoryError {
     Busy,
     AlreadyInitialized,
     NotInitialized,
-    KernelImageRangeInvalid,
-    KernelImageMarkedUsable,
+    BootPolicy(BootMemoryPolicyError),
     Allocator(FrameAllocatorError),
 }
 
@@ -30,8 +30,7 @@ impl MemoryError {
             Self::Busy => b"Physical allocator is busy\n",
             Self::AlreadyInitialized => b"Physical allocator was initialized twice\n",
             Self::NotInitialized => b"Physical allocator is not initialized\n",
-            Self::KernelImageRangeInvalid => b"Kernel physical image range is invalid\n",
-            Self::KernelImageMarkedUsable => b"Kernel image overlaps allocatable memory\n",
+            Self::BootPolicy(error) => error.message(),
             Self::Allocator(error) => error.message(),
         }
     }
@@ -93,19 +92,22 @@ pub fn initialize(
         return Err(MemoryError::AlreadyInitialized);
     }
 
-    let kernel_physical_end = kernel_physical_start
-        .checked_add(kernel_physical_len)
-        .filter(|_| kernel_physical_len != 0)
-        .ok_or(MemoryError::KernelImageRangeInvalid)?;
-    if regions.iter().any(|region| {
-        matches!(region.kind, MemoryRegionKind::Usable)
-            && region.start < kernel_physical_end
-            && kernel_physical_start < region.end
-    }) {
-        // Refuse to manage a map that would permit the kernel image, including
-        // this static metadata, to be reallocated as free physical frames.
-        return Err(MemoryError::KernelImageMarkedUsable);
-    }
+    validate_boot_memory_policy(
+        regions.len(),
+        |index| {
+            let region = regions[index];
+            (
+                region.start,
+                region.end,
+                matches!(region.kind, MemoryRegionKind::Usable),
+            )
+        },
+        kernel_physical_start,
+        kernel_physical_len,
+        SEGMENT_CAPACITY,
+        MAX_MANAGED_FRAMES,
+    )
+    .map_err(MemoryError::BootPolicy)?;
 
     // SAFETY: GLOBAL has static storage; its lock is held; the arrays are
     // exclusively borrowed for the lifetime of the allocator stored below.

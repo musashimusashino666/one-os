@@ -16,8 +16,12 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod frame_allocator;
+mod memory_policy;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
+};
+pub use memory_policy::{
+    validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
 
 /// Stable identifier for a resource managed by an authority.

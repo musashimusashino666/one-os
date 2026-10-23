@@ -107,7 +107,7 @@ static NEXT_ALLOCATOR_ID: AtomicU64 = AtomicU64::new(1);
 
 fn allocate_allocator_id() -> Option<u64> {
     NEXT_ALLOCATOR_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .ok()
