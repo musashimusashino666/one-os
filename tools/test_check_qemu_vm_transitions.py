@@ -40,6 +40,14 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
         valid, message = validate_vm_transition_output(valid_log(), 33)
         self.assertTrue(valid, message)
 
+    def test_missing_prepublication_zero_assertion_fails(self):
+        log = valid_log().replace(
+            "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n", ""
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("checked offset alias", message)
+
     def test_physical_frames_must_be_distinct(self):
         log = valid_log().replace(
             "ONE OS VM TRANSITION SECOND FRAME: 0x0000000000101000",
