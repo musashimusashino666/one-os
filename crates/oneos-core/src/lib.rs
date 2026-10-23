@@ -15,12 +15,17 @@ extern crate std;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+mod address_space;
 mod frame_allocator;
 mod frame_registry;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
 mod paging_preconditions;
+pub use address_space::{
+    validate_user_virtual_range, AddressSpaceRoot, AddressSpaceRootError,
+    UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+};
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
