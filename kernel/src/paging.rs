@@ -63,7 +63,9 @@ pub enum PagingError {
         maximum_leaf: u32,
     },
     NxEnableDisabled,
-    InvalidPhysicalAddressWidth { bits: u8 },
+    InvalidPhysicalAddressWidth {
+        bits: u8,
+    },
     PhysicalMemoryOffsetUnavailable,
     InterruptsEnabled,
     FrameAllocationFailed,
