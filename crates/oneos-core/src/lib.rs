@@ -16,12 +16,14 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod frame_allocator;
+mod frame_registry;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
+pub use frame_registry::{FrameRegistryError, FrameToken, PageTableFrameRegistry};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
