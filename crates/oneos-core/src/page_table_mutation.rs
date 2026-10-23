@@ -420,9 +420,7 @@ mod tests {
         LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, PROTECTION_KEY_FIELD_MASK,
         USER_ACCESSIBLE, WRITABLE,
     };
-    use crate::{
-        translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE,
-    };
+    use crate::{translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE};
     use std::boxed::Box;
     use std::collections::BTreeMap;
     use std::vec;
@@ -647,9 +645,10 @@ mod tests {
         assert_eq!(tables.zeroed_table_frames, 2);
         assert_eq!(tables.released_token_ids, vec![2, 1]);
         assert_eq!(tables.registry.available_slots(), 2);
-        assert!(tables.allocated_addresses.iter().all(|address| {
-            !tables.registry.contains(*address)
-        }));
+        assert!(tables
+            .allocated_addresses
+            .iter()
+            .all(|address| { !tables.registry.contains(*address) }));
     }
 
     #[test]
@@ -690,21 +689,13 @@ mod tests {
         let permissions = PagePermissions::new(true, false, false);
         let mut tables = RegistryTestTables::<3>::new(root);
 
-        map_4k(
-            root,
-            virtual_address,
-            data_frame,
-            permissions,
-            &mut tables,
-        )
-        .unwrap();
+        map_4k(root, virtual_address, data_frame, permissions, &mut tables).unwrap();
 
         assert_eq!(tables.pages.len(), 4);
         assert_eq!(tables.created_frame_tokens, 3);
         assert_eq!(tables.zeroed_table_frames, 3);
         assert!(tables.allocated_addresses.iter().all(|address| {
-            tables.registry.contains(*address)
-                && !tables.registry.contains_unpublished(*address)
+            tables.registry.contains(*address) && !tables.registry.contains_unpublished(*address)
         }));
         assert!(!tables.registry.contains(data_frame));
         assert!(tables.released_token_ids.is_empty());
@@ -718,9 +709,10 @@ mod tests {
         );
         assert_eq!(tables.released_token_ids.len(), 0);
         assert!(!tables.registry.contains(data_frame));
-        assert!(tables.allocated_addresses.iter().all(|address| {
-            tables.registry.contains(*address)
-        }));
+        assert!(tables
+            .allocated_addresses
+            .iter()
+            .all(|address| { tables.registry.contains(*address) }));
     }
 
     #[test]
