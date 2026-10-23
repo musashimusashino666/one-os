@@ -4,8 +4,11 @@
 
 This document defines the implementation contract and acceptance tests for integrating
 the host-testable page-table mutation primitives into the active x86_64 kernel. It is
-a plan, not evidence that kernel-enforced memory protection exists. M1 remains open
-until the integration and QEMU acceptance tests pass.
+the implementation contract and acceptance tests for the initial integration. The
+required QEMU suite passed on a prior candidate in CI run #316; this documentation
+refresh is being revalidated on PR #11. These tests establish the listed QEMU behavior,
+not SMP safety, generalized virtual-memory management, process isolation, or protection
+across untested hardware.
 
 ## Current baseline
 
@@ -26,7 +29,7 @@ until the integration and QEMU acceptance tests pass.
 - Dedicated QEMU images and required CI steps have been added for supervisor write
   protection (`error_code == 0x3`) and NX instruction fetch (`error_code == 0x11`).
   Their exact fault metadata and terminal `isa-debug-exit` status are checked by a
-  separate serial-log validator. The tests must still pass on the final reviewed head.
+  separate serial-log validator. The current-head result is tracked in the required PR-context check linked from PR #11.
 - A dedicated map/unmap/remap QEMU image now performs two expected non-present reads,
   recovers only from their exact #PF contexts, verifies the first frame's payload,
   unmaps and re-faults, remaps a distinct frame, and verifies its preloaded different
@@ -365,12 +368,12 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
 supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
 test-only fault handlers; exact serial validators; required CI steps; retained QEMU
-logs; and host-testable fixed-capacity frame ownership registry logic. CI run #306
-passed the three dedicated QEMU cases at commit `3805ac8f021204a905a64d0817e9260d2ed1dc2b`.
-The shared-registry refactor and its new unit tests were committed afterwards, so M1
-remains open until the complete required suite is green on the current PR head. The
-transition test verifies exact non-present fault metadata, recovery order, remapping to
-a distinct physical frame, and observable TLB behavior.
+logs; and host-testable fixed-capacity frame ownership registry logic. CI run #316
+passed the full suite on an earlier candidate before this documentation refresh. The
+complete current-head result must remain green in the required PR-context check linked
+from PR #11. The transition test verifies exact non-present fault metadata, recovery
+order, remapping to a distinct physical frame, observable TLB behavior, and the checked-
+alias zero-before-publication assertion.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
