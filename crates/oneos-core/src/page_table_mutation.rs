@@ -6,7 +6,9 @@
 //! mutations, and enabling EFER.NXE before requesting non-executable mappings.
 //! Callers relying on read-only page permissions to protect supervisor-mode writes
 //! must also ensure CR0.WP is enabled on every CPU executing with these tables.
-//! This module neither reads nor changes CR0.WP or EFER.NXE.
+//! Kernel integration must establish and maintain this precondition before
+//! relying on read-only mappings. This module neither reads nor changes CR0.WP
+//! or EFER.NXE.
 
 use crate::{is_canonical_4level, PAGE_SIZE};
 
