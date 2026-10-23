@@ -912,6 +912,8 @@ mod tests {
             ),
             Err(PageTableMutationError::RecursiveTableReference { level: 4 })
         );
+        assert_eq!(tables.pages, before);
+
         assert_eq!(
             unmap(&mut tables, root, virtual_address),
             Err(PageTableMutationError::RecursiveTableReference { level: 4 })
