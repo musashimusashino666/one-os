@@ -44,11 +44,14 @@ pub struct PageTranslation {
     pub physical_address: u64,
     /// Size of the mapped page: 4 KiB, 2 MiB, or 1 GiB.
     pub page_size: u64,
-    /// Effective write permission (all paging levels allow writes).
+    /// Page-table R/W permission: true only when every traversed entry allows writes.
+    /// This bit aggregation alone does not account for CR0.WP or other CPU controls.
     pub writable: bool,
-    /// Effective user permission (all paging levels allow user access).
+    /// Page-table U/S permission: true only when every traversed entry allows user access.
+    /// Actual access also depends on the current privilege level and CPU controls.
     pub user_accessible: bool,
-    /// Effective execute permission (no paging level sets NX).
+    /// NX-derived page-table permission: true when no traversed entry sets NX.
+    /// CPU execution behavior also depends on IA32_EFER.NXE and other controls.
     pub executable: bool,
 }
 
