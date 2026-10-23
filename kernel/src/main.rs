@@ -69,17 +69,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     #[cfg(feature = "test-general-protection")]
     {
-        serial_write(b"ONE OS EXCEPTION TEST: triggering reserved MSR read\n");
-        // SAFETY: 0xffff_ffff is a reserved/unimplemented MSR index. RDMSR
-        // deterministically raises #GP(0), without depending on the bootloader's
-        // GDT layout. This path exists only in the dedicated test image.
+        const NON_CANONICAL_ADDRESS: usize = 0x8000_0000_0000_0000;
+        serial_write(b"ONE OS EXCEPTION TEST: triggering non-canonical address access\n");
+        // SAFETY: this is a data load from an address that is non-canonical in
+        // both 48-bit and 57-bit paging modes, which raises #GP(0) before page
+        // translation. This path exists only in the dedicated test image.
+        let _fault_value: u64;
         unsafe {
             asm!(
-                "rdmsr",
-                in("ecx") 0xffff_ffff_u32,
-                options(nomem, nostack, noreturn)
-            )
+                "mov {value}, qword ptr [{address}]",
+                value = out(reg) _fault_value,
+                address = in(reg) NON_CANONICAL_ADDRESS,
+                options(nostack)
+            );
         }
+        // This instruction must fault. Do not rely on options(noreturn) to
+        // synthesize a fallback UD2 if the test instruction unexpectedly returns.
+        serial_write(b"ONE OS EXCEPTION TEST FAILED: non-canonical load returned\n");
+        halt_forever()
     }
 
     #[cfg(feature = "test-page-fault")]
