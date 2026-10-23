@@ -524,7 +524,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_write(b"Milestone: serial bootstrap\n");
         serial_write(b"Memory map: structurally validated\n");
         serial_write(
-            b"Status: physical allocation and read-only page-table inspection are available; new mappings, user mode, scheduler, and drivers are not implemented\n",
+            b"Status: physical allocation, page-table inspection, and a limited active map/unmap smoke test are available; general-purpose VM, user mode, scheduler, and drivers are not implemented\n",
         );
         // This marker is emitted only after IDT installation, memory-map validation,
         // allocator smoke tests, and mapping/permission validation. CI rejects any failed stage.

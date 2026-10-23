@@ -51,13 +51,13 @@ For the dedicated memory-acceptance images, CI additionally builds and runs:
 error code `0x3`; NX instruction fetch requires `0x11`; transition reads require
 two exact non-present faults (`0x0`) at their expected RIPs and CR2. These cases use
 QEMU's `isa-debug-exit` and separate validators, and their serial logs are uploaded
-as the `one-os-qemu-serial-logs` CI artifact. The full required suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451) at candidate `18e8aa54363999787afe40f3442f4e999deb0637`; any later commit must pass the required PR-context check on its exact head.
+as the `one-os-qemu-serial-logs` CI artifact. The required suite is designed to run on the exact PR candidate. Check the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml) for the revision-specific result; a successful result for an older commit is not evidence that a newer commit has passed.
 
-The kernel rejects empty, inverted, or overlapping memory-map ranges before initializing the physical-frame allocator. The allocator admits only regions marked Usable, excludes physical frame zero, and performs an allocation/free smoke test before the ready marker. It fails closed if the fixed metadata cannot cover the usable map (16 GiB aggregate usable memory or 256 regions). The kernel now performs a real active-page-table smoke cycle during bootstrap: it selects an unused canonical virtual page, maps an owned data frame as writable/supervisor-only/NX, writes and reads a sentinel through that virtual address, unmaps it, invalidates the local TLB, and verifies that translation reports the page as not present. Newly allocated page-table frames are zeroed through the checked physical-memory offset before publication and retain their non-Copy Frame ownership tokens while reachable. This is not yet full virtual-memory management: the dedicated QEMU tests for recoverable not-present transitions, supervisor write-protection, NX instruction-fetch protection, and their per-case CI gates remain required before M1 can be completed. The kernel then deliberately halts. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and requires the startup, allocator-ready, page-table-inspection, mapping-smoke, and completion markers while rejecting failure, panic, and invalid-map markers.
+The kernel rejects empty, inverted, or overlapping memory-map ranges before initializing the physical-frame allocator. The allocator admits only regions marked Usable, excludes physical frame zero, and performs an allocation/free smoke test before the ready marker. It fails closed if the fixed metadata cannot cover the usable map (16 GiB aggregate usable memory or 256 regions). The kernel now performs a real active-page-table smoke cycle during bootstrap: it selects an unused canonical virtual page, maps an owned data frame as writable/supervisor-only/NX, writes and reads a sentinel through that virtual address, unmaps it, invalidates the local TLB, and verifies that translation reports the page as not present. Newly allocated page-table frames are zeroed through the checked physical-memory offset before publication and retain their non-Copy Frame ownership tokens while reachable. This is limited active-kernel mapping support, not general-purpose virtual-memory management or process isolation. M1's acceptance suite includes this boot smoke cycle plus the dedicated QEMU tests for recoverable not-present transitions, supervisor write-protection, NX instruction-fetch protection, and map/unmap/remap TLB behavior. The kernel then deliberately halts. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and requires the startup, allocator-ready, page-table-inspection, mapping-smoke, and completion markers while rejecting failure, panic, and invalid-map markers.
 
 ## Automated boot smoke test
 
-GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup, physical-frame-allocator-ready, and bootstrap-completion markers to appear in the correct order. Allocator failure, panic, invalid-memory-map markers, missing markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
+GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires all five success markers, in order: kernel startup, physical-frame allocator readiness, page-table inspection readiness, active mapping smoke-test readiness, and bootstrap completion. The validator also rejects allocator, paging, mapping-mutation, invalid-memory-map, panic, and unexpected exception failure markers, as well as unexpected QEMU exit statuses. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
 ## Read-only page-table inspection
 
@@ -76,8 +76,8 @@ The oneos-core crate provides callback-driven map_4k and unmap_4k primitives for
 W^X rejection, effective permissions, mapping conflicts, large-page conflicts,
 and rollback of newly allocated table frames when allocation fails.
 
-These helpers do not directly access the active kernel page tables and are not
-yet integrated with kernel/src/paging.rs. The callback implementation must make
+The core primitives are connected to the active kernel page tables through the
+guarded editor in kernel/src/paging.rs. The callback implementation must make
 table reads and writes safe, return distinct zero-filled table frames, and
 retain ownership of frames committed to page-table use. The caller must perform
 TLB invalidation, serialize mutations, ensure EFER.NXE is enabled before using
@@ -91,8 +91,9 @@ or non-executable mappings, and retain them on every CPU that can use the tables
 Both map and unmap reject repeated physical table frames encountered during a
 walk, failing closed on recursive/cyclic references rather than treating them
 as ordinary paging levels. Unmap clears the leaf entry but does not reclaim
-now-empty intermediate tables. This is a host-testable algorithm milestone,
-not yet hardware-enforced memory protection or process isolation.
+now-empty intermediate tables. The active kernel integration is exercised by
+specific QEMU protection and mapping-transition cases; those results do not
+establish generalized process isolation or SMP-safe page-table management.
 
 The PageTableEditor contract must report the active processor's MAXPHYADDR,
 typically CPUID.80000008H:EAX[7:0]. Root, leaf, and intermediate-table physical
@@ -130,7 +131,4 @@ The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagno
 
 ### Page-table ownership registry validation
 
-The core crate now exposes a fixed-capacity page-table frame ownership registry used by the kernel editor. Its host tests cover reservation before allocation, capacity exhaustion without allocation, ownership-token retention, unpublished-frame release exactly once, published-frame retention, duplicate-address rejection, invalid/foreign releases, and slot reuse. The registry-backed mutation-test editor now covers zeroed table allocations, multi-table capacity rollback, exactly-once release of uncommitted table tokens, and no release on leaf unmap. Host-testable paging-precondition validators now cover extended CPUID leaf availability, NX support, physical-address width, CR0.WP, and EFER.NXE; the concrete kernel editor's physical-memory-offset alias path is exercised by the required QEMU integration cases. The dedicated QEMU protection and transition cases, including the real editor's
-zero-before-publication assertion through the checked offset alias, passed in CI run
-#317 at candidate `18e8aa54363999787afe40f3442f4e999deb0637`. Any subsequent code or
-documentation commit must be revalidated in the required PR-context check linked from PR #11.
+The core crate exposes a fixed-capacity page-table frame ownership registry used by the kernel editor. Host tests cover reservation before allocation, capacity exhaustion without allocation, ownership-token retention, exactly-once release of unpublished frames, retention of published frames, duplicate-address rejection, invalid or foreign releases, slot reuse, rollback, and leaf-unmap ownership. Host-testable paging-precondition validators cover extended CPUID leaf availability, NX support, physical-address width, CR0.WP, and EFER.NXE. Required QEMU cases exercise the concrete editor's checked physical-memory-offset alias and zero-before-publication behavior. The latest revision-specific result is available in the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml); any subsequent change must pass the required check on its exact PR candidate.
