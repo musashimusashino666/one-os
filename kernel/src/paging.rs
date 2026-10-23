@@ -449,24 +449,14 @@ impl TableFrameRegistry {
             ),
         }
     }
-
-    fn slots_mut(&self) -> &mut [TableFrameSlot; TABLE_FRAME_CAPACITY] {
-        // SAFETY: the mutation API checks that interrupts are disabled and is
-        // only used in the current single-core bootstrap.
-        unsafe { &mut *self.slots.get() }
-    }
-
-    fn slots(&self) -> &[TableFrameSlot; TABLE_FRAME_CAPACITY] {
-        // SAFETY: callers only inspect the registry within the same bootstrap
-        // mutation contract; no concurrent CPU can access these slots.
-        unsafe { &*self.slots.get() }
-    }
 }
 
 static TABLE_FRAMES: TableFrameRegistry = TableFrameRegistry::new();
 
 fn reserve_table_frame_slot() -> Option<usize> {
-    let slots = TABLE_FRAMES.slots_mut();
+    // SAFETY: this mutation is called only from the bootstrap mapping path,
+    // while maskable interrupts are disabled and before SMP is introduced.
+    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
     let index = slots
         .iter()
         .position(|slot| matches!(slot, TableFrameSlot::Empty))?;
@@ -475,7 +465,9 @@ fn reserve_table_frame_slot() -> Option<usize> {
 }
 
 fn clear_reserved_table_frame_slot(index: usize) {
-    let slots = TABLE_FRAMES.slots_mut();
+    // SAFETY: registry mutations are serialized by the single-CPU,
+    // interrupts-disabled bootstrap precondition.
+    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
     if !matches!(slots.get(index), Some(TableFrameSlot::Reserved)) {
         panic!("page-table frame registry reservation invariant violated");
     }
@@ -483,7 +475,9 @@ fn clear_reserved_table_frame_slot(index: usize) {
 }
 
 fn install_table_frame(index: usize, frame: Frame) {
-    let slots = TABLE_FRAMES.slots_mut();
+    // SAFETY: registry mutations are serialized by the single-CPU,
+    // interrupts-disabled bootstrap precondition.
+    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
     if !matches!(slots.get(index), Some(TableFrameSlot::Reserved)) {
         panic!("page-table frame registry reservation invariant violated");
     }
@@ -494,14 +488,20 @@ fn install_table_frame(index: usize, frame: Frame) {
 }
 
 fn registered_table_frame(physical_address: u64) -> bool {
-    TABLE_FRAMES.slots().iter().any(|slot| match slot {
+    // SAFETY: the registry is only accessed under the bootstrap's single-CPU
+    // contract; no concurrent mutation can occur during this read.
+    let slots = unsafe { &*TABLE_FRAMES.slots.get() };
+    slots.iter().any(|slot| match slot {
         TableFrameSlot::Owned { frame, .. } => frame.physical_address() == physical_address,
         TableFrameSlot::Empty | TableFrameSlot::Reserved => false,
     })
 }
 
 fn unpublished_table_frame(physical_address: u64) -> bool {
-    TABLE_FRAMES.slots().iter().any(|slot| match slot {
+    // SAFETY: the registry is only accessed under the bootstrap's single-CPU
+    // contract; no concurrent mutation can occur during this read.
+    let slots = unsafe { &*TABLE_FRAMES.slots.get() };
+    slots.iter().any(|slot| match slot {
         TableFrameSlot::Owned {
             frame,
             published: false,
@@ -515,7 +515,10 @@ fn unpublished_table_frame(physical_address: u64) -> bool {
 }
 
 fn mark_table_frame_published(physical_address: u64) {
-    for slot in TABLE_FRAMES.slots_mut().iter_mut() {
+    // SAFETY: registry mutations are serialized by the single-CPU,
+    // interrupts-disabled bootstrap precondition.
+    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
+    for slot in slots.iter_mut() {
         if let TableFrameSlot::Owned { frame, published } = slot {
             if frame.physical_address() == physical_address {
                 *published = true;
@@ -526,7 +529,9 @@ fn mark_table_frame_published(physical_address: u64) {
 }
 
 fn release_registered_table_frame(physical_address: u64) {
-    let slots = TABLE_FRAMES.slots_mut();
+    // SAFETY: registry mutations are serialized by the single-CPU,
+    // interrupts-disabled bootstrap precondition.
+    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
     let Some(index) = slots.iter().position(|slot| {
         matches!(slot, TableFrameSlot::Owned { frame, .. } if frame.physical_address() == physical_address)
     }) else {
@@ -595,7 +600,7 @@ impl<'a> KernelPageTableEditor<'a> {
         // SAFETY: the maximum extended leaf and NX support were checked during
         // initialize_paging_controls; read the width from the same CPU.
         let physical_address_bits =
-            (unsafe { __cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH) }.eax & 0xff) as u8;
+            (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
         if !(32..=52).contains(&physical_address_bits) {
             return Err(PagingError::InvalidPhysicalAddressWidth {
                 bits: physical_address_bits,
