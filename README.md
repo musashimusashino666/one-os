@@ -55,6 +55,10 @@ The image directory is read from Cargo metadata, so the QEMU command follows a c
 6. User control: make data access, network activity, background work, and AI actions visible and revocable.
 7. Evidence over claims: publish test conditions and limitations; do not claim security, speed, or compatibility without measurements.
 
+## License
+
+ONE OS is licensed under either the [MIT license](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE), at your option. Cargo package metadata declares this as `MIT OR Apache-2.0`.
+
 ## Important limitations
 
 The current kernel only initializes a serial console, reports that it has started, and halts. It does not yet implement user processes, virtual-memory management, a scheduler, filesystem, networking, or graphical interface. The capability crate is a reference authorization model; it is not yet connected to hardware or a kernel enforcement boundary.

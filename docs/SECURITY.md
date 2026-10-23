@@ -47,9 +47,9 @@ Authority IDs are allocated by a process-local static counter. Independent proce
 
 ## Security reporting
 
-Do not publish exploit details for an unpatched live deployment, and do not include credentials, personal data, or production secrets in issues.
+Do not publish exploit details for an unpatched vulnerability, and do not include credentials, personal data, or production secrets in public issues.
 
-Preferred channel: [GitHub private vulnerability reporting for this repository](https://github.com/musashimusashino666/one-os/security/advisories/new). Repository maintainers must enable **Private vulnerability reporting** under **Settings → Code security and analysis** and verify that the private reporting form is available before treating it as an active intake channel. If the form is unavailable, do not post vulnerability details publicly; contact the repository maintainer through a private contact method listed on their GitHub profile and request a private disclosure channel.
+Preferred channel: [GitHub private vulnerability reporting for this repository](https://github.com/musashimusashino666/one-os/security/advisories/new). If the page does not offer a private submission form, do not post vulnerability details publicly; contact the repository maintainer through a private contact method listed on their GitHub profile and request a private disclosure channel.
 
 ## Release gate
 
