@@ -364,10 +364,9 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
 supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
 test-only fault handlers; exact serial validators; required CI steps; retained QEMU
-logs; and host-testable fixed-capacity frame ownership registry logic. The complete
-suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
-on the reviewed implementation; each later change must be validated by a required
-CI result for its exact PR candidate. The transition test
+logs; and host-testable fixed-capacity frame ownership registry logic. For each
+reviewed revision, consult the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml)
+and require a green result for the exact PR candidate. The transition test
 verifies exact non-present fault metadata, recovery order, remapping to a distinct
 physical frame, observable TLB behavior, and the checked-alias zero-before-publication
 assertion.
