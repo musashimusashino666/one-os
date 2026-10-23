@@ -5,10 +5,11 @@
 This document defines the implementation contract and acceptance tests for integrating
 the host-testable page-table mutation primitives into the active x86_64 kernel. It is
 the implementation contract and acceptance tests for the initial integration. The
-required QEMU suite passed on a prior candidate in CI run #316; this documentation
-refresh is being revalidated on PR #11. These tests establish the listed QEMU behavior,
-not SMP safety, generalized virtual-memory management, process isolation, or protection
-across untested hardware.
+required QEMU suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
+at candidate `18e8aa54363999787afe40f3442f4e999deb0637`. Any subsequent commit must be
+revalidated on its exact head. These tests establish the listed QEMU behavior, not SMP
+safety, generalized virtual-memory management, process isolation, or protection across
+untested hardware.
 
 ## Current baseline
 
@@ -368,12 +369,13 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
 supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
 test-only fault handlers; exact serial validators; required CI steps; retained QEMU
-logs; and host-testable fixed-capacity frame ownership registry logic. CI run #316
-passed the full suite on an earlier candidate before this documentation refresh. The
-complete current-head result must remain green in the required PR-context check linked
-from PR #11. The transition test verifies exact non-present fault metadata, recovery
-order, remapping to a distinct physical frame, observable TLB behavior, and the checked-
-alias zero-before-publication assertion.
+logs; and host-testable fixed-capacity frame ownership registry logic. The complete
+suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
+at candidate `18e8aa54363999787afe40f3442f4e999deb0637`; any later commit must be
+validated by a fresh required PR-context run on that exact head. The transition test
+verifies exact non-present fault metadata, recovery order, remapping to a distinct
+physical frame, observable TLB behavior, and the checked-alias zero-before-publication
+assertion.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
