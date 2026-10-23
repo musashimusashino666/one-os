@@ -14,15 +14,9 @@ pub enum BootMemoryPolicyError {
     /// Adding region or frame counts overflowed.
     CapacityOverflow,
     /// More usable region segments are present than bootstrap metadata supports.
-    UsableRegionCapacityExceeded {
-        required: usize,
-        maximum: usize,
-    },
+    UsableRegionCapacityExceeded { required: usize, maximum: usize },
     /// More usable frames are present than the bootstrap bitmap supports.
-    UsableFrameCapacityExceeded {
-        required: usize,
-        maximum: usize,
-    },
+    UsableFrameCapacityExceeded { required: usize, maximum: usize },
 }
 
 impl BootMemoryPolicyError {
@@ -31,9 +25,7 @@ impl BootMemoryPolicyError {
         match self {
             Self::MemoryMap(_) => b"Physical memory map is invalid\n",
             Self::InvalidKernelImageRange => b"Kernel physical image range is invalid\n",
-            Self::KernelImageOverlapsUsableMemory => {
-                b"Kernel image overlaps allocatable memory\n"
-            }
+            Self::KernelImageOverlapsUsableMemory => b"Kernel image overlaps allocatable memory\n",
             Self::CapacityOverflow => b"Physical allocator capacity calculation overflowed\n",
             Self::UsableRegionCapacityExceeded { .. } => {
                 b"Physical region metadata capacity exceeded\n"
@@ -152,9 +144,7 @@ fn aligned_frame_range(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
-    };
+    use super::{validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats};
     use crate::MemoryMapError;
 
     fn validate(
@@ -222,10 +212,7 @@ mod tests {
 
     #[test]
     fn accepts_reserved_kernel_region_and_counts_only_usable_frames() {
-        let regions = [
-            (0x1000, 0x9000, false),
-            (0xA000, 0xE000, true),
-        ];
+        let regions = [(0x1000, 0x9000, false), (0xA000, 0xE000, true)];
         assert_eq!(
             validate(&regions, 0x2000, 0x3000, 8, 4),
             Ok(BootMemoryPolicyStats {

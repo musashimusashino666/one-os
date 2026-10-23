@@ -4,8 +4,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use oneos_core::{
-    validate_boot_memory_policy, BootMemoryPolicyError, Frame, FrameAllocator,
-    FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
+    validate_boot_memory_policy, BootMemoryPolicyError, Frame, FrameAllocator, FrameAllocatorError,
+    FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
 
 /// Bootstrap metadata limit: 16 GiB of aggregate usable RAM and 256 usable
