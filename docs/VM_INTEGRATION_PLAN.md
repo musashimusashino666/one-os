@@ -2,14 +2,9 @@
 
 ## Status
 
-This document defines the implementation contract and acceptance tests for integrating
-the host-testable page-table mutation primitives into the active x86_64 kernel. It is
-the implementation contract and acceptance tests for the initial integration. The
-required QEMU suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
-at candidate `18e8aa54363999787afe40f3442f4e999deb0637`. Any subsequent commit must be
-revalidated on its exact head. These tests establish the listed QEMU behavior, not SMP
-safety, generalized virtual-memory management, process isolation, or protection across
-untested hardware.
+This document defines the implementation contract and acceptance tests for the active x86_64 page-table editor. The initial integration is implemented: the kernel connects host-testable map/unmap primitives through checked page-table access, retains ownership tokens for reachable page-table frames, establishes paging control bits, and performs a normal-boot map/access/unmap smoke cycle. Dedicated QEMU cases validate supervisor write protection, NX instruction-fetch protection, and recoverable map/unmap/remap transitions with exact fault metadata and local TLB checks. These tests establish only the documented behavior in the CI QEMU environment, not SMP safety, general-purpose virtual-memory management, process isolation, or correctness across untested hardware.
+
+The active mapping contract remains single-CPU with maskable interrupts disabled. Empty intermediate-table reclamation, cross-CPU TLB shootdowns, and independent user address spaces are not implemented. The required acceptance suite must pass on the exact PR candidate for changes affecting this contract; use the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml) for revision-specific evidence.
 
 ## Current baseline
 
@@ -30,7 +25,7 @@ untested hardware.
 - Dedicated QEMU images and required CI steps have been added for supervisor write
   protection (`error_code == 0x3`) and NX instruction fetch (`error_code == 0x11`).
   Their exact fault metadata and terminal `isa-debug-exit` status are checked by a
-  separate serial-log validator. The current-head result is tracked in the required PR-context check linked from PR #11.
+  separate serial-log validator. The required workflow runs these cases as part of the CI acceptance suite.
 - A dedicated map/unmap/remap QEMU image now performs two expected non-present reads,
   recovers only from their exact #PF contexts, verifies the first frame's payload,
   unmaps and re-faults, remaps a distinct frame, and verifies its preloaded different
@@ -371,8 +366,8 @@ supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
 test-only fault handlers; exact serial validators; required CI steps; retained QEMU
 logs; and host-testable fixed-capacity frame ownership registry logic. The complete
 suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
-at candidate `18e8aa54363999787afe40f3442f4e999deb0637`; any later commit must be
-validated by a fresh required PR-context run on that exact head. The transition test
+on the reviewed implementation; each later change must be validated by a required
+CI result for its exact PR candidate. The transition test
 verifies exact non-present fault metadata, recovery order, remapping to a distinct
 physical frame, observable TLB behavior, and the checked-alias zero-before-publication
 assertion.
