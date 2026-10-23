@@ -332,9 +332,14 @@ mod tests {
 
     #[test]
     fn permits_only_full_pages_inside_an_approved_region() {
-        let regions = [(0x1000, 0x5000, true), (0x5000, 0x9000, false)];
+        let regions = [(0x1000, 0x3800, true), (0x3800, 0x9000, false)];
         assert!(physical_page_is_in_allowed_region(
             0x2000,
+            regions.len(),
+            |index| { regions[index] }
+        ));
+        assert!(!physical_page_is_in_allowed_region(
+            0x3000,
             regions.len(),
             |index| { regions[index] }
         ));
