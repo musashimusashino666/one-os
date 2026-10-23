@@ -139,10 +139,7 @@ mod tests {
             validate_extended_cpuid_leaf(REQUIRED_WIDTH_LEAF, REQUIRED_WIDTH_LEAF),
             Ok(())
         );
-        assert_eq!(
-            validate_paging_cpu_capabilities(NX_FEATURE, 48),
-            Ok(())
-        );
+        assert_eq!(validate_paging_cpu_capabilities(NX_FEATURE, 48), Ok(()));
         assert_eq!(validate_cr0_write_protect(CR0_WP), Ok(()));
         assert_eq!(validate_efer_nx_enable(EFER_NXE), Ok(()));
     }
