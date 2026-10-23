@@ -30,11 +30,11 @@ CASES = {
         vector="0x0000000000000006",
     ),
     "gp": ExceptionCase(
-        trigger="ONE OS EXCEPTION TEST: triggering general protection fault",
+        trigger="ONE OS EXCEPTION TEST: triggering reserved MSR read",
         description="general protection fault",
         vector="0x000000000000000d",
-        # Selector 0xffff has index 0x1fff and TI=1: 0xfff8 | 0x4 = 0xfffc.
-        error_code="0x000000000000fffc",
+        # RDMSR of a reserved/unimplemented MSR raises #GP(0).
+        error_code="0x0000000000000000",
     ),
     "pf": ExceptionCase(
         trigger="ONE OS EXCEPTION TEST: triggering page fault",
