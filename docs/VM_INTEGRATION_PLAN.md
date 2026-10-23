@@ -226,10 +226,14 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   wrong CR2, unexpected error-code bits, or an unexpected saved instruction pointer
   must go through the fail-stop diagnostic path.
 - For a deliberately unmapped supervisor data read, require vector 14, CR2 equal to
-  the exact target VA, and `(error_code & 0x7) == 0`: P=0 (not present), W/R=0
-  (read), U/S=0 (supervisor). Also reject reserved-bit, instruction-fetch,
-  protection-key, or any other error-code conditions not expected for the controlled
-  access. Record each expected fault exactly once.
+  the exact target VA, and the full page-fault error code `error_code == 0x0`: P=0
+  (not present), W/R=0 (read), U/S=0 (supervisor), RSVD=0, I/D=0, and every other
+  defined or reserved error-code bit clear. Compare the complete value, not only a
+  bit mask, so protection-key, shadow-stack, SGX, or future extension bits cannot be
+  ignored. This exact expected value is part of the declared QEMU CPU/test-access
+  contract; if the CPU model or access configuration changes, review the contract
+  explicitly rather than weakening the comparison. Record each expected fault exactly
+  once.
 - Resume only at a known recovery continuation: the handler must update the actual
   saved exception-frame instruction pointer to a dedicated continuation after the
   faulting instruction, or use an equivalently explicit assembly-controlled recovery
@@ -260,39 +264,51 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   non-present #PF, then map distinct frame B at the same VA and immediately read B's
   sentinel successfully. Also verify the new translation points to B, not A. Fail if
   a stale positive or negative translation is observed.
-- In a dedicated fault-injection image, create a present supervisor-readable,
-  supervisor-read-only mapping to a known physical data frame and initialize a known
-  sentinel through a separate writable alias before removing that writable alias.
-  Before attempting the protected write, read the sentinel successfully through the
-  exact target virtual address and verify by page-table inspection that the target leaf
-  is present, points to the expected frame, and is not writable. These setup checks
-  must pass before the fault-trigger instruction executes.
+- Add a dedicated QEMU image for supervisor write-protection testing; the current
+  page-fault image tests a read from an unmapped address and is not a read-only-write
+  protection test. Build and run the new image as a required CI case.
+- In that new image, create a present supervisor-readable, supervisor-read-only
+  mapping to a known physical data frame and initialize a known sentinel through a
+  separate writable alias before removing that writable alias. Before attempting the
+  protected write, read the sentinel successfully through the exact target virtual
+  address and inspect the complete four-level walk. Require every entry to be present;
+  require the PML4E, PDPTE, and PDE to have R/W=1 and U/S=0, while the target PTE
+  has R/W=0 and U/S=0 and points to the expected frame. Reject large-page entries in
+  the ancestor path. Verify `CR0.WP=1`. These checks prove the write denial comes
+  from the leaf PTE rather than an ancestor permission, and must pass before the
+  fault-trigger instruction executes.
 - Attempt the supervisor-mode write using a controlled instruction sequence. Require
-  page-fault vector 14, CR2 equal to the exact target virtual address, and a page-fault
-  error code with P=1 (protection violation), W/R=1 (write access), and U/S=0
-  (supervisor access); explicitly assert `(error_code & 0x7) == 0x3`. A fault with
-  P=0 (non-present page), an unexpected CR2, or any other low three-bit combination
-  must fail the test. A page-fault marker or matching CR2 alone is not sufficient.
-  The test must not panic or emit the normal bootstrap-completion marker.
+  page-fault vector 14, CR2 equal to the exact target virtual address, and the complete
+  error code `error_code == 0x3`: P=1 (protection violation), W/R=1 (write), U/S=0
+  (supervisor), with RSVD=0, I/D=0, and all other defined or reserved bits clear.
+  Exact equality is required; a masked low-bit comparison is insufficient. A fault
+  with P=0, an unexpected CR2, an unexpected error-code bit, or an ancestor denying
+  writes must fail the test. A page-fault marker or matching CR2 alone is not enough.
+  The dedicated test must not panic or emit the normal bootstrap-completion marker.
 - Verify NX protection with a dedicated QEMU test image and serial-log validator. The
   image must run under a QEMU CPU configuration that exposes the architectural NX
   capability; absence of NX support is a test/configuration failure, not a skipped test.
   Check the CPU feature before mutation, enable `EFER.NXE`, and read it back to verify
   it is set before installing an NX leaf.
-- Prepare a known, harmless instruction payload in a data frame through a temporary
+- Prepare a known instruction payload in a data frame through a temporary
   writable alias, then remove that alias before the execution attempt. Map the same
   frame at a dedicated target VA as present, supervisor-only, read-only, and NX. Before
-  attempting execution, inspect the leaf and assert that it is present, points to the
-  expected frame, is not writable, and has NX set. Ensure the exception handler,
-  recovery continuation, stack, and serial code are not in the target page.
+  attempting execution, inspect the complete four-level walk. Require every entry to
+  be present; require the PML4E, PDPTE, and PDE to have NX=0 (execution permitted at
+  all ancestor levels), R/W=1, and U/S=0; require the target PTE to point to the expected
+  frame with NX=1, R/W=0, and U/S=0. Reject large-page entries in the ancestor path.
+  This proves that the leaf PTE's NX bit, rather than an ancestor NX bit, prevents
+  instruction fetch. Ensure the exception handler, recovery continuation, stack, and
+  serial code are not in the target page.
 - Arm a narrowly scoped test-only page-fault expectation immediately before a
   controlled indirect branch to the exact target VA. Require vector 14, `CR2` equal
   to that VA, and the saved instruction pointer equal to the attempted target VA.
-  Require the architectural page-fault error bits for a present-page instruction-fetch
-  protection violation: P=1, W/R=0, U/S=0, RSVD=0, and I/D=1; assert
-  `(error_code & 0x1f) == 0x11`. Under the declared QEMU CPU configuration, reject
-  unexpected protection-key, shadow-stack, SGX, or other error flags rather than
-  accepting a different fault cause.
+  Require the complete error code `error_code == 0x11`: P=1 (protection violation),
+  W/R=0 (instruction fetch is not a data write), U/S=0 (supervisor), RSVD=0, and
+  I/D=1, with every other defined or reserved error-code bit clear. Do not accept
+  `(error_code & 0x1f) == 0x11` as sufficient; it ignores higher bits. The exact value
+  is required for the declared QEMU CPU model and ordinary non-SGX, non-shadow-stack
+  target access; any extra bit must fail until explicitly reviewed and specified.
 - Recover only from that one armed, fully matching NX fault by replacing the actual
   saved exception-frame instruction pointer with a known continuation. Any wrong
   vector, `CR2`, saved RIP, error-code bit, nested/unarmed fault, or invalid recovery
@@ -301,10 +317,11 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   fail rather than appear successful. Emit the NX success marker only after the handler
   confirms the expected fault exactly once and the continuation verifies all checks.
   Do not use the ordinary bootstrap-completion marker as a test result.
-- Keep the existing supervisor read-only write-protection test on its specified
+- Keep the future supervisor read-only write-protection test on its specified
   fail-stop path; do not make ordinary page faults or that test generally recoverable
-  to support the NX test. The NX handler belongs only in the dedicated fault-injection
-  image.
+  to support the NX test. The read-only write test and NX test must be explicit,
+  dedicated QEMU images and separate required CI cases. The NX handler belongs only
+  in its dedicated fault-injection image.
 - Verify allocation/translation failures halt or return through the documented error
   path without publishing dangling entries or incorrectly freeing owned frames.
 - Record the TLB behavior for both successful map and unmap. The two transition tests
@@ -332,7 +349,9 @@ as manual-only checks.
   image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
   checks, image creation, serial-log validator tests, repeated normal boots, and
   existing exception tests. It must also run the map/unmap and TLB-transition tests,
-  the supervisor write-protection test, and the NX instruction-fetch test under QEMU.
+  the dedicated supervisor write-protection image and the dedicated NX
+  instruction-fetch image under QEMU. The current unmapped-read #PF image does not
+  satisfy the write-protection acceptance test and must remain a separate case.
 - Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
   exceptions, missing or duplicate test success markers, an incorrect recovery path,
   or the normal bootstrap-completion marker being used in place of a memory-test
