@@ -59,6 +59,23 @@ The normal BIOS image requests a recursive page-table mapping from the bootloade
 
 The host-side tests for oneos-core exercise 4 KiB, 2 MiB, and 1 GiB translations, canonical-address boundaries, absent entries, unavailable table pages, invalid roots, and malformed large-page alignment bits. This is an inspection-only milestone: it does not allocate page-table frames, create or remove mappings, enforce page permissions, or establish process isolation.
 
+## Host-testable page-table mutation
+
+The oneos-core crate provides callback-driven map_4k and unmap_4k primitives for
+4 KiB pages in four-level x86_64 page tables. Host tests cover address validation,
+W^X rejection, effective permissions, mapping conflicts, large-page conflicts,
+and rollback of newly allocated table frames when allocation fails.
+
+These helpers do not directly access the active kernel page tables and are not
+yet integrated with kernel/src/paging.rs. The callback implementation must make
+table reads and writes safe, return distinct zero-filled table frames, and
+retain ownership of frames committed to page-table use. The caller must perform
+TLB invalidation, serialize mutations, ensure EFER.NXE is enabled before using
+NX permissions, and manage the lifetime of allocated page-table frames. Unmap
+clears the leaf entry but does not reclaim now-empty intermediate tables. This
+is a host-testable algorithm milestone, not yet hardware-enforced memory
+protection or process isolation.
+
 ## Exception diagnostics test
 
 The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The bootstrap installs a TSS with IST1 pointing to a dedicated double-fault stack; the double-fault IDT gate selects IST1. Other exception handlers continue to use the active stack. The dedicated `image-test-double-fault` image sets RSP to a non-canonical value before raising #UD, testing that exception delivery escalates to #DF and reaches the handler on IST1.
