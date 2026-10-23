@@ -362,10 +362,7 @@ pub(super) fn transition_page_fault_was_seen(phase: u64) -> bool {
 }
 
 #[cfg(feature = "test-vm-transitions")]
-extern "x86-interrupt" fn page_fault_handler(
-    mut frame: InterruptStackFrame,
-    error_code: u64,
-) {
+extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: u64) {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
