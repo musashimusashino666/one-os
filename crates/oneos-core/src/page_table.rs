@@ -4,8 +4,6 @@
 //! caller supplies an entry reader so address-translation logic can be tested on
 //! the host and privileged memory access stays inside the kernel.
 
-use core::convert::TryFrom;
-
 use crate::PAGE_SIZE;
 
 const PRESENT: u64 = 1;
@@ -201,10 +199,6 @@ where
     let physical_address = page_base
         .checked_add(offset)
         .ok_or(PageTableError::InvalidTableAddress { level: 1 })?;
-
-    // Keep conversion checked so this helper remains portable to host tests.
-    let _ = usize::try_from(physical_address)
-        .map_err(|_| PageTableError::InvalidTableAddress { level: 1 })?;
 
     Ok(make_translation(
         physical_address,
@@ -418,6 +412,30 @@ mod tests {
                 executable: true,
             }
         );
+    }
+
+    #[test]
+    fn translates_a_four_kib_page_above_four_gib() {
+        let virtual_address = 0x0000_1234_5678_9abc;
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let result = translate_4level(virtual_address, 0x1000, |table, index| {
+            match (table, index) {
+                (0x1000, i) if i == indices[0] => Some(0x2003),
+                (0x2000, i) if i == indices[1] => Some(0x3003),
+                (0x3000, i) if i == indices[2] => Some(0x4003),
+                (0x4000, i) if i == indices[3] => Some(0x1_abcde003),
+                _ => Some(0),
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result.physical_address, 0x1_abcdeabc);
+        assert_eq!(result.page_size, PAGE_SIZE);
     }
 
     #[test]
