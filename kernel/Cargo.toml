@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Experimental x86_64 bare-metal kernel for ONE OS"
 
+[features]
+default = []
+# Test-only: trigger UD2 after IDT initialization to verify fault diagnostics.
+test-exception = []
+
 [dependencies]
 bootloader_api = "=0.11.17"
 oneos-core = { path = "../crates/oneos-core" }
