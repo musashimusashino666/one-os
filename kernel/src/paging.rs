@@ -9,7 +9,9 @@ use core::ptr;
 
 use bootloader_api::info::{MemoryRegion, Optional};
 use bootloader_api::BootInfo;
-use oneos_core::{is_canonical_4level, translate_4level, PageTableError, PageTranslation, PAGE_SIZE};
+use oneos_core::{
+    is_canonical_4level, translate_4level, PageTableError, PageTranslation, PAGE_SIZE,
+};
 
 const CR4_LA57: u64 = 1 << 12;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -128,14 +130,13 @@ fn translate_virtual_address(
     physical_memory_offset: u64,
     regions: &[MemoryRegion],
 ) -> Result<PageTranslation, PageTableError> {
-    translate_4level(virtual_address, root_table_physical, |table_physical, index| {
-        read_page_table_entry(
-            regions,
-            physical_memory_offset,
-            table_physical,
-            index,
-        )
-    })
+    translate_4level(
+        virtual_address,
+        root_table_physical,
+        |table_physical, index| {
+            read_page_table_entry(regions, physical_memory_offset, table_physical, index)
+        },
+    )
 }
 
 fn read_page_table_entry(
