@@ -710,7 +710,7 @@ pub fn init() {
         install!(25, reserved_25_handler);
         install!(26, reserved_26_handler);
         install!(27, reserved_27_handler);
-        install!(28, reserved_28_handler);
+        install!(28, hypervisor_injection_handler);
         install!(29, vmm_communication_handler);
         install!(30, security_exception_handler);
         install!(31, reserved_31_handler);
