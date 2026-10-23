@@ -46,6 +46,16 @@ The kernel rejects empty, inverted, or overlapping memory-map ranges before it e
 
 GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup and bootstrap-completion markers to appear in the correct order. Panic, invalid-memory-map markers, missing completion markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
+## Exception diagnostics test
+
+To build the CI-only BIOS image that deliberately raises an invalid-opcode exception:
+
+    cargo run --locked -p oneos-xtask -- image-test-exception
+
+Run it in QEMU using the image `one-os-exception-test-bios.img` in Cargo's target directory. The expected serial output includes the invalid-opcode vector (6), instruction pointer, and `ONE OS EXCEPTION HALTED`. QEMU will remain running after the handler halts; stop it with Ctrl-C. This test-only feature is not enabled in the normal kernel image. CI runs the same check and rejects a false bootstrap-completion marker or a Rust panic marker.
+
+The kernel uses the current stack for exception handlers. A dedicated IST stack for double-fault recovery remains future work.
+
 ## Contribution rules
 
 - Keep pull requests narrowly scoped and describe observable behavior.
