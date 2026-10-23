@@ -11,6 +11,8 @@ START_MARKER = "ONE OS kernel booted"
 COMPLETE_MARKER = "ONE OS BOOTSTRAP COMPLETE"
 ALLOCATOR_READY_MARKER = "ONE OS FRAME ALLOCATOR READY"
 ALLOCATOR_FAILED_MARKER = "ONE OS FRAME ALLOCATOR FAILED"
+PAGING_READY_MARKER = "ONE OS PAGE TABLE INSPECTION READY"
+PAGING_FAILED_MARKER = "ONE OS PAGING INSPECTION FAILED"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 EXCEPTION_MARKER = "ONE OS EXCEPTION"
@@ -20,6 +22,8 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     """Return whether QEMU reached bootstrap completion without panicking."""
     if ALLOCATOR_FAILED_MARKER in log:
         return False, f"Physical frame allocator failure marker found: {ALLOCATOR_FAILED_MARKER}"
+    if PAGING_FAILED_MARKER in log:
+        return False, f"Page-table inspection failure marker found: {PAGING_FAILED_MARKER}"
     if INVALID_MAP_MARKER in log:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
@@ -39,6 +43,11 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Physical frame allocator ready marker missing: {ALLOCATOR_READY_MARKER}"
     if allocator_index < start_index or allocator_index > complete_index:
         return False, "Physical frame allocator marker appeared outside startup/completion markers"
+    paging_index = log.find(PAGING_READY_MARKER)
+    if paging_index < 0:
+        return False, f"Page-table inspection marker missing: {PAGING_READY_MARKER}"
+    if paging_index < allocator_index or paging_index > complete_index:
+        return False, "Page-table inspection marker appeared outside allocator/completion markers"
     # QEMU is deliberately configured with -no-shutdown and the kernel halts
     # forever, so timeout(1)'s 124 is the expected result of a healthy run.
     if exit_status != 124:
