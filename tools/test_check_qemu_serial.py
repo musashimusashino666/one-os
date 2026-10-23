@@ -71,7 +71,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
         self.assertIn("allocator failure marker", reason.lower())
 
     def test_clean_exit_is_not_accepted_as_expected_halt(self):
-        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{COMPLETE}\n", 0)
+        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{COMPLETE}\n", 0)
         self.assertFalse(valid)
         self.assertIn("expected 124", reason.lower())
 
