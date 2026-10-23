@@ -138,20 +138,15 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
     }
 
-    // BootInfo supplies physical and virtual kernel-image bases. Verify the
-    // code mapping against this independent bootloader-provided relationship.
-    let kernel_virtual_end = boot_info
-        .kernel_image_offset
-        .checked_add(boot_info.kernel_len)
-        .filter(|_| boot_info.kernel_len != 0)
-        .ok_or(PagingError::InvalidKernelImageRange)?;
+    // kernel_len describes the in-memory ELF file, not the span of the
+    // loaded virtual image (which can include gaps and zero-filled BSS).
+    // Validate the physical ELF backing interval, but do not infer a virtual
+    // upper bound from kernel_image_offset + kernel_len.
     let kernel_physical_end = boot_info
         .kernel_addr
         .checked_add(boot_info.kernel_len)
+        .filter(|_| boot_info.kernel_len != 0)
         .ok_or(PagingError::InvalidKernelImageRange)?;
-    if code_address < boot_info.kernel_image_offset || code_address >= kernel_virtual_end {
-        return Err(PagingError::InvalidKernelImageRange);
-    }
     // The bootloader maps file-backed ELF segments from frames within the
     // in-memory ELF slice using each PT_LOAD p_offset. A virtual offset is not
     // generally equal to that file offset, so validate against the ELF backing
