@@ -10,7 +10,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: one-os-${{ github.workflow }}-${{ github.ref }}
+  # Normalize push and pull_request events to the same source branch.
+  # Include the head repository to avoid collisions between forks with equal branch names.
+  group: one-os-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
