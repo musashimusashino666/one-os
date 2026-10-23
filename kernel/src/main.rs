@@ -281,6 +281,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let second_recovery_ip =
             unsafe { core::ptr::addr_of!(oneos_vm_test_transition_second_recovery) as u64 };
         interrupts::write_hex(b"ONE OS VM TRANSITION TARGET: ", transition.virtual_address);
+        interrupts::write_hex(
+            b"ONE OS VM TRANSITION FIRST FRAME: ",
+            transition.first_physical_address,
+        );
+        interrupts::write_hex(
+            b"ONE OS VM TRANSITION SECOND FRAME: ",
+            transition.second_physical_address,
+        );
         interrupts::write_hex(b"ONE OS VM TRANSITION FIRST EXPECTED RIP: ", first_fault_ip);
         interrupts::write_hex(
             b"ONE OS VM TRANSITION SECOND EXPECTED RIP: ",
@@ -313,6 +321,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             serial_write(error.message());
             halt_forever()
         }
+        serial_write(b"ONE OS VM TRANSITION FIRST MAPPING VERIFIED\n");
         if let Err(error) = transition.unmap_first(boot_info) {
             serial_write(b"ONE OS VM TEST FAILED: first unmap\n");
             serial_write(error.message());
@@ -344,6 +353,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             serial_write(error.message());
             halt_forever()
         }
+        serial_write(b"ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED\n");
         if let Err(error) = transition.unmap_second(boot_info) {
             serial_write(b"ONE OS VM TEST FAILED: second unmap\n");
             serial_write(error.message());
