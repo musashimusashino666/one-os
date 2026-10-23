@@ -33,6 +33,7 @@ const COM1: u16 = 0x3F8;
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.page_table_recursive = Some(Mapping::Dynamic);
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
     config
 };
 
