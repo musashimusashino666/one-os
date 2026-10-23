@@ -10,9 +10,8 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, physical_page_is_in_allowed_region,
-    recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
-    PAGE_SIZE,
+    is_canonical_4level, physical_page_is_in_allowed_region, recursive_table_page_virtual_address,
+    translate_4level, PageTableError, PageTranslation, PAGE_SIZE,
 };
 
 const CR4_LA57: u64 = 1 << 12;
@@ -59,9 +58,7 @@ impl PagingError {
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
             }
-            Self::InvalidRootTable => {
-                b"CR3 PML4 page is invalid or not fully Bootloader-owned\n"
-            },
+            Self::InvalidRootTable => b"CR3 PML4 page is invalid or not fully Bootloader-owned\n",
             Self::Translation(PageTableError::NonCanonicalVirtualAddress) => {
                 b"Page-table inspection received a non-canonical virtual address\n"
             }
@@ -183,9 +180,13 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidStackMapping);
     }
 
-    let boot_info_translation =
-        translate_virtual_address(boot_info_address, root_table_physical, recursive_index, regions)
-            .map_err(PagingError::Translation)?;
+    let boot_info_translation = translate_virtual_address(
+        boot_info_address,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )
+    .map_err(PagingError::Translation)?;
     if !translation_preserves_page_offset(boot_info_address, boot_info_translation)
         || !boot_info_translation.writable
         || boot_info_translation.user_accessible
