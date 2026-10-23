@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod frame_allocator;
 mod memory_policy;
 mod page_table;
+mod page_table_mutation;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
@@ -27,6 +28,9 @@ pub use memory_policy::{
 pub use page_table::{
     is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
+};
+pub use page_table_mutation::{
+    map_4k, unmap_4k, PagePermissions, PageTableMutationError, UnmappedPage,
 };
 
 /// Stable identifier for a resource managed by an authority.
