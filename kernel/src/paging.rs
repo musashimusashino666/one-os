@@ -1302,10 +1302,10 @@ impl TransitionTestFrameGuard {
 impl Drop for TransitionTestFrameGuard {
     fn drop(&mut self) {
         if let Some(frame) = self.0.take() {
-            if let Err((_error, frame)) = super::memory::free_frame(frame) {
-                // Do not panic while unwinding a test setup error. Keep the token
-                // from being discarded if the allocator is unexpectedly unavailable.
-                core::mem::forget(frame);
+            if let Err((_error, _frame)) = super::memory::free_frame(frame) {
+                // Do not panic while handling a test setup error. On cleanup failure,
+                // the allocator still regards the frame as allocated, so it is safer
+                // to leave that capacity unavailable than risk a double release.
             }
         }
     }
