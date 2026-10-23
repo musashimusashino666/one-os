@@ -12,6 +12,7 @@ from pathlib import Path
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 COMPLETE_MARKER = "ONE OS BOOTSTRAP COMPLETE"
 HALTED_MARKER = "ONE OS EXCEPTION HALTED"
+TRIGGER_FAILED_MARKER = "ONE OS EXCEPTION TEST FAILED"
 
 
 @dataclass(frozen=True)
@@ -30,10 +31,10 @@ CASES = {
         vector="0x0000000000000006",
     ),
     "gp": ExceptionCase(
-        trigger="ONE OS EXCEPTION TEST: triggering reserved MSR read",
+        trigger="ONE OS EXCEPTION TEST: triggering non-canonical address access",
         description="general protection fault",
         vector="0x000000000000000d",
-        # RDMSR of a reserved/unimplemented MSR raises #GP(0).
+        # A non-canonical data address raises #GP(0) in 64-bit mode.
         error_code="0x0000000000000000",
     ),
     "pf": ExceptionCase(
@@ -65,6 +66,8 @@ def validate_exception_output(
         return False, f"unexpected QEMU/timeout exit status {exit_status}; expected 124"
     if PANIC_MARKER in log:
         return False, f"kernel panic marker found: {PANIC_MARKER}"
+    if TRIGGER_FAILED_MARKER in log:
+        return False, f"exception trigger unexpectedly returned: {TRIGGER_FAILED_MARKER}"
     if COMPLETE_MARKER in log:
         return False, (
             "fault-injection image incorrectly reported "
