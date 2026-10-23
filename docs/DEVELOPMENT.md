@@ -76,6 +76,15 @@ clears the leaf entry but does not reclaim now-empty intermediate tables. This
 is a host-testable algorithm milestone, not yet hardware-enforced memory
 protection or process isolation.
 
+The PageTableEditor contract must report the active processor's MAXPHYADDR,
+typically CPUID.80000008H:EAX[7:0]. Root, leaf, and intermediate-table physical
+addresses are checked against this width (the supported contract is 32 through
+52 bits), rather than assuming all processors implement 52 physical bits.
+Bits 58:52 are software-available/ignored fields in long-mode paging entries,
+and bits 62:59 are accepted as leaf protection-key fields; neither range is
+mistaken for a physical address. The caller must still configure CPU paging
+features consistently with the entries being used.
+
 ## Exception diagnostics test
 
 The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The bootstrap installs a TSS with IST1 pointing to a dedicated double-fault stack; the double-fault IDT gate selects IST1. Other exception handlers continue to use the active stack. The dedicated `image-test-double-fault` image sets RSP to a non-canonical value before raising #UD, testing that exception delivery escalates to #DF and reaches the handler on IST1.
