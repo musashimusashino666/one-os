@@ -818,12 +818,10 @@ mod tests {
             ((virtual_address >> 21) & 0x1ff) as usize,
             ((virtual_address >> 12) & 0x1ff) as usize,
         ];
-        let l3_table = tables.read_any(root, indices[0]).unwrap()
-            & PHYSICAL_ADDRESS_FIELD_MASK;
-        let l2_table = tables.read_any(l3_table, indices[1]).unwrap()
-            & PHYSICAL_ADDRESS_FIELD_MASK;
-        let leaf_table = tables.read_any(l2_table, indices[2]).unwrap()
-            & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l3_table = tables.read_any(root, indices[0]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l2_table = tables.read_any(l3_table, indices[1]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let leaf_table =
+            tables.read_any(l2_table, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let parent_tables = [root, l3_table, l2_table];
         let original_leaf = tables.read_any(leaf_table, indices[3]).unwrap();
         let page_count = tables.pages.len();
@@ -836,13 +834,7 @@ mod tests {
             tables.write_entry(parent_table, index, level, malformed_entry);
 
             assert_eq!(
-                map(
-                    &mut tables,
-                    root,
-                    virtual_address,
-                    0x9000,
-                    permissions,
-                ),
+                map(&mut tables, root, virtual_address, 0x9000, permissions,),
                 Err(PageTableMutationError::MalformedEntry { level })
             );
             assert_eq!(
@@ -852,14 +844,8 @@ mod tests {
 
             // Neither operation may alter the malformed parent, the leaf mapping,
             // nor the page-table allocation count when validation fails.
-            assert_eq!(
-                tables.read_any(parent_table, index),
-                Some(malformed_entry)
-            );
-            assert_eq!(
-                tables.read_any(leaf_table, indices[3]),
-                Some(original_leaf)
-            );
+            assert_eq!(tables.read_any(parent_table, index), Some(malformed_entry));
+            assert_eq!(tables.read_any(leaf_table, indices[3]), Some(original_leaf));
             assert_eq!(tables.pages.len(), page_count);
 
             tables.write_entry(parent_table, index, level, original_entry);
