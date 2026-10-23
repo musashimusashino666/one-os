@@ -10,8 +10,8 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, recursive_table_page_virtual_address, translate_4level,
-    PageTableError, PageTranslation, PAGE_SIZE,
+    is_canonical_4level, recursive_table_page_virtual_address, translate_4level, PageTableError,
+    PageTranslation, PAGE_SIZE,
 };
 
 const CR4_LA57: u64 = 1 << 12;
@@ -218,36 +218,40 @@ fn translate_virtual_address(
     recursive_index: u16,
 ) -> Result<PageTranslation, PageTableError> {
     let mut level = 4u8;
-    translate_4level(virtual_address, root_table_physical, |table_physical, index| {
-        let current_level = level;
-        if current_level == 0
-            || table_physical == 0
-            || table_physical & (PAGE_SIZE - 1) != 0
-            || (current_level == 4 && table_physical != root_table_physical)
-        {
-            return None;
-        }
+    translate_4level(
+        virtual_address,
+        root_table_physical,
+        |table_physical, index| {
+            let current_level = level;
+            if current_level == 0
+                || table_physical == 0
+                || table_physical & (PAGE_SIZE - 1) != 0
+                || (current_level == 4 && table_physical != root_table_physical)
+            {
+                return None;
+            }
 
-        let table_virtual = recursive_table_page_virtual_address(
-            recursive_index,
-            virtual_address,
-            current_level,
-        )?;
-        let entry_offset = u64::try_from(index).ok()?.checked_mul(8)?;
-        let entry_virtual = table_virtual.checked_add(entry_offset)?;
-        if !is_canonical_4level(entry_virtual) || entry_virtual & 7 != 0 {
-            return None;
-        }
-        let entry_pointer = usize::try_from(entry_virtual).ok()? as *const u64;
+            let table_virtual = recursive_table_page_virtual_address(
+                recursive_index,
+                virtual_address,
+                current_level,
+            )?;
+            let entry_offset = u64::try_from(index).ok()?.checked_mul(8)?;
+            let entry_virtual = table_virtual.checked_add(entry_offset)?;
+            if !is_canonical_4level(entry_virtual) || entry_virtual & 7 != 0 {
+                return None;
+            }
+            let entry_pointer = usize::try_from(entry_virtual).ok()? as *const u64;
 
-        // SAFETY: BOOTLOADER_CONFIG explicitly requests its recursive PML4
-        // mapping, and BootInfo supplies that mapping's index. The address is
-        // derived from the current virtual address and level, uses the active
-        // paging structures rather than the physical-memory alias, and is
-        // checked for canonicality and alignment before a volatile read.
-        let entry = unsafe { ptr::read_volatile(entry_pointer) };
-        level = level.checked_sub(1)?;
-        Some(entry)
-    })
+            // SAFETY: BOOTLOADER_CONFIG explicitly requests its recursive PML4
+            // mapping, and BootInfo supplies that mapping's index. The address is
+            // derived from the current virtual address and level, uses the active
+            // paging structures rather than the physical-memory alias, and is
+            // checked for canonicality and alignment before a volatile read.
+            let entry = unsafe { ptr::read_volatile(entry_pointer) };
+            level = level.checked_sub(1)?;
+            Some(entry)
+        },
+    )
 }
 

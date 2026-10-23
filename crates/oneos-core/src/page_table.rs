@@ -84,10 +84,7 @@ pub fn recursive_table_page_virtual_address(
         _ => return None,
     };
 
-    let raw = (indices[0] << 39)
-        | (indices[1] << 30)
-        | (indices[2] << 21)
-        | (indices[3] << 12);
+    let raw = (indices[0] << 39) | (indices[1] << 30) | (indices[2] << 21) | (indices[3] << 12);
     let canonical = if raw & (1 << 47) == 0 {
         raw
     } else {
@@ -187,11 +184,7 @@ where
     ))
 }
 
-fn make_translation(
-    physical_address: u64,
-    page_size: u64,
-    entries: &[u64],
-) -> PageTranslation {
+fn make_translation(physical_address: u64, page_size: u64, entries: &[u64]) -> PageTranslation {
     PageTranslation {
         physical_address,
         page_size,
@@ -293,10 +286,22 @@ mod tests {
 
     #[test]
     fn rejects_invalid_recursive_mapping_inputs() {
-        assert_eq!(recursive_table_page_virtual_address(512, 0xffff_8000_0000_0000, 4), None);
-        assert_eq!(recursive_table_page_virtual_address(510, 0x0000_8000_0000_0000, 4), None);
-        assert_eq!(recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 0), None);
-        assert_eq!(recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 5), None);
+        assert_eq!(
+            recursive_table_page_virtual_address(512, 0xffff_8000_0000_0000, 4),
+            None
+        );
+        assert_eq!(
+            recursive_table_page_virtual_address(510, 0x0000_8000_0000_0000, 4),
+            None
+        );
+        assert_eq!(
+            recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 0),
+            None
+        );
+        assert_eq!(
+            recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 5),
+            None
+        );
     }
 
     #[test]
