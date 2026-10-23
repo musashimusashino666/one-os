@@ -17,9 +17,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 mod frame_allocator;
 mod memory_policy;
+mod page_table;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
+pub use page_table::{is_canonical_4level, translate_4level, PageTableError, PageTranslation};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
