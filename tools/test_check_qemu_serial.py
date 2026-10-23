@@ -11,13 +11,15 @@ ALLOCATOR_READY = "ONE OS FRAME ALLOCATOR READY"
 ALLOCATOR_FAILED = "ONE OS FRAME ALLOCATOR FAILED"
 PAGING_READY = "ONE OS PAGE TABLE INSPECTION READY"
 PAGING_FAILED = "ONE OS PAGING INSPECTION FAILED"
+MUTATION_READY = "ONE OS VM MAPPING SMOKE TEST READY"
+MUTATION_FAILED = "ONE OS PAGING MUTATION FAILED"
 PANIC = "ONE OS KERNEL PANIC"
 EXCEPTION = "ONE OS EXCEPTION"
 
 
 class ValidateSerialOutputTests(unittest.TestCase):
     def test_healthy_boot_marker_and_expected_timeout_pass(self):
-        valid, _ = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{COMPLETE}\n", 124)
+        valid, _ = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{COMPLETE}\n", 124)
         self.assertTrue(valid)
 
     def test_invalid_memory_map_marker_fails(self):
@@ -86,6 +88,20 @@ class ValidateSerialOutputTests(unittest.TestCase):
         )
         self.assertFalse(valid)
         self.assertIn("page-table inspection failure marker", reason.lower())
+
+    def test_missing_active_page_table_mutation_marker_fails(self):
+        valid, reason = validate_serial_output(
+            f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{COMPLETE}\n", 124
+        )
+        self.assertFalse(valid)
+        self.assertIn("active page-table mutation marker missing", reason.lower())
+
+    def test_page_table_mutation_failure_marker_fails(self):
+        valid, reason = validate_serial_output(
+            f"{START}\n{MUTATION_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{COMPLETE}\n", 124
+        )
+        self.assertFalse(valid)
+        self.assertIn("page-table mutation failure marker", reason.lower())
 
 if __name__ == "__main__":
     unittest.main()
