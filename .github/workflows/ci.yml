@@ -1,6 +1,10 @@
 name: CI
 
 on:
+  # Run on demand from Actions, or when a PR is explicitly marked ready for review.
+  # Do not run the expensive validation on every push/PR synchronization.
+  pull_request:
+    types: [ready_for_review]
   workflow_dispatch:
 
 permissions:
