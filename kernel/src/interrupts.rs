@@ -7,7 +7,10 @@
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const IDT_ENTRIES: usize = 256;
@@ -181,20 +184,38 @@ extern "x86-interrupt" fn page_fault_handler(
     )
 }
 
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 static EXPECTED_PROTECTION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 static EXPECTED_PROTECTION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 static EXPECTED_PROTECTION_FAULT_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 static EXPECTED_PROTECTION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// Arms exactly one known, terminal page-fault expectation in a dedicated QEMU image.
 /// The ordinary production page-fault handler remains fail-stop.
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 pub(super) fn arm_expected_protection_page_fault(
     target: u64,
     instruction_pointer: u64,
@@ -212,11 +233,11 @@ pub(super) fn expected_protection_page_fault_was_seen() -> bool {
     EXPECTED_PROTECTION_FAULT_SEEN.load(Ordering::Acquire)
 }
 
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
-extern "x86-interrupt" fn page_fault_handler(
-    mut frame: InterruptStackFrame,
-    error_code: u64,
-) {
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: u64) {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
@@ -252,7 +273,13 @@ extern "x86-interrupt" fn page_fault_handler(
         #[cfg(feature = "test-supervisor-write-protection")]
         {
             if recovery_rip != 0 {
-                report_exception(Some(14), "invalid test recovery state", frame, Some(error_code), Some(fault_address));
+                report_exception(
+                    Some(14),
+                    "invalid test recovery state",
+                    frame,
+                    Some(error_code),
+                    Some(fault_address),
+                );
             }
             super::serial_write(b"ONE OS VM TEST PASS: supervisor-write-protection\n");
             // QEMU is launched with isa-debug-exit. Value 0x10 yields status 33.
@@ -270,17 +297,20 @@ extern "x86-interrupt" fn page_fault_handler(
         #[cfg(feature = "test-nx-protection")]
         {
             if recovery_rip == 0 {
-                report_exception(Some(14), "invalid NX test recovery state", frame, Some(error_code), Some(fault_address));
+                report_exception(
+                    Some(14),
+                    "invalid NX test recovery state",
+                    frame,
+                    Some(error_code),
+                    Some(fault_address),
+                );
             }
             // SAFETY: the one armed NX test fault matched the exact target VA,
             // saved RIP, and complete error code. This known executable
             // continuation is outside the NX target page; use a volatile write
             // so the hardware-saved instruction pointer is updated before IRETQ.
             unsafe {
-                ptr::write_volatile(
-                    ptr::addr_of_mut!(frame.instruction_pointer),
-                    recovery_rip,
-                );
+                ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
             }
             super::serial_write(b"ONE OS VM TEST NX FAULT MATCHED\n");
             return;
