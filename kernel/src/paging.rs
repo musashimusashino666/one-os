@@ -599,8 +599,7 @@ impl<'a> KernelPageTableEditor<'a> {
 
         // SAFETY: the maximum extended leaf and NX support were checked during
         // initialize_paging_controls; read the width from the same CPU.
-        let physical_address_bits =
-            (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
+        let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
         if !(32..=52).contains(&physical_address_bits) {
             return Err(PagingError::InvalidPhysicalAddressWidth {
                 bits: physical_address_bits,
