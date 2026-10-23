@@ -58,6 +58,8 @@ pub enum PagingError {
     UnsupportedFiveLevelPaging,
     SupervisorWriteProtectionDisabled,
     UnsupportedNx,
+    ExtendedCpuidLeafUnavailable { required_leaf: u32, maximum_leaf: u32 },
+    NxEnableDisabled,
     InvalidPhysicalAddressWidth { bits: u8 },
     PhysicalMemoryOffsetUnavailable,
     InterruptsEnabled,
@@ -103,6 +105,12 @@ impl PagingError {
                 b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\n"
             }
             Self::UnsupportedNx => b"CPU does not expose the required NX feature\n",
+            Self::ExtendedCpuidLeafUnavailable { .. } => {
+                b"CPU does not report the extended CPUID leaf required for physical-address width\n"
+            }
+            Self::NxEnableDisabled => {
+                b"EFER.NXE is disabled after paging-control initialization\n"
+            }
             Self::InvalidPhysicalAddressWidth { .. } => {
                 b"CPU reported an unsupported physical-address width\n"
             }
@@ -428,9 +436,15 @@ pub fn initialize_paging_controls() -> Result<(), PagingError> {
 
 fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError {
     match error {
-        PagingPreconditionError::ExtendedLeafUnavailable { .. }
-        | PagingPreconditionError::NxUnsupported
-        | PagingPreconditionError::NxEnableDisabled => PagingError::UnsupportedNx,
+        PagingPreconditionError::ExtendedLeafUnavailable {
+            required_leaf,
+            maximum_leaf,
+        } => PagingError::ExtendedCpuidLeafUnavailable {
+            required_leaf,
+            maximum_leaf,
+        },
+        PagingPreconditionError::NxUnsupported => PagingError::UnsupportedNx,
+        PagingPreconditionError::NxEnableDisabled => PagingError::NxEnableDisabled,
         PagingPreconditionError::InvalidPhysicalAddressWidth { bits } => {
             PagingError::InvalidPhysicalAddressWidth { bits }
         }
