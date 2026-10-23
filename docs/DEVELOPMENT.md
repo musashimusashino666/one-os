@@ -35,16 +35,19 @@ Run:
 Expected serial output includes:
 
     ONE OS kernel booted
+    ONE OS FRAME ALLOCATOR READY
+    Usable physical frames: 0x...
+    Usable physical regions: 0x...
     Architecture: x86_64
     Milestone: serial bootstrap
     Memory map: structurally validated
     ONE OS BOOTSTRAP COMPLETE
 
-The kernel rejects empty, inverted, or overlapping memory-map ranges before it emits the completion marker. It then deliberately halts; this does not mean physical allocation or virtual memory is implemented. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and checks both startup and completion markers while rejecting panic and invalid-map markers.
+The kernel rejects empty, inverted, or overlapping memory-map ranges before initializing the physical-frame allocator. The allocator admits only regions marked Usable, excludes physical frame zero, and performs an allocation/free smoke test before the ready marker. It fails closed if the fixed metadata cannot cover the usable map (16 GiB aggregate usable memory or 256 regions). Allocated frames are not yet mapped or zeroed; virtual memory is still unimplemented. The kernel then deliberately halts. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and checks the startup, allocator-ready, and completion markers while rejecting allocator failure, panic, and invalid-map markers.
 
 ## Automated boot smoke test
 
-GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup and bootstrap-completion markers to appear in the correct order. Panic, invalid-memory-map markers, missing completion markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
+GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup, physical-frame-allocator-ready, and bootstrap-completion markers to appear in the correct order. Allocator failure, panic, invalid-memory-map markers, missing markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
 ## Exception diagnostics test
 
@@ -55,8 +58,9 @@ The fault-injection BIOS images are enabled only for dedicated tests, never for 
     cargo run --locked -p oneos-xtask -- image-test-exception
     cargo run --locked -p oneos-xtask -- image-test-general-protection
     cargo run --locked -p oneos-xtask -- image-test-page-fault
+    cargo run --locked -p oneos-xtask -- image-test-double-fault
 
-CI executes all three images in QEMU. It verifies that the invalid-opcode test reports vector 6, a direct assembly data load from a non-canonical address reports #GP (vector 13) with error code 0, and a direct assembly load from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each handler halts; stop local runs with Ctrl-C.
+CI executes all four images in QEMU. It verifies that the invalid-opcode test reports vector 6, a direct assembly data load from a non-canonical address reports #GP (vector 13) with error code 0, and a direct assembly load from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each handler halts; stop local runs with Ctrl-C.
 
 The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagnostic marker, even if the bootstrap-completion marker was already printed.
 

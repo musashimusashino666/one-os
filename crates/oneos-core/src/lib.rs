@@ -10,7 +10,13 @@
 //! Authority identifiers are process-local, not globally unique. This model
 //! must not be used to authenticate capabilities imported from another process.
 
+#[cfg(test)]
+extern crate std;
+
 use core::sync::atomic::{AtomicU64, Ordering};
+
+mod frame_allocator;
+pub use frame_allocator::{Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE};
 
 /// Stable identifier for a resource managed by an authority.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

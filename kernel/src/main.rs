@@ -24,6 +24,7 @@ use oneos_core::{validate_memory_map, MemoryMapError};
 compile_error!("enable only one exception fault-injection feature at a time");
 
 mod interrupts;
+mod memory;
 
 const COM1: u16 = 0x3F8;
 
@@ -65,6 +66,35 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // Fault-injection configurations are compiled only for dedicated QEMU
     // tests. The normal BIOS image never executes these paths.
+    serial_write(b"\nONE OS kernel booted\n");
+
+    let allocator_stats = match memory::initialize(&boot_info.memory_regions) {
+        Ok(stats) => stats,
+        Err(error) => {
+            serial_write(b"\nONE OS FRAME ALLOCATOR FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+
+    // Exercise both allocation and release before claiming bootstrap success.
+    let probe_frame = match memory::allocate_frame() {
+        Ok(frame) => frame,
+        Err(error) => {
+            serial_write(b"\nONE OS FRAME ALLOCATOR FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+    if let Err((error, _probe_frame)) = memory::free_frame(probe_frame) {
+        serial_write(b"\nONE OS FRAME ALLOCATOR FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+    serial_write(b"ONE OS FRAME ALLOCATOR READY\n");
+    write_hex(b"Usable physical frames: ", allocator_stats.total_frames as u64);
+    write_hex(b"Usable physical regions: ", allocator_stats.usable_regions as u64);
+
     #[cfg(feature = "test-exception")]
     {
         serial_write(b"ONE OS EXCEPTION TEST: triggering invalid opcode\n");
@@ -137,7 +167,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         feature = "test-double-fault"
     )))]
     {
-        serial_write(b"\nONE OS kernel booted\n");
         serial_write(b"Architecture: x86_64\n");
         serial_write(b"Milestone: serial bootstrap\n");
         serial_write(b"Memory map: structurally validated\n");

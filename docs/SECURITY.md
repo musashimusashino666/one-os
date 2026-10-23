@@ -37,6 +37,12 @@ Out of scope for the initial prototype: physical attacks, compromised firmware, 
 8. Audit logs that do not leak secrets and have a documented retention policy.
 9. A tested rollback strategy that does not permit booting known-vulnerable images without an explicit recovery policy.
 
+## Physical memory ownership
+
+The initial frame allocator treats only bootloader memory-map entries marked Usable as allocatable. Bootloader and unknown firmware region kinds are reserved. Regions are rounded inward to 4 KiB frames, physical frame zero is excluded, allocator initialization validates ranges and fails closed when its fixed metadata capacity is insufficient. The static bitmap supports up to 16 GiB of aggregate usable RAM across 256 usable regions.
+
+This allocator currently tracks ownership state; it does not map or clear frames. A returned physical address must not be dereferenced until a later virtual-memory layer establishes a valid mapping and initialization policy. The global API is serialized by a non-blocking lock; Busy means the caller must retry from a context where retry is safe. This bootstrap allocator is not yet a process-isolation boundary and does not establish production-grade memory safety.
+
 ## Capability reference model
 
 The crates/oneos-core crate currently models an object ID, a set of rights, a generation-stamped capability, and revocation by generation change. Unit tests verify basic authorization decisions.
