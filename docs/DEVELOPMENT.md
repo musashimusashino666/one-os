@@ -27,17 +27,18 @@ for diagnosis, but a run for an older SHA or a non-PR event does not validate th
 current PR head.
 
 GitHub's active `Protect main` ruleset is the authoritative merge gate; comments
-in a workflow file cannot enforce repository settings. It should require the
-`Format, test, lint, and boot` check, require the branch to be up to date with
-`main`, require at least one approving review, dismiss stale approvals after
-new commits, and require review threads to be resolved. Avoid bypass actors.
+in a workflow file cannot enforce repository settings. It must require the
+`Format, test, lint, and boot` check and keep the branch up to date with `main`.
+Review threads should be resolved; if approving reviews are configured, stale
+approvals should be dismissed after new commits. Avoid bypass actors where possible.
 
-**Configuration gap observed while preparing PR #13:** the repository ruleset
-was active and required the status check and strict up-to-date policy, but its
-required approving review count was `0`. That setting must be changed in GitHub
-Settings → Rules → `Protect main` to at least `1`; this repository-side setting
-is not changed by editing this file. Until an administrator applies and verifies
-that change, human review approval is not a required merge condition.
+**Single-maintainer policy:** the ruleset currently requires `0` approving reviews.
+Keep this at `0` while no independent reviewer is available. A requirement of one
+approval would prevent the sole PR author from approving their own change and can
+block all merges. Continue to review the diff deliberately and require a successful
+PR-context check on the exact latest HEAD before merging. Revisit the approval
+threshold only after an independent reviewer is available; do not present native
+review approval as enforced while its count is zero.
 
 ## Build a BIOS image
 
