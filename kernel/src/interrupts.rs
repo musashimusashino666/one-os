@@ -159,9 +159,9 @@ error_handler!(general_protection_handler, 13, "general protection fault");
 
 #[cfg(not(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")))]
 extern "x86-interrupt" fn page_fault_handler(
-    mut frame: InterruptStackFrame,
+    frame: InterruptStackFrame,
     error_code: u64,
-) {
+) -> ! {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
@@ -214,9 +214,9 @@ pub(super) fn expected_protection_page_fault_was_seen() -> bool {
 
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 extern "x86-interrupt" fn page_fault_handler(
-    frame: InterruptStackFrame,
+    mut frame: InterruptStackFrame,
     error_code: u64,
-) -> ! {
+) {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
