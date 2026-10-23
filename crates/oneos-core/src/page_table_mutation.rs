@@ -1,11 +1,9 @@
 //! Host-testable 4 KiB x86_64 page-table mutation primitives.
 //!
-//! The mutation engine performs no hardware access itself. Callers provide
-//! validated table-entry access and page-table-frame allocation callbacks.
-//! The allocator callback must return a fresh, aligned, nonzero, zero-filled
-//! table frame. The caller remains responsible for safe table access, TLB
-//! invalidation, exclusion of concurrent mutations, and enabling EFER.NXE
-//! before requesting non-executable mappings.
+//! This engine does not access hardware directly. A PageTableEditor supplies
+//! safe entry access and table-frame allocation. The implementation remains
+//! responsible for safe access to table frames, TLB invalidation, serializing
+//! mutations, and enabling EFER.NXE before requesting non-executable mappings.
 
 use crate::{is_canonical_4level, PAGE_SIZE};
 
@@ -42,6 +40,26 @@ impl PagePermissions {
     }
 }
 
+/// Operations required to read, modify, and allocate page-table pages.
+///
+/// Implementations must not return a table frame that is already in use, and
+/// must ensure each allocated frame is zero-filled before returning it.
+pub trait PageTableEditor {
+    /// Reads an entry from a table at the specified paging level.
+    ///
+    /// Returns None when the table cannot be safely accessed.
+    fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64>;
+
+    /// Writes an entry in a page-table page already known to be accessible.
+    fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64);
+
+    /// Allocates and zeroes a fresh physical frame for a page-table page.
+    fn allocate_table(&mut self) -> Option<u64>;
+
+    /// Releases a page-table frame allocated by allocate_table.
+    fn free_table(&mut self, physical_address: u64);
+}
+
 /// A failure from a page-table map or unmap operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageTableMutationError {
@@ -74,34 +92,18 @@ pub struct UnmappedPage {
 /// allocated before any parent entry is changed; allocation failure releases
 /// every newly allocated table and leaves the page-table tree unchanged.
 ///
-/// read_entry returns None when a table cannot be safely accessed.
-/// write_entry writes one entry in a table known to be accessible.
-/// allocate_table transfers ownership of a fresh, zero-filled physical frame
-/// to this operation. free_table returns an allocated frame when an
-/// allocation sequence fails. On success, newly created table frames become
-/// part of the caller's page-table ownership.
-///
 /// Existing ancestors are never widened: if an existing ancestor denies a
 /// requested writable, user-accessible, or executable mapping, the operation
 /// fails with AncestorPermissionConflict.
 ///
 /// This function does not flush TLB entries or provide synchronization.
-pub fn map_4k<R, W, A, F>(
+pub fn map_4k<E: PageTableEditor>(
     root_table_physical: u64,
     virtual_address: u64,
     physical_address: u64,
     permissions: PagePermissions,
-    mut read_entry: R,
-    mut write_entry: W,
-    mut allocate_table: A,
-    mut free_table: F,
-) -> Result<(), PageTableMutationError>
-where
-    R: FnMut(u64, usize, u8) -> Option<u64>,
-    W: FnMut(u64, usize, u8, u64),
-    A: FnMut() -> Option<u64>,
-    F: FnMut(u64),
-{
+    editor: &mut E,
+) -> Result<(), PageTableMutationError> {
     validate_root(root_table_physical)?;
     validate_virtual_page(virtual_address)?;
     if !valid_physical_page(physical_address) {
@@ -118,7 +120,8 @@ where
 
     for path_index in 0..3 {
         let level = 4 - path_index as u8;
-        let entry = read_entry(tables[path_index], indices[path_index], level)
+        let entry = editor
+            .read_entry(tables[path_index], indices[path_index], level)
             .ok_or(PageTableMutationError::TableUnavailable { level })?;
 
         if entry & PRESENT == 0 {
@@ -145,7 +148,8 @@ where
     }
 
     if missing_parent.is_none() {
-        let entry = read_entry(tables[3], indices[3], 1)
+        let entry = editor
+            .read_entry(tables[3], indices[3], 1)
             .ok_or(PageTableMutationError::TableUnavailable { level: 1 })?;
         if entry & PRESENT != 0 {
             return Err(PageTableMutationError::AlreadyMapped);
@@ -158,17 +162,17 @@ where
     let mut allocated = [0u64; 3];
     let allocation_count = missing_parent.map_or(0, |index| 3 - index);
     for allocation_index in 0..allocation_count {
-        let physical = match allocate_table() {
+        let physical = match editor.allocate_table() {
             Some(physical) => physical,
             None => {
-                release_allocated(&allocated, allocation_index, &mut free_table);
+                release_allocated(&allocated, allocation_index, editor);
                 return Err(PageTableMutationError::AllocationFailed);
             }
         };
 
         if !valid_physical_page(physical) {
-            free_table(physical);
-            release_allocated(&allocated, allocation_index, &mut free_table);
+            editor.free_table(physical);
+            release_allocated(&allocated, allocation_index, editor);
             return Err(PageTableMutationError::InvalidPageTableFrame);
         }
 
@@ -177,7 +181,7 @@ where
                 .contains(&physical)
             || allocated[..allocation_index].contains(&physical);
         if aliases_existing {
-            release_allocated(&allocated, allocation_index, &mut free_table);
+            release_allocated(&allocated, allocation_index, editor);
             return Err(PageTableMutationError::InvalidPageTableFrame);
         }
         allocated[allocation_index] = physical;
@@ -192,7 +196,7 @@ where
             };
             let entry_index = indices[missing_index + allocation_index];
             let level = 4 - (missing_index + allocation_index) as u8;
-            write_entry(
+            editor.write_entry(
                 parent_table,
                 entry_index,
                 level,
@@ -211,7 +215,7 @@ where
             0
         }
         | if permissions.executable { 0 } else { NO_EXECUTE };
-    write_entry(tables[3], indices[3], 1, leaf_entry);
+    editor.write_entry(tables[3], indices[3], 1, leaf_entry);
     Ok(())
 }
 
@@ -221,16 +225,11 @@ where
 /// table pages allocated. Reclaiming page-table frames requires an ownership
 /// registry and is kept out of this primitive. The caller must invalidate the
 /// address in the local TLB (and coordinate other CPUs in a future SMP kernel).
-pub fn unmap_4k<R, W>(
+pub fn unmap_4k<E: PageTableEditor>(
     root_table_physical: u64,
     virtual_address: u64,
-    mut read_entry: R,
-    mut write_entry: W,
-) -> Result<UnmappedPage, PageTableMutationError>
-where
-    R: FnMut(u64, usize, u8) -> Option<u64>,
-    W: FnMut(u64, usize, u8, u64),
-{
+    editor: &mut E,
+) -> Result<UnmappedPage, PageTableMutationError> {
     validate_root(root_table_physical)?;
     validate_virtual_page(virtual_address)?;
 
@@ -242,7 +241,8 @@ where
 
     for path_index in 0..3 {
         let level = 4 - path_index as u8;
-        let entry = read_entry(table_physical, indices[path_index], level)
+        let entry = editor
+            .read_entry(table_physical, indices[path_index], level)
             .ok_or(PageTableMutationError::TableUnavailable { level })?;
         if entry & PRESENT == 0 {
             if entry != 0 {
@@ -266,7 +266,8 @@ where
         }
     }
 
-    let leaf = read_entry(table_physical, indices[3], 1)
+    let leaf = editor
+        .read_entry(table_physical, indices[3], 1)
         .ok_or(PageTableMutationError::TableUnavailable { level: 1 })?;
     if leaf & PRESENT == 0 {
         if leaf != 0 {
@@ -282,7 +283,7 @@ where
     effective_user &= leaf & USER_ACCESSIBLE != 0;
     effective_executable &= leaf & NO_EXECUTE == 0;
 
-    write_entry(table_physical, indices[3], 1, 0);
+    editor.write_entry(table_physical, indices[3], 1, 0);
     Ok(UnmappedPage {
         physical_address: leaf & PHYSICAL_ADDRESS_MASK,
         permissions: PagePermissions::new(
@@ -293,12 +294,9 @@ where
     })
 }
 
-fn release_allocated<F>(allocated: &[u64; 3], count: usize, free_table: &mut F)
-where
-    F: FnMut(u64),
-{
+fn release_allocated<E: PageTableEditor>(allocated: &[u64; 3], count: usize, editor: &mut E) {
     for physical in allocated[..count].iter().rev() {
-        free_table(*physical);
+        editor.free_table(*physical);
     }
 }
 
@@ -344,11 +342,10 @@ fn indices(virtual_address: u64) -> [usize; 4] {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_4k, unmap_4k, PagePermissions, PageTableMutationError, UnmappedPage, LARGE_PAGE,
-        NO_EXECUTE, PRESENT, USER_ACCESSIBLE, WRITABLE,
+        map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+        LARGE_PAGE, NO_EXECUTE, PRESENT, USER_ACCESSIBLE, WRITABLE,
     };
     use crate::{translate_4level, PageTableError, PAGE_SIZE};
-    use core::cell::RefCell;
     use std::boxed::Box;
     use std::collections::BTreeMap;
 
@@ -369,21 +366,23 @@ mod tests {
             }
         }
 
-        fn read(&self, table: u64, index: usize, _level: u8) -> Option<u64> {
-            self.pages.get(&table).map(|page| page[index])
-        }
-
         fn read_any(&self, table: u64, index: usize) -> Option<u64> {
             self.pages.get(&table).map(|page| page[index])
         }
+    }
 
-        fn write(&mut self, table: u64, index: usize, _level: u8, value: u64) {
+    impl PageTableEditor for TestTables {
+        fn read_entry(&mut self, table: u64, index: usize, _level: u8) -> Option<u64> {
+            self.read_any(table, index)
+        }
+
+        fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
             if let Some(page) = self.pages.get_mut(&table) {
                 page[index] = value;
             }
         }
 
-        fn allocate(&mut self) -> Option<u64> {
+        fn allocate_table(&mut self) -> Option<u64> {
             if let Some(remaining) = self.allocations_remaining.as_mut() {
                 if *remaining == 0 {
                     return None;
@@ -396,41 +395,27 @@ mod tests {
             Some(physical)
         }
 
-        fn free(&mut self, physical: u64) {
+        fn free_table(&mut self, physical: u64) {
             self.pages.remove(&physical);
         }
     }
 
     fn map(
-        tables: &RefCell<TestTables>,
+        tables: &mut TestTables,
         root: u64,
         virtual_address: u64,
         physical_address: u64,
         permissions: PagePermissions,
     ) -> Result<(), PageTableMutationError> {
-        map_4k(
-            root,
-            virtual_address,
-            physical_address,
-            permissions,
-            |table, index, level| tables.borrow().read(table, index, level),
-            |table, index, level, value| tables.borrow_mut().write(table, index, level, value),
-            || tables.borrow_mut().allocate(),
-            |physical| tables.borrow_mut().free(physical),
-        )
+        map_4k(root, virtual_address, physical_address, permissions, tables)
     }
 
     fn unmap(
-        tables: &RefCell<TestTables>,
+        tables: &mut TestTables,
         root: u64,
         virtual_address: u64,
     ) -> Result<UnmappedPage, PageTableMutationError> {
-        unmap_4k(
-            root,
-            virtual_address,
-            |table, index, level| tables.borrow().read(table, index, level),
-            |table, index, level, value| tables.borrow_mut().write(table, index, level, value),
-        )
+        unmap_4k(root, virtual_address, tables)
     }
 
     #[test]
@@ -438,10 +423,10 @@ mod tests {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
         let physical_address = 0x8000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
 
         map(
-            &tables,
+            &mut tables,
             root,
             virtual_address,
             physical_address,
@@ -450,7 +435,7 @@ mod tests {
         .unwrap();
 
         let result = translate_4level(virtual_address + 0x123, root, |table, index| {
-            tables.borrow().read_any(table, index)
+            tables.read_any(table, index)
         })
         .unwrap();
         assert_eq!(result.physical_address, physical_address + 0x123);
@@ -465,10 +450,10 @@ mod tests {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_2000_0000;
         let physical_address = 0x9000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
 
         map(
-            &tables,
+            &mut tables,
             root,
             virtual_address,
             physical_address,
@@ -482,13 +467,13 @@ mod tests {
             ((virtual_address >> 21) & 0x1ff) as usize,
             ((virtual_address >> 12) & 0x1ff) as usize,
         ];
-        let root_entry = tables.borrow().read(root, indices[0], 4).unwrap();
+        let root_entry = tables.read_any(root, indices[0]).unwrap();
         assert_ne!(root_entry & PRESENT, 0);
         assert_ne!(root_entry & WRITABLE, 0);
         assert_ne!(root_entry & USER_ACCESSIBLE, 0);
         assert_eq!(root_entry & NO_EXECUTE, 0);
         let translation = translate_4level(virtual_address, root, |table, index| {
-            tables.borrow().read_any(table, index)
+            tables.read_any(table, index)
         })
         .unwrap();
         assert!(!translation.writable);
@@ -501,12 +486,12 @@ mod tests {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
         let physical_address = 0x8000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         let permissions = PagePermissions::new(true, false, false);
 
-        map(&tables, root, virtual_address, physical_address, permissions).unwrap();
+        map(&mut tables, root, virtual_address, physical_address, permissions).unwrap();
         assert_eq!(
-            unmap(&tables, root, virtual_address),
+            unmap(&mut tables, root, virtual_address),
             Ok(UnmappedPage {
                 physical_address,
                 permissions,
@@ -514,7 +499,7 @@ mod tests {
         );
         assert_eq!(
             translate_4level(virtual_address, root, |table, index| {
-                tables.borrow().read_any(table, index)
+                tables.read_any(table, index)
             }),
             Err(PageTableError::NotPresent { level: 1 })
         );
@@ -523,10 +508,10 @@ mod tests {
     #[test]
     fn rejects_writable_executable_mapping_without_allocating_tables() {
         let root = 0x1000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 0xffff_8000_1000_0000,
                 0x8000,
@@ -534,27 +519,27 @@ mod tests {
             ),
             Err(PageTableMutationError::WritableExecutable)
         );
-        assert_eq!(tables.borrow().pages.len(), 1);
+        assert_eq!(tables.pages.len(), 1);
     }
 
     #[test]
     fn rejects_an_existing_mapping_without_overwriting_it() {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         map(
-            &tables,
+            &mut tables,
             root,
             virtual_address,
             0x8000,
             PagePermissions::new(true, false, false),
         )
         .unwrap();
-        let page_count = tables.borrow().pages.len();
+        let page_count = tables.pages.len();
 
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 virtual_address,
                 0x9000,
@@ -562,9 +547,9 @@ mod tests {
             ),
             Err(PageTableMutationError::AlreadyMapped)
         );
-        assert_eq!(tables.borrow().pages.len(), page_count);
+        assert_eq!(tables.pages.len(), page_count);
         let translation = translate_4level(virtual_address, root, |table, index| {
-            tables.borrow().read_any(table, index)
+            tables.read_any(table, index)
         })
         .unwrap();
         assert_eq!(translation.physical_address, 0x8000);
@@ -574,12 +559,12 @@ mod tests {
     fn allocation_failure_releases_new_frames_and_leaves_the_tree_unchanged() {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
-        let tables = RefCell::new(TestTables::new(root));
-        tables.borrow_mut().allocations_remaining = Some(1);
+        let mut tables = TestTables::new(root);
+        tables.allocations_remaining = Some(1);
 
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 virtual_address,
                 0x8000,
@@ -587,9 +572,9 @@ mod tests {
             ),
             Err(PageTableMutationError::AllocationFailed)
         );
-        assert_eq!(tables.borrow().pages.len(), 1);
+        assert_eq!(tables.pages.len(), 1);
         let indices = ((virtual_address >> 39) & 0x1ff) as usize;
-        assert_eq!(tables.borrow().read(root, indices, 4), Some(0));
+        assert_eq!(tables.read_any(root, indices), Some(0));
     }
 
     #[test]
@@ -597,13 +582,13 @@ mod tests {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
         let indices = ((virtual_address >> 39) & 0x1ff) as usize;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         // Present ancestor points to a table, but write permission is absent.
-        tables.borrow_mut().write(root, indices, 4, 0x2000 | PRESENT);
+        tables.pages.get_mut(&root).unwrap()[indices] = 0x2000 | PRESENT;
 
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 virtual_address,
                 0x8000,
@@ -611,7 +596,7 @@ mod tests {
             ),
             Err(PageTableMutationError::AncestorPermissionConflict { level: 4 })
         );
-        assert_eq!(tables.borrow().pages.len(), 1);
+        assert_eq!(tables.pages.len(), 1);
     }
 
     #[test]
@@ -619,14 +604,13 @@ mod tests {
         let root = 0x1000;
         let virtual_address = 0x0000_1234_5678_9000;
         let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
-        let tables = RefCell::new(TestTables::new(root));
-        tables
-            .borrow_mut()
-            .write(root, root_index, 4, 0x2000 | PRESENT | LARGE_PAGE);
+        let mut tables = TestTables::new(root);
+        tables.pages.get_mut(&root).unwrap()[root_index] =
+            0x2000 | PRESENT | LARGE_PAGE;
 
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 virtual_address,
                 0x8000,
@@ -635,7 +619,7 @@ mod tests {
             Err(PageTableMutationError::LargePageConflict { level: 4 })
         );
         assert_eq!(
-            unmap(&tables, root, virtual_address),
+            unmap(&mut tables, root, virtual_address),
             Err(PageTableMutationError::LargePageConflict { level: 4 })
         );
     }
@@ -643,43 +627,39 @@ mod tests {
     #[test]
     fn rejects_invalid_addresses_and_unaligned_pages() {
         let root = 0x1000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         let permissions = PagePermissions::new(true, false, false);
 
         assert_eq!(
-            map(&tables, root, 0x0000_8000_0000_0000, 0x8000, permissions),
+            map(&mut tables, root, 0x0000_8000_0000_0000, 0x8000, permissions),
             Err(PageTableMutationError::NonCanonicalVirtualAddress)
         );
         assert_eq!(
-            map(&tables, root, 0xffff_8000_0000_0001, 0x8000, permissions),
+            map(&mut tables, root, 0xffff_8000_0000_0001, 0x8000, permissions),
             Err(PageTableMutationError::UnalignedVirtualAddress)
         );
         assert_eq!(
-            map(&tables, root, 0xffff_8000_0000_0000, 0, permissions),
+            map(&mut tables, root, 0xffff_8000_0000_0000, 0, permissions),
             Err(PageTableMutationError::InvalidPhysicalAddress)
         );
         assert_eq!(
-            unmap(&tables, root, 0xffff_8000_0000_0001),
+            unmap(&mut tables, root, 0xffff_8000_0000_0001),
             Err(PageTableMutationError::UnalignedVirtualAddress)
         );
-        assert_eq!(tables.borrow().pages.len(), 1);
+        assert_eq!(tables.pages.len(), 1);
     }
 
     #[test]
     fn rejects_mapping_when_an_existing_leaf_table_is_unavailable() {
         let root = 0x1000;
         let virtual_address = 0xffff_8000_1234_5000;
-        let tables = RefCell::new(TestTables::new(root));
-        tables.borrow_mut().write(
-            root,
-            ((virtual_address >> 39) & 0x1ff) as usize,
-            4,
-            0x2000 | PRESENT | WRITABLE,
-        );
+        let mut tables = TestTables::new(root);
+        let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
+        tables.pages.get_mut(&root).unwrap()[root_index] = 0x2000 | PRESENT | WRITABLE;
 
         assert_eq!(
             map(
-                &tables,
+                &mut tables,
                 root,
                 virtual_address,
                 0x8000,
@@ -692,9 +672,9 @@ mod tests {
     #[test]
     fn rejects_unmapping_an_absent_leaf() {
         let root = 0x1000;
-        let tables = RefCell::new(TestTables::new(root));
+        let mut tables = TestTables::new(root);
         assert_eq!(
-            unmap(&tables, root, 0xffff_8000_1234_5000),
+            unmap(&mut tables, root, 0xffff_8000_1234_5000),
             Err(PageTableMutationError::NotMapped { level: 4 })
         );
     }
