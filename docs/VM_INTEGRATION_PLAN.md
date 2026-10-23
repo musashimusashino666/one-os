@@ -219,8 +219,7 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 - [x] Combine the generic map mutation engine with a registry-backed test editor. Tests verify zeroed newly allocated table pages, slot reservation before allocation, capacity exhaustion for a three-intermediate-table mapping, unchanged root entries on failure, released reservations, and exactly-once token release in reverse allocation order.
 - [x] Verify unmap returns the leaf physical address and permissions without calling the table-frame release path or registering/releasing the leaf data frame.
 - [ ] Add a target-specific integration assertion for the concrete `KernelPageTableEditor`'s physical-memory-offset alias and zero-before-publication path; the QEMU transition tests exercise the real editor, but this internal implementation detail is not independently host-tested.
-- Test that invalid CPU capability data or a missing required control-state precondition
-  prevents mutation.
+- [x] Validate required extended-CPUID leaf availability, NX feature presence, MAXPHYADDR range, CR0.WP, and EFER.NXE through pure host-testable helpers used by the kernel bootstrap; unit tests cover unsupported and valid states, and bootstrap propagates any failure before page-table mutation.
 
 ### QEMU integration tests
 
@@ -380,13 +379,12 @@ a distinct physical frame, and observable TLB behavior.
   to Ready for review to create a fresh PR-context run for that exact head. A green run
   for an earlier commit does not validate the new head. A `workflow_dispatch` run is
   diagnostic and must not be assumed to satisfy the required PR-context check.
-- The required job must build the normal boot image and each dedicated memory-test
-  image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
-  checks, image creation, serial-log validator tests, repeated normal boots, and
-  existing exception tests, dedicated supervisor write-protection image, and dedicated
-  NX instruction-fetch image under QEMU. The dedicated map/unmap and TLB-transition
-  test images still must be added to CI before M1 can exit. The current unmapped-read #PF image does not
-  satisfy the write-protection acceptance test and must remain a separate case.
+- The required job builds the normal boot image and each dedicated memory-test image,
+  runs all `oneos-core` tests, formatting, Clippy with warnings denied, kernel checks,
+  image creation, serial-log validator tests, repeated normal boots, existing exception
+  tests, supervisor write-protection, NX instruction-fetch, and map/unmap/remap
+  transition/TLB QEMU tests. The ordinary unmapped-read #PF image does not replace the
+  separate supervisor write-protection case.
 - Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
   exceptions, missing or duplicate test success markers, an incorrect recovery path,
   or the normal bootstrap-completion marker being used in place of a memory-test
