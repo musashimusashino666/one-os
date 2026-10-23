@@ -16,6 +16,8 @@ test-double-fault = []
 # Dedicated hardware memory-protection acceptance images (terminal expected #PF).
 test-supervisor-write-protection = []
 test-nx-protection = []
+# Dedicated map/unmap/remap and page-fault/TLB transition acceptance image.
+test-vm-transitions = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
