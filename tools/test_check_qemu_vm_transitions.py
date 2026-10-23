@@ -10,6 +10,9 @@ def valid_log() -> str:
     first_rip = "0xffffffff80201010"
     second_rip = "0xffffffff80202020"
     return (
+        "ONE OS kernel booted\n"
+        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n"
+        "ONE OS VM MAPPING SMOKE TEST READY\n"
         "ONE OS VM TEST: mapping-transitions\n"
         f"ONE OS VM TRANSITION TARGET: {target}\n"
         "ONE OS VM TRANSITION FIRST FRAME: 0x0000000000100000\n"
@@ -22,7 +25,6 @@ def valid_log() -> str:
         f"Fault address (CR2): {target}\n"
         "ONE OS VM TRANSITION FAULT MATCHED: initial-unmapped\n"
         "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n"
-        "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n"
         "ONE OS VM TRANSITION FIRST MAPPING VERIFIED\n"
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT\n"
         f"Instruction pointer: {second_rip}\n"
