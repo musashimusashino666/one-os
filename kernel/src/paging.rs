@@ -26,9 +26,11 @@ const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
 const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const TABLE_FRAME_CAPACITY: usize = 512;
@@ -1033,18 +1035,21 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 
 /// Holds the owned data frame and target VA for one dedicated QEMU protection test.
 /// The frame token deliberately remains alive for as long as the mapping is used.
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 pub struct ProtectionTestMapping {
     pub virtual_address: u64,
     pub physical_address: u64,
     _frame: Frame,
 }
 
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 #[derive(Clone, Copy)]
 enum ProtectionTestPayload {
     Sentinel,
     Ud2,
 }
 
+#[cfg(feature = "test-supervisor-write-protection")]
 /// Prepare a supervisor-readable, supervisor-read-only mapping whose attempted
 /// supervisor write must raise a protection-violation page fault.
 pub fn install_supervisor_write_protection_test(
@@ -1057,6 +1062,7 @@ pub fn install_supervisor_write_protection_test(
     )
 }
 
+#[cfg(feature = "test-nx-protection")]
 /// Prepare a supervisor-readable, supervisor-read-only, NX mapping containing
 /// UD2. A successful instruction fetch would therefore fail the test with #UD.
 pub fn install_nx_execution_protection_test(
@@ -1069,6 +1075,7 @@ pub fn install_nx_execution_protection_test(
     )
 }
 
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 fn prepare_protection_test_mapping(
     boot_info: &BootInfo,
     protected_permissions: PagePermissions,
@@ -1229,6 +1236,7 @@ fn prepare_protection_test_mapping(
     Err(PagingError::NoUnusedVirtualAddress)
 }
 
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 fn read_active_leaf_path(
     editor: &mut KernelPageTableEditor<'_>,
     root_table_physical: u64,
@@ -1259,7 +1267,9 @@ fn read_active_leaf_path(
 }
 
 
+#[cfg(feature = "test-vm-transitions")]
 const TRANSITION_FIRST_SENTINEL: u64 = 0x4f4e_455f_564d_4131;
+#[cfg(feature = "test-vm-transitions")]
 const TRANSITION_SECOND_SENTINEL: u64 = 0x4f4e_455f_564d_4232;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1274,6 +1284,7 @@ enum TransitionTestState {
 /// Owns both data frames for the dedicated active map/unmap/remap QEMU case.
 /// The same virtual address is first mapped to one frame and then to a distinct
 /// frame so stale TLB translations are observable as stale payload data.
+#[cfg(feature = "test-vm-transitions")]
 pub struct MappingTransitionTest {
     pub virtual_address: u64,
     pub first_physical_address: u64,
@@ -1283,6 +1294,7 @@ pub struct MappingTransitionTest {
     state: TransitionTestState,
 }
 
+#[cfg(feature = "test-vm-transitions")]
 pub fn prepare_mapping_transition_test(
     boot_info: &BootInfo,
 ) -> Result<MappingTransitionTest, PagingError> {
@@ -1352,6 +1364,7 @@ pub fn prepare_mapping_transition_test(
     Err(PagingError::NoUnusedVirtualAddress)
 }
 
+#[cfg(feature = "test-vm-transitions")]
 impl MappingTransitionTest {
     pub fn map_first(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
         if self.state != TransitionTestState::Unmapped {
