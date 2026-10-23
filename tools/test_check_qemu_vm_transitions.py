@@ -12,6 +12,8 @@ def valid_log() -> str:
     return (
         "ONE OS VM TEST: mapping-transitions\n"
         f"ONE OS VM TRANSITION TARGET: {target}\n"
+        "ONE OS VM TRANSITION FIRST FRAME: 0x0000000000100000\n"
+        "ONE OS VM TRANSITION SECOND FRAME: 0x0000000000101000\n"
         f"ONE OS VM TRANSITION FIRST EXPECTED RIP: {first_rip}\n"
         f"ONE OS VM TRANSITION SECOND EXPECTED RIP: {second_rip}\n"
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT\n"
@@ -20,12 +22,14 @@ def valid_log() -> str:
         f"Fault address (CR2): {target}\n"
         "ONE OS VM TRANSITION FAULT MATCHED: initial-unmapped\n"
         "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n"
+        "ONE OS VM TRANSITION FIRST MAPPING VERIFIED\n"
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT\n"
         f"Instruction pointer: {second_rip}\n"
         "Error code: 0x0000000000000000\n"
         f"Fault address (CR2): {target}\n"
         "ONE OS VM TRANSITION FAULT MATCHED: after-unmap\n"
         "ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap\n"
+        "ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED\n"
         "ONE OS VM TEST PASS: mapping-transitions\n"
     )
 
@@ -34,6 +38,23 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
     def test_valid_two_fault_transition_passes(self):
         valid, message = validate_vm_transition_output(valid_log(), 33)
         self.assertTrue(valid, message)
+
+    def test_physical_frames_must_be_distinct(self):
+        log = valid_log().replace(
+            "ONE OS VM TRANSITION SECOND FRAME: 0x0000000000101000",
+            "ONE OS VM TRANSITION SECOND FRAME: 0x0000000000100000",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("distinct physical frames", message)
+
+    def test_missing_payload_verification_fails(self):
+        log = valid_log().replace(
+            "ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED\n", ""
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("mapping verification marker", message)
 
     def test_unexpected_exit_status_fails(self):
         valid, message = validate_vm_transition_output(valid_log(), 124)
