@@ -205,6 +205,40 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 
 Use dedicated test images and serial-log validators. A normal boot must remain a
 separate path and must still pass the existing repeated-boot and exception checks.
+The production/default `page_fault_handler` remains fail-stop; it currently reports
+the exception and halts. Do not make ordinary kernel page faults generally recoverable
+just to support the transition tests below.
+
+#### Recoverable page faults for transition tests only
+
+The not-present-to-present and unmap-to-remap tests must use a dedicated test image
+with a test-only #PF handler. Keep this handler separate from both the normal
+fail-stop handler and the read-only-protection test's fail-stop path.
+
+- Arm the handler immediately before one deliberately faulting instruction with the
+  exact expected target VA, access type, and a known recovery continuation. Accept a
+  fault only while that expectation is armed. Unexpected faults, nested faults, a
+  wrong CR2, unexpected error-code bits, or an unexpected saved instruction pointer
+  must go through the fail-stop diagnostic path.
+- For a deliberately unmapped supervisor data read, require vector 14, CR2 equal to
+  the exact target VA, and `(error_code & 0x7) == 0`: P=0 (not present), W/R=0
+  (read), U/S=0 (supervisor). Also reject reserved-bit, instruction-fetch,
+  protection-key, or any other error-code conditions not expected for the controlled
+  access. Record each expected fault exactly once.
+- Resume only at a known recovery continuation: the handler must update the actual
+  saved exception-frame instruction pointer to a dedicated continuation after the
+  faulting instruction, or use an equivalently explicit assembly-controlled recovery
+  mechanism. Keep the faulting access in a small dedicated assembly sequence so the
+  compiler does not assume that the faulting load returned a value. Do not return to
+  the same faulting instruction, retry it before mapping, or modify an arbitrary RIP.
+- After return from the expected fault, verify that the event was consumed exactly
+  once, install the mapping, then perform a fresh read/write through the target VA.
+  For the unmap/remap test, use the same controlled recovery mechanism for the
+  expected non-present fault between unmap and remap, then map the distinct frame
+  and verify its contents. Invalid recovery state must fail-stop.
+- Emit a dedicated VM-test success marker only after all transition and TLB checks
+  complete. Expected #PF events and failed recovery must never emit the normal
+  bootstrap-completion marker.
 
 - Map one allocated data frame into a reserved, previously unmapped canonical virtual
   address; verify the translation, page offset, and effective permissions.
