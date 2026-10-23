@@ -12,8 +12,9 @@ const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
-const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
-const RESERVED_HIGH_BITS: u64 = 0x7ff0_0000_0000_0000;
+const PHYSICAL_ADDRESS_FIELD_MASK: u64 = 0x000f_ffff_ffff_f000;
+const MAX_PHYSICAL_ADDRESS_BITS: u8 = 52;
+const MIN_PHYSICAL_ADDRESS_BITS: u8 = 32;
 const TABLE_ENTRY_FLAGS: u64 = PRESENT | WRITABLE | USER_ACCESSIBLE;
 
 /// Effective leaf permissions requested for a mapping.
@@ -45,6 +46,13 @@ impl PagePermissions {
 /// Implementations must not return a table frame that is already in use, and
 /// must ensure each allocated frame is zero-filled before returning it.
 pub trait PageTableEditor {
+    /// Returns the active CPU's MAXPHYADDR, typically CPUID.80000008H:EAX[7:0].
+    ///
+    /// The value must describe the processor whose page tables this editor
+    /// accesses. The mutation engine rejects values outside 32..=52 bits and
+    /// rejects physical addresses with bits set above the reported width.
+    fn physical_address_bits(&self) -> u8;
+
     /// Reads an entry from a table at the specified paging level.
     ///
     /// Returns None when the table cannot be safely accessed.
@@ -66,6 +74,7 @@ pub enum PageTableMutationError {
     NonCanonicalVirtualAddress,
     UnalignedVirtualAddress,
     InvalidRootTable,
+    InvalidPhysicalAddressWidth { bits: u8 },
     InvalidPhysicalAddress,
     WritableExecutable,
     TableUnavailable { level: u8 },
@@ -104,9 +113,15 @@ pub fn map_4k<E: PageTableEditor>(
     permissions: PagePermissions,
     editor: &mut E,
 ) -> Result<(), PageTableMutationError> {
-    validate_root(root_table_physical)?;
+    let physical_address_bits = editor.physical_address_bits();
+    if physical_address_mask(physical_address_bits).is_none() {
+        return Err(PageTableMutationError::InvalidPhysicalAddressWidth {
+            bits: physical_address_bits,
+        });
+    }
+    validate_root(root_table_physical, physical_address_bits)?;
     validate_virtual_page(virtual_address)?;
-    if !valid_physical_page(physical_address) {
+    if !valid_physical_page(physical_address, physical_address_bits) {
         return Err(PageTableMutationError::InvalidPhysicalAddress);
     }
     if permissions.writable && permissions.executable {
@@ -131,14 +146,14 @@ pub fn map_4k<E: PageTableEditor>(
             missing_parent = Some(path_index);
             break;
         }
-        if entry & RESERVED_HIGH_BITS != 0 || entry & LARGE_PAGE != 0 {
+        if entry & LARGE_PAGE != 0 {
             return Err(if entry & LARGE_PAGE != 0 {
                 PageTableMutationError::LargePageConflict { level }
             } else {
                 PageTableMutationError::MalformedEntry { level }
             });
         }
-        if !valid_physical_page(entry & PHYSICAL_ADDRESS_MASK) {
+        if !valid_physical_page(entry & PHYSICAL_ADDRESS_FIELD_MASK, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
         }
         if !ancestor_allows(entry, permissions) {
@@ -170,7 +185,7 @@ pub fn map_4k<E: PageTableEditor>(
             }
         };
 
-        if !valid_physical_page(physical) {
+        if !valid_physical_page(physical, physical_address_bits) {
             editor.free_table(physical);
             release_allocated(&allocated, allocation_index, editor);
             return Err(PageTableMutationError::InvalidPageTableFrame);
@@ -214,7 +229,11 @@ pub fn map_4k<E: PageTableEditor>(
         } else {
             0
         }
-        | if permissions.executable { 0 } else { NO_EXECUTE };
+        | if permissions.executable {
+            0
+        } else {
+            NO_EXECUTE
+        };
     editor.write_entry(tables[3], indices[3], 1, leaf_entry);
     Ok(())
 }
@@ -230,7 +249,13 @@ pub fn unmap_4k<E: PageTableEditor>(
     virtual_address: u64,
     editor: &mut E,
 ) -> Result<UnmappedPage, PageTableMutationError> {
-    validate_root(root_table_physical)?;
+    let physical_address_bits = editor.physical_address_bits();
+    if physical_address_mask(physical_address_bits).is_none() {
+        return Err(PageTableMutationError::InvalidPhysicalAddressWidth {
+            bits: physical_address_bits,
+        });
+    }
+    validate_root(root_table_physical, physical_address_bits)?;
     validate_virtual_page(virtual_address)?;
 
     let indices = indices(virtual_address);
@@ -250,9 +275,6 @@ pub fn unmap_4k<E: PageTableEditor>(
             }
             return Err(PageTableMutationError::NotMapped { level });
         }
-        if entry & RESERVED_HIGH_BITS != 0 {
-            return Err(PageTableMutationError::MalformedEntry { level });
-        }
         if entry & LARGE_PAGE != 0 {
             return Err(PageTableMutationError::LargePageConflict { level });
         }
@@ -261,7 +283,7 @@ pub fn unmap_4k<E: PageTableEditor>(
         effective_executable &= entry & NO_EXECUTE == 0;
 
         table_physical = entry & PHYSICAL_ADDRESS_MASK;
-        if !valid_physical_page(table_physical) {
+        if !valid_physical_page(table_physical, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
         }
     }
@@ -275,7 +297,8 @@ pub fn unmap_4k<E: PageTableEditor>(
         }
         return Err(PageTableMutationError::NotMapped { level: 1 });
     }
-    if leaf & RESERVED_HIGH_BITS != 0 || !valid_physical_page(leaf & PHYSICAL_ADDRESS_MASK) {
+    let leaf_physical_address = leaf & PHYSICAL_ADDRESS_FIELD_MASK;
+    if !valid_physical_page(leaf_physical_address, physical_address_bits) {
         return Err(PageTableMutationError::MalformedEntry { level: 1 });
     }
 
@@ -285,12 +308,8 @@ pub fn unmap_4k<E: PageTableEditor>(
 
     editor.write_entry(table_physical, indices[3], 1, 0);
     Ok(UnmappedPage {
-        physical_address: leaf & PHYSICAL_ADDRESS_MASK,
-        permissions: PagePermissions::new(
-            effective_writable,
-            effective_user,
-            effective_executable,
-        ),
+        physical_address: leaf_physical_address,
+        permissions: PagePermissions::new(effective_writable, effective_user, effective_executable),
     })
 }
 
@@ -300,8 +319,11 @@ fn release_allocated<E: PageTableEditor>(allocated: &[u64; 3], count: usize, edi
     }
 }
 
-fn validate_root(root_table_physical: u64) -> Result<(), PageTableMutationError> {
-    if valid_physical_page(root_table_physical) {
+fn validate_root(
+    root_table_physical: u64,
+    physical_address_bits: u8,
+) -> Result<(), PageTableMutationError> {
+    if valid_physical_page(root_table_physical, physical_address_bits) {
         Ok(())
     } else {
         Err(PageTableMutationError::InvalidRootTable)
@@ -318,10 +340,18 @@ fn validate_virtual_page(virtual_address: u64) -> Result<(), PageTableMutationEr
     Ok(())
 }
 
-fn valid_physical_page(address: u64) -> bool {
-    address != 0
-        && address & (PAGE_SIZE - 1) == 0
-        && address & !PHYSICAL_ADDRESS_MASK == 0
+fn physical_address_mask(bits: u8) -> Option<u64> {
+    if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS).contains(&bits) {
+        return None;
+    }
+    Some(((1u64 << bits) - 1) & PHYSICAL_ADDRESS_FIELD_MASK)
+}
+
+fn valid_physical_page(address: u64, physical_address_bits: u8) -> bool {
+    let Some(mask) = physical_address_mask(physical_address_bits) else {
+        return false;
+    };
+    address != 0 && address & (PAGE_SIZE - 1) == 0 && address & !mask == 0
 }
 
 fn ancestor_allows(entry: u64, permissions: PagePermissions) -> bool {
@@ -343,7 +373,7 @@ fn indices(virtual_address: u64) -> [usize; 4] {
 mod tests {
     use super::{
         map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
-        LARGE_PAGE, NO_EXECUTE, PRESENT, USER_ACCESSIBLE, WRITABLE,
+        LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, USER_ACCESSIBLE, WRITABLE,
     };
     use crate::{translate_4level, PageTableError, PAGE_SIZE};
     use std::boxed::Box;
@@ -353,6 +383,7 @@ mod tests {
         pages: BTreeMap<u64, Box<[u64; 512]>>,
         next_physical: u64,
         allocations_remaining: Option<usize>,
+        physical_address_bits: u8,
     }
 
     impl TestTables {
@@ -363,6 +394,7 @@ mod tests {
                 pages,
                 next_physical: 0x10_000,
                 allocations_remaining: None,
+                physical_address_bits: 48,
             }
         }
 
@@ -372,6 +404,10 @@ mod tests {
     }
 
     impl PageTableEditor for TestTables {
+        fn physical_address_bits(&self) -> u8 {
+            self.physical_address_bits
+        }
+
         fn read_entry(&mut self, table: u64, index: usize, _level: u8) -> Option<u64> {
             self.read_any(table, index)
         }
@@ -489,7 +525,14 @@ mod tests {
         let mut tables = TestTables::new(root);
         let permissions = PagePermissions::new(true, false, false);
 
-        map(&mut tables, root, virtual_address, physical_address, permissions).unwrap();
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            physical_address,
+            permissions,
+        )
+        .unwrap();
         assert_eq!(
             unmap(&mut tables, root, virtual_address),
             Ok(UnmappedPage {
@@ -605,8 +648,7 @@ mod tests {
         let virtual_address = 0x0000_1234_5678_9000;
         let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
         let mut tables = TestTables::new(root);
-        tables.pages.get_mut(&root).unwrap()[root_index] =
-            0x2000 | PRESENT | LARGE_PAGE;
+        tables.pages.get_mut(&root).unwrap()[root_index] = 0x2000 | PRESENT | LARGE_PAGE;
 
         assert_eq!(
             map(
@@ -631,11 +673,23 @@ mod tests {
         let permissions = PagePermissions::new(true, false, false);
 
         assert_eq!(
-            map(&mut tables, root, 0x0000_8000_0000_0000, 0x8000, permissions),
+            map(
+                &mut tables,
+                root,
+                0x0000_8000_0000_0000,
+                0x8000,
+                permissions
+            ),
             Err(PageTableMutationError::NonCanonicalVirtualAddress)
         );
         assert_eq!(
-            map(&mut tables, root, 0xffff_8000_0000_0001, 0x8000, permissions),
+            map(
+                &mut tables,
+                root,
+                0xffff_8000_0000_0001,
+                0x8000,
+                permissions
+            ),
             Err(PageTableMutationError::UnalignedVirtualAddress)
         );
         assert_eq!(
@@ -666,6 +720,121 @@ mod tests {
                 PagePermissions::new(true, false, false),
             ),
             Err(PageTableMutationError::TableUnavailable { level: 3 })
+        );
+    }
+
+
+    #[test]
+    fn accepts_software_available_and_protection_key_bits_in_existing_entries() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            0x8000,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        // Bits 58:52 are ignored/software-available. Bits 62:59 may contain
+        // protection keys on leaf mappings. Neither range is a physical-address
+        // field, so these values must not make an otherwise valid entry fail.
+        let optional_attributes = 0x7ff0_0000_0000_0000;
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let l4 = tables.read_any(root, indices[0]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l3 = tables.read_any(l4, indices[1]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
+        tables.pages.get_mut(&root).unwrap()[indices[0]] |= optional_attributes;
+        tables.pages.get_mut(&l4).unwrap()[indices[1]] |= optional_attributes;
+        tables.pages.get_mut(&l3).unwrap()[indices[2]] |= optional_attributes;
+        tables.pages.get_mut(&l2).unwrap()[indices[3]] |= optional_attributes;
+
+        map(
+            &mut tables,
+            root,
+            virtual_address + PAGE_SIZE,
+            0x9000,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            unmap(&mut tables, root, virtual_address),
+            Ok(UnmappedPage {
+                physical_address: 0x8000,
+                permissions: PagePermissions::new(true, false, false),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_physical_addresses_outside_the_cpu_supported_width() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+        tables.physical_address_bits = 36;
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address,
+                1u64 << 36,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::InvalidPhysicalAddress)
+        );
+    }
+
+    #[test]
+    fn rejects_existing_table_addresses_outside_the_cpu_supported_width() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let root_index = ((virtual_address >> 39) & 0x1ff) as usize;
+        let mut tables = TestTables::new(root);
+        tables.physical_address_bits = 36;
+        tables.pages.get_mut(&root).unwrap()[root_index] =
+            (1u64 << 40) | 0x2000 | PRESENT | WRITABLE;
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::MalformedEntry { level: 4 })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_physical_address_widths() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+        tables.physical_address_bits = 53;
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::InvalidPhysicalAddressWidth { bits: 53 })
+        );
+        assert_eq!(
+            unmap(&mut tables, root, virtual_address),
+            Err(PageTableMutationError::InvalidPhysicalAddressWidth { bits: 53 })
         );
     }
 
