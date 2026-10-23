@@ -14,15 +14,21 @@ until the integration and QEMU acceptance tests pass.
 - The mutation helpers validate four-level canonical addresses, alignment, physical
   address width, ancestor permissions, and large-page conflicts; enforce W^X at the
   leaf; and roll back intermediate-table allocations on allocation failure.
-- `kernel/src/paging.rs` currently inspects existing bootloader mappings read-only.
-  It does not invoke the mutation helpers.
+- `kernel/src/paging.rs` inspects bootloader mappings and now contains a guarded
+  `PageTableEditor` for active four-level page tables. It resolves reachable tables
+  through recursive aliases and accesses only owned, unpublished Usable frames through
+  a verified writable physical-memory-offset mapping.
 - `kernel/src/memory.rs` allocates physical frames from bootloader-designated Usable
   memory. A returned `Frame` is an owned, non-`Copy` token; its physical address
   alone is not the ownership token.
-- The kernel currently checks `CR0.WP` during inspection. The mapping integration must
-  separately establish the `EFER.NXE` precondition before relying on NX entries.
-- The existing QEMU tests validate boot and selected exception diagnostics; they do
-  not yet validate map/unmap against the active page tables.
+- The kernel establishes `CR0.WP` and `EFER.NXE`, and the normal QEMU boot path
+  performs an active map/access/unmap smoke cycle with local TLB invalidation.
+- Dedicated QEMU images and required CI steps have been added for supervisor write
+  protection (`error_code == 0x3`) and NX instruction fetch (`error_code == 0x11`).
+  Their exact fault metadata and terminal `isa-debug-exit` status are checked by a
+  separate serial-log validator. The tests must still pass on the final reviewed head.
+- Dedicated not-present-to-present and unmap/remap transition tests with exact fault
+  metadata and TLB behavior remain an outstanding acceptance item.
 
 ## Goals
 
@@ -358,10 +364,11 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 
 ## Validation and CI contract
 
-This PR specifies acceptance criteria; it does not implement the kernel integration,
-the recoverable test handlers, the NX test image, or CI jobs. The next implementation
-PR must add these tests and make them required CI gates rather than documenting them
-as manual-only checks.
+PR #11 implements the initial active-kernel editor and smoke cycle, and adds
+dedicated supervisor-write-protection and NX test images, a narrowly armed test-only
+fault handler, exact serial validators, CI steps, and retained QEMU logs. M1 remains
+open until the new tests pass on the latest PR head and dedicated map/unmap transition
+tests verify expected #PF metadata and TLB behavior.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
@@ -373,9 +380,9 @@ as manual-only checks.
 - The required job must build the normal boot image and each dedicated memory-test
   image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
   checks, image creation, serial-log validator tests, repeated normal boots, and
-  existing exception tests. It must also run the map/unmap and TLB-transition tests,
-  the dedicated supervisor write-protection image and the dedicated NX
-  instruction-fetch image under QEMU. The current unmapped-read #PF image does not
+  existing exception tests, dedicated supervisor write-protection image, and dedicated
+  NX instruction-fetch image under QEMU. The dedicated map/unmap and TLB-transition
+  test images still must be added to CI before M1 can exit. The current unmapped-read #PF image does not
   satisfy the write-protection acceptance test and must remain a separate case.
 - Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
   exceptions, missing or duplicate test success markers, an incorrect recovery path,
