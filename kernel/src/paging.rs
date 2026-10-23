@@ -140,12 +140,10 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     if code_address < boot_info.kernel_image_offset || code_address >= kernel_virtual_end {
         return Err(PagingError::InvalidKernelImageRange);
     }
-    let expected_code_physical = boot_info
-        .kernel_addr
-        .checked_add(code_address - boot_info.kernel_image_offset)
-        .filter(|physical| *physical < kernel_physical_end)
-        .ok_or(PagingError::InvalidKernelImageRange)?;
-
+    // The bootloader maps file-backed ELF segments from frames within the
+    // in-memory ELF slice using each PT_LOAD p_offset. A virtual offset is not
+    // generally equal to that file offset, so validate against the ELF backing
+    // interval rather than deriving a physical address from the virtual offset.
     let stack_end = boot_info
         .kernel_stack_bottom
         .checked_add(boot_info.kernel_stack_len)
@@ -158,10 +156,9 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     let code_translation =
         translate_virtual_address(code_address, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
-    // bootloader_api 0.11.x has no Kernel memory-region kind, so validate the
-    // target against the physical kernel-image interval supplied in BootInfo.
-    if code_translation.physical_address != expected_code_physical
-        || code_translation.physical_address < boot_info.kernel_addr
+    // Validate that the translated code byte is backed by the kernel ELF
+    // slice reported by BootInfo; PT_LOAD file offsets need not equal vaddrs.
+    if code_translation.physical_address < boot_info.kernel_addr
         || code_translation.physical_address >= kernel_physical_end
         || !translation_preserves_page_offset(code_address, code_translation)
         || code_translation.writable
