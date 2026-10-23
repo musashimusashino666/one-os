@@ -354,17 +354,17 @@ fn translate_virtual_address(
 /// does not advertise NX or the extended physical-address-width leaf.
 pub fn initialize_paging_controls() -> Result<(), PagingError> {
     // SAFETY: CPUID is available at the x86_64 kernel privilege level.
-    let maximum_extended_leaf = unsafe { __cpuid(0x8000_0000).eax };
+    let maximum_extended_leaf = __cpuid(0x8000_0000).eax;
     if maximum_extended_leaf < CPUID_PHYSICAL_ADDRESS_WIDTH {
         return Err(PagingError::UnsupportedNx);
     }
     // SAFETY: the maximum extended CPUID leaf was checked above.
-    let features = unsafe { __cpuid(CPUID_EXTENDED_FEATURES) };
+    let features = __cpuid(CPUID_EXTENDED_FEATURES);
     if features.edx & NX_FEATURE == 0 {
         return Err(PagingError::UnsupportedNx);
     }
     // SAFETY: the extended physical-address-width CPUID leaf was checked above.
-    let physical_address_bits = (unsafe { __cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH) }.eax & 0xff) as u8;
+    let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
     if !(32..=52).contains(&physical_address_bits) {
         return Err(PagingError::InvalidPhysicalAddressWidth {
             bits: physical_address_bits,
@@ -693,7 +693,7 @@ impl<'a> KernelPageTableEditor<'a> {
             self.target_virtual_address,
             4,
         )?;
-        let recursive_entry_pointer = entry_pointer_from_page(root_alias, self.recursive_index)?;
+        let recursive_entry_pointer = entry_pointer_from_page(root_alias, usize::from(self.recursive_index))?;
         // SAFETY: the bootloader contract supplied this recursive index, and
         // the root frame was validated as Bootloader-owned above.
         let recursive_entry = unsafe { ptr::read_volatile(recursive_entry_pointer) };
