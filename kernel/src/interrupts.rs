@@ -789,7 +789,6 @@ pub unsafe fn init() {
     initialize_tss_and_gdt();
 
     let selector: u16;
-    let selector: u16;
     // SAFETY: reading CS is valid in the current x86_64 kernel context.
     unsafe {
         asm!(
