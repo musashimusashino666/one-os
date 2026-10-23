@@ -119,7 +119,17 @@ For expected faults, validators must check the exact vector, CR2, saved instruct
 
 ### I4 — Schedule and IPC only after isolation
 
-After I1–I3 pass, design a minimal scheduler and thread lifecycle around validated kernel-owned contexts. Keep IPC and kernel-enforced capability operations as separate, reviewable increments. Before enabling preemption, add tests for context integrity, privilege transitions, stack ownership, cancellation, and failure recovery.
+After I1–I3 pass, design a minimal scheduler and thread lifecycle around validated kernel-owned contexts. Define IPC framing, length and memory-ownership validation, sender/receiver identity, cancellation, and failure behavior as a separate implementation increment. Before enabling preemption, add tests for context integrity, privilege transitions, stack ownership, cancellation, and failure recovery.
+
+This step may establish IPC transport and message validation, but it does not by itself complete kernel-enforced capability authorization. Do not claim that user-provided identifiers or capability-shaped values are trusted or enforced unless the separate I5 criteria pass.
+
+### I5 — Kernel-enforced capability operations
+
+Implement capability enforcement as a separate milestone after the address-space isolation boundary is established. The kernel must resolve each capability against kernel-owned authority state, determine the calling process from trusted kernel context, and check the requested right at every protected operation. User memory may carry a handle or request value, but its object ID, authority ID, generation, pointer, or serialized token is never proof of provenance or authorization.
+
+Define and test object lifetime, rights attenuation, delegation, revocation, and behavior for outstanding IPC messages or concurrent requests. Numeric identifiers must not be treated as globally unique principals merely because they were allocated by a process-local counter. Missing, stale, foreign, malformed, or forged capabilities must fail closed without performing the protected operation.
+
+Capability-specific acceptance tests must demonstrate denial for wrong-principal and insufficient-rights requests; correct revocation and stale-generation rejection; rejection of forged or modified user tokens; and preservation of object/frame ownership across IPC, cancellation, and teardown. These tests are required before claiming kernel-enforced capabilities, but their completion is not a prerequisite for declaring the narrower I1–I3 address-space isolation tests passed.
 
 ## Acceptance criteria for the first user-space isolation milestone
 
@@ -128,7 +138,7 @@ The milestone remains incomplete until all of the following are demonstrated on 
 - A kernel-controlled user-mode entry and return path executes successfully in QEMU.
 - Independent address spaces are created with validated roots and explicit frame ownership.
 - User code is unable to read or write kernel-only memory or another process's private memory.
-- The kernel cannot be tricked by user-supplied mappings, pointers, IDs, or authority tokens into granting access outside the active process's rights.
+- User-entry and address-space APIs reject user-controlled mapping metadata, addresses, lengths, and pointers that would bypass the active address space's memory permissions. This first isolation milestone does not claim that user-supplied object IDs or capability tokens are authenticated or enforced; kernel-enforced capability semantics are a separate later step.
 - Effective U/S, R/W, NX, CR0.WP, and EFER.NXE behavior is tested rather than inferred from source-level flags; W^X is enforced across all aliases of the same physical frame, including aliases in other address spaces, kernel/direct-map aliases, and large-page overlaps.
 - Address-space switching, unmapping, and teardown have tests for TLB invalidation and stale translations under the stated single-CPU execution model.
 - Allocation failure and invalid state fail closed without leaking reachable mappings, freeing foreign frames, or leaving a partially published address space.
