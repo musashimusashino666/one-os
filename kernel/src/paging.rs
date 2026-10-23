@@ -29,7 +29,6 @@ const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
-const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const TABLE_FRAME_CAPACITY: usize = 512;
 const MAPPING_SMOKE_BASE: u64 = 0xffff_a000_0000_0000;
