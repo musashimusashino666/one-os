@@ -1,9 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [main, "feat/**"]
+  # Run only for explicit PR lifecycle actions, not every pushed commit.
+  # Use workflow_dispatch to validate later PR updates on demand.
   pull_request:
+    types: [opened, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
