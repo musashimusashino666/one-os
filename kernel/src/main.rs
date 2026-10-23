@@ -32,7 +32,7 @@ const COM1: u16 = 0x3F8;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
-    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    config.mappings.page_table_recursive = Some(Mapping::Dynamic);
     config
 };
 
@@ -127,8 +127,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         paging_stats.root_table_physical,
     );
     interrupts::write_hex(
-        b"Verified virtual mappings: ",
-        paging_stats.verified_mappings as u64,
+        b"Validated bootstrap mappings: ",
+        paging_stats.validated_mappings as u64,
     );
 
     #[cfg(feature = "test-exception")]
@@ -210,7 +210,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             b"Status: physical allocation and read-only page-table inspection are available; new mappings, user mode, scheduler, and drivers are not implemented\n",
         );
         // This marker is emitted only after IDT installation, memory-map validation,
-        // and read-only page-table inspection. CI rejects any failed stage.
+        // allocator smoke tests, and mapping/permission validation. CI rejects any failed stage.
         serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
 
         halt_forever()

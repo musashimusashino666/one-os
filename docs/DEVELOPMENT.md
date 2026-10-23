@@ -51,7 +51,7 @@ GitHub Actions builds a BIOS disk image, then performs three independent QEMU in
 
 ## Read-only page-table inspection
 
-The normal BIOS image requests a dynamic physical-memory mapping from the bootloader. Before the bootstrap-completion marker, the kernel reads CR3/CR4, rejects five-level paging, and walks the current four-level page tables without modifying them. It verifies that the inspector code, current stack, and BootInfo each translate successfully. Every table page is checked against the boot memory map before an entry is read. The serial output must include:
+The normal BIOS image requests a recursive page-table mapping from the bootloader. Before the bootstrap-completion marker, the kernel reads CR3/CR4, rejects five-level paging, and walks the current four-level page tables through the recursive mapping without modifying them. It validates the kernel-code physical address against BootInfo, checks that stack and BootInfo map to Bootloader-owned frames, verifies page-size offset preservation, and enforces effective supervisor/write/execute expectations. It deliberately does not read Bootloader-owned page-table frames through `physical_memory_offset`, which bootloader_api documents as safe only for Usable frames. The serial output must include:
 
     ONE OS FRAME ALLOCATOR READY
     ONE OS PAGE TABLE INSPECTION READY

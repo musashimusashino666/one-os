@@ -9,7 +9,10 @@ use core::convert::TryFrom;
 use crate::PAGE_SIZE;
 
 const PRESENT: u64 = 1;
+const WRITABLE: u64 = 1 << 1;
+const USER_ACCESSIBLE: u64 = 1 << 2;
 const LARGE_PAGE: u64 = 1 << 7;
+const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PAGE_SIZE_2M: u64 = 1 << 21;
 const PAGE_SIZE_1G: u64 = 1 << 30;
@@ -41,6 +44,12 @@ pub struct PageTranslation {
     pub physical_address: u64,
     /// Size of the mapped page: 4 KiB, 2 MiB, or 1 GiB.
     pub page_size: u64,
+    /// Effective write permission (all paging levels allow writes).
+    pub writable: bool,
+    /// Effective user permission (all paging levels allow user access).
+    pub user_accessible: bool,
+    /// Effective execute permission (no paging level sets NX).
+    pub executable: bool,
 }
 
 /// Returns whether an address is canonical for x86_64 four-level paging.
@@ -48,30 +57,48 @@ pub const fn is_canonical_4level(address: u64) -> bool {
     address <= 0x0000_7fff_ffff_ffff || address >= 0xffff_8000_0000_0000
 }
 
-/// Returns whether a full page-table page is inside a caller-approved memory region.
+/// Computes the virtual page address of a page-table page through the bootloader's
+/// recursive PML4 mapping.
 ///
-/// The caller must classify the memory map and set the third tuple element only
-/// for region kinds that are safe to inspect as page-table storage. Firmware
-/// regions, MMIO, and any unknown kinds must be marked as not permitted.
-pub fn page_table_page_is_permitted<F>(
-    table_physical: u64,
-    region_count: usize,
-    mut region_bounds: F,
-) -> bool
-where
-    F: FnMut(usize) -> (u64, u64, bool),
-{
-    if table_physical == 0 || table_physical & (PAGE_SIZE - 1) != 0 {
-        return false;
+/// `table_level` is 4 for the PML4, 3 for the PDPT, 2 for a page directory,
+/// and 1 for a page table. The caller must enable the bootloader recursive
+/// mapping and use the index supplied in BootInfo.
+pub fn recursive_table_page_virtual_address(
+    recursive_index: u16,
+    virtual_address: u64,
+    table_level: u8,
+) -> Option<u64> {
+    if recursive_index >= 512 || !is_canonical_4level(virtual_address) {
+        return None;
     }
-    let Some(table_end) = table_physical.checked_add(PAGE_SIZE) else {
-        return false;
+
+    let recursive = u64::from(recursive_index);
+    let pml4 = (virtual_address >> 39) & 0x1ff;
+    let pdpt = (virtual_address >> 30) & 0x1ff;
+    let pd = (virtual_address >> 21) & 0x1ff;
+    let indices = match table_level {
+        4 => [recursive, recursive, recursive, recursive],
+        3 => [recursive, recursive, recursive, pml4],
+        2 => [recursive, recursive, pml4, pdpt],
+        1 => [recursive, pml4, pdpt, pd],
+        _ => return None,
     };
 
-    (0..region_count).any(|index| {
-        let (start, end, permitted) = region_bounds(index);
-        permitted && start <= table_physical && table_end <= end
-    })
+    let raw = (indices[0] << 39)
+        | (indices[1] << 30)
+        | (indices[2] << 21)
+        | (indices[3] << 12);
+    let canonical = if raw & (1 << 47) == 0 {
+        raw
+    } else {
+        raw | 0xffff_0000_0000_0000
+    };
+
+    if is_canonical_4level(canonical) {
+        Some(canonical)
+    } else {
+        None
+    }
 }
 
 /// Walks an existing x86_64 four-level page table without changing it.
@@ -120,10 +147,11 @@ where
             return Err(PageTableError::MalformedLargePage { level: 3 });
         }
         let page_base = pdpt_entry & PHYSICAL_ADDRESS_MASK & !(PAGE_SIZE_1G - 1);
-        return Ok(PageTranslation {
-            physical_address: page_base | (virtual_address & (PAGE_SIZE_1G - 1)),
-            page_size: PAGE_SIZE_1G,
-        });
+        return Ok(make_translation(
+            page_base | (virtual_address & (PAGE_SIZE_1G - 1)),
+            PAGE_SIZE_1G,
+            &[pml4_entry, pdpt_entry],
+        ));
     }
 
     let pd_physical = next_table(pdpt_entry, 2)?;
@@ -133,10 +161,11 @@ where
             return Err(PageTableError::MalformedLargePage { level: 2 });
         }
         let page_base = pd_entry & PHYSICAL_ADDRESS_MASK & !(PAGE_SIZE_2M - 1);
-        return Ok(PageTranslation {
-            physical_address: page_base | (virtual_address & (PAGE_SIZE_2M - 1)),
-            page_size: PAGE_SIZE_2M,
-        });
+        return Ok(make_translation(
+            page_base | (virtual_address & (PAGE_SIZE_2M - 1)),
+            PAGE_SIZE_2M,
+            &[pml4_entry, pdpt_entry, pd_entry],
+        ));
     }
 
     let pt_physical = next_table(pd_entry, 1)?;
@@ -151,10 +180,25 @@ where
     let _ = usize::try_from(physical_address)
         .map_err(|_| PageTableError::InvalidTableAddress { level: 1 })?;
 
-    Ok(PageTranslation {
+    Ok(make_translation(
         physical_address,
-        page_size: PAGE_SIZE,
-    })
+        PAGE_SIZE,
+        &[pml4_entry, pdpt_entry, pd_entry, pt_entry],
+    ))
+}
+
+fn make_translation(
+    physical_address: u64,
+    page_size: u64,
+    entries: &[u64],
+) -> PageTranslation {
+    PageTranslation {
+        physical_address,
+        page_size,
+        writable: entries.iter().all(|entry| entry & WRITABLE != 0),
+        user_accessible: entries.iter().all(|entry| entry & USER_ACCESSIBLE != 0),
+        executable: entries.iter().all(|entry| entry & NO_EXECUTE == 0),
+    }
 }
 
 fn present_entry<F>(
@@ -185,63 +229,74 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_canonical_4level, page_table_page_is_permitted, translate_4level, PageTableError,
-        PageTranslation,
+        is_canonical_4level, recursive_table_page_virtual_address, translate_4level,
+        PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
 
     #[test]
-    fn permits_a_page_table_page_in_an_explicitly_allowed_region() {
-        let regions = [
-            (0x1000, 0x5000, true),
-            (0x5000, 0x9000, false),
-        ];
+    fn recursive_mapping_addresses_select_the_expected_table_levels() {
+        let virtual_address = 0xffff_8123_4567_89ab;
+        let recursive = 510u16;
+        let pml4 = (virtual_address >> 39) & 0x1ff;
+        let pdpt = (virtual_address >> 30) & 0x1ff;
+        let pd = (virtual_address >> 21) & 0x1ff;
 
-        assert!(page_table_page_is_permitted(0x2000, regions.len(), |index| regions[index]));
+        let pml4_page =
+            recursive_table_page_virtual_address(recursive, virtual_address, 4).unwrap();
+        let pdpt_page =
+            recursive_table_page_virtual_address(recursive, virtual_address, 3).unwrap();
+        let pd_page = recursive_table_page_virtual_address(recursive, virtual_address, 2).unwrap();
+        let pt_page = recursive_table_page_virtual_address(recursive, virtual_address, 1).unwrap();
+
+        assert_eq!(
+            [
+                (pml4_page >> 39) & 0x1ff,
+                (pml4_page >> 30) & 0x1ff,
+                (pml4_page >> 21) & 0x1ff,
+                (pml4_page >> 12) & 0x1ff,
+            ],
+            [510, 510, 510, 510]
+        );
+        assert_eq!(
+            [
+                (pdpt_page >> 39) & 0x1ff,
+                (pdpt_page >> 30) & 0x1ff,
+                (pdpt_page >> 21) & 0x1ff,
+                (pdpt_page >> 12) & 0x1ff,
+            ],
+            [510, 510, 510, pml4]
+        );
+        assert_eq!(
+            [
+                (pd_page >> 39) & 0x1ff,
+                (pd_page >> 30) & 0x1ff,
+                (pd_page >> 21) & 0x1ff,
+                (pd_page >> 12) & 0x1ff,
+            ],
+            [510, 510, pml4, pdpt]
+        );
+        assert_eq!(
+            [
+                (pt_page >> 39) & 0x1ff,
+                (pt_page >> 30) & 0x1ff,
+                (pt_page >> 21) & 0x1ff,
+                (pt_page >> 12) & 0x1ff,
+            ],
+            [510, pml4, pdpt, pd]
+        );
+        for page in [pml4_page, pdpt_page, pd_page, pt_page] {
+            assert!(is_canonical_4level(page));
+            assert_eq!(page & (PAGE_SIZE - 1), 0);
+        }
     }
 
     #[test]
-    fn rejects_usable_mmio_reserved_and_unknown_regions() {
-        // The caller only marks bootloader-owned regions as permitted. Usable
-        // frames, MMIO/reserved firmware ranges, and unknown firmware kinds fail closed.
-        let untrusted_regions = [
-            (0x1000, 0x5000, false),
-            (0x5000, 0x9000, false),
-            (0x9000, 0xd000, false),
-        ];
-
-        assert!(!page_table_page_is_permitted(0x2000, untrusted_regions.len(), |index| {
-            untrusted_regions[index]
-        }));
-        assert!(!page_table_page_is_permitted(0x6000, untrusted_regions.len(), |index| {
-            untrusted_regions[index]
-        }));
-        assert!(!page_table_page_is_permitted(0xa000, untrusted_regions.len(), |index| {
-            untrusted_regions[index]
-        }));
-    }
-
-    #[test]
-    fn rejects_page_table_page_spanning_regions() {
-        let regions = [
-            (0x1000, 0x2800, true),
-            (0x2800, 0x5000, true),
-        ];
-
-        assert!(!page_table_page_is_permitted(0x2000, regions.len(), |index| regions[index]));
-    }
-
-    #[test]
-    fn rejects_invalid_page_table_storage_addresses() {
-        let regions = [(0x1000, 0x5000, true)];
-
-        assert!(!page_table_page_is_permitted(0, regions.len(), |index| regions[index]));
-        assert!(!page_table_page_is_permitted(0x1001, regions.len(), |index| regions[index]));
-        assert!(!page_table_page_is_permitted(
-            0xffff_ffff_ffff_f000,
-            regions.len(),
-            |index| regions[index]
-        ));
+    fn rejects_invalid_recursive_mapping_inputs() {
+        assert_eq!(recursive_table_page_virtual_address(512, 0xffff_8000_0000_0000, 4), None);
+        assert_eq!(recursive_table_page_virtual_address(510, 0x0000_8000_0000_0000, 4), None);
+        assert_eq!(recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 0), None);
+        assert_eq!(recursive_table_page_virtual_address(510, 0xffff_8000_0000_0000, 5), None);
     }
 
     #[test]
@@ -279,8 +334,36 @@ mod tests {
             PageTranslation {
                 physical_address: 0xabcdeabc,
                 page_size: PAGE_SIZE,
+                writable: true,
+                user_accessible: false,
+                executable: true,
             }
         );
+    }
+
+    #[test]
+    fn effective_permissions_are_intersected_across_all_levels() {
+        let virtual_address = 0x0000_1234_5678_9abc;
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let result = translate_4level(virtual_address, 0x1000, |table, index| {
+            match (table, index) {
+                (0x1000, i) if i == indices[0] => Some(0x2005),
+                (0x2000, i) if i == indices[1] => Some(0x3007),
+                (0x3000, i) if i == indices[2] => Some(0x4007),
+                (0x4000, i) if i == indices[3] => Some(0xabcde003 | (1 << 63)),
+                _ => Some(0),
+            }
+        })
+        .unwrap();
+
+        assert!(!result.writable);
+        assert!(!result.user_accessible);
+        assert!(!result.executable);
     }
 
     #[test]

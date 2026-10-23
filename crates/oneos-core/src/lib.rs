@@ -25,7 +25,7 @@ pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
 pub use page_table::{
-    is_canonical_4level, page_table_page_is_permitted, translate_4level, PageTableError,
+    is_canonical_4level, recursive_table_page_virtual_address, translate_4level, PageTableError,
     PageTranslation,
 };
 
