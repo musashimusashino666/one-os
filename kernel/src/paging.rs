@@ -158,15 +158,15 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     let code_translation =
         translate_virtual_address(code_address, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
+    // bootloader_api 0.11.x has no Kernel memory-region kind, so validate the
+    // target against the physical kernel-image interval supplied in BootInfo.
     if code_translation.physical_address != expected_code_physical
+        || code_translation.physical_address < boot_info.kernel_addr
+        || code_translation.physical_address >= kernel_physical_end
         || !translation_preserves_page_offset(code_address, code_translation)
         || code_translation.writable
         || code_translation.user_accessible
         || !code_translation.executable
-        || !is_kernel_owned_page(
-            regions,
-            code_translation.physical_address & !(PAGE_SIZE - 1),
-        )
     {
         return Err(PagingError::InvalidKernelCodeMapping);
     }
@@ -218,17 +218,6 @@ fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> boo
             region.start,
             region.end,
             matches!(region.kind, MemoryRegionKind::Bootloader),
-        )
-    })
-}
-
-fn is_kernel_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
-    physical_page_is_in_allowed_region(page_physical, regions.len(), |index| {
-        let region = regions[index];
-        (
-            region.start,
-            region.end,
-            matches!(region.kind, MemoryRegionKind::Kernel),
         )
     })
 }
