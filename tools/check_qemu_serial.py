@@ -11,7 +11,7 @@ START_MARKER = "ONE OS kernel booted"
 COMPLETE_MARKER = "ONE OS BOOTSTRAP COMPLETE"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
-EXCEPTION_MARKER = "ONE OS EXCEPTION\n"
+EXCEPTION_MARKER = "ONE OS EXCEPTION"
 
 
 def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
@@ -20,8 +20,8 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
         return False, f"Kernel panic marker found: {PANIC_MARKER}"
-    if EXCEPTION_MARKER in log:
-        return False, f"Unexpected exception marker found: {EXCEPTION_MARKER.strip()}"
+    if any(line.strip() == EXCEPTION_MARKER for line in log.splitlines()):
+        return False, f"Unexpected exception marker found: {EXCEPTION_MARKER}"
     start_index = log.find(START_MARKER)
     if start_index < 0:
         return False, f"Kernel startup marker missing: {START_MARKER}"
