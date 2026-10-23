@@ -140,8 +140,8 @@ fn present_entry<F>(
 where
     F: FnMut(u64, usize) -> Option<u64>,
 {
-    let entry = read_entry(table_physical, index)
-        .ok_or(PageTableError::TableUnavailable { level })?;
+    let entry =
+        read_entry(table_physical, index).ok_or(PageTableError::TableUnavailable { level })?;
     if entry & PRESENT == 0 {
         return Err(PageTableError::NotPresent { level });
     }
@@ -158,9 +158,7 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_canonical_4level, translate_4level, PageTableError, PageTranslation,
-    };
+    use super::{is_canonical_4level, translate_4level, PageTableError, PageTranslation};
     use crate::PAGE_SIZE;
 
     #[test]
@@ -266,12 +264,10 @@ mod tests {
     #[test]
     fn rejects_malformed_large_page_entries() {
         // Bit 13 is reserved in a 1 GiB mapping entry.
-        let error = translate_4level(0x1000, 0x1000, |table, index| {
-            match (table, index) {
-                (0x1000, 0) => Some(0x2003),
-                (0x2000, 0) => Some(0x4000_2083),
-                _ => Some(0),
-            }
+        let error = translate_4level(0x1000, 0x1000, |table, index| match (table, index) {
+            (0x1000, 0) => Some(0x2003),
+            (0x2000, 0) => Some(0x4000_2083),
+            _ => Some(0),
         })
         .unwrap_err();
         assert_eq!(error, PageTableError::MalformedLargePage { level: 3 });
