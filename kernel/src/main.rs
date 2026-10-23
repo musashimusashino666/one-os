@@ -16,7 +16,10 @@ use oneos_core::{validate_memory_map, MemoryMapError};
 #[cfg(any(
     all(feature = "test-exception", feature = "test-general-protection"),
     all(feature = "test-exception", feature = "test-page-fault"),
-    all(feature = "test-general-protection", feature = "test-page-fault")
+    all(feature = "test-exception", feature = "test-double-fault"),
+    all(feature = "test-general-protection", feature = "test-page-fault"),
+    all(feature = "test-general-protection", feature = "test-double-fault"),
+    all(feature = "test-page-fault", feature = "test-double-fault")
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
 
@@ -37,7 +40,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_init();
     }
 
-    interrupts::init();
+    // SAFETY: bootstrap is single-core, interrupts remain disabled, and the
+    // IDT/TSS/GDT setup is performed exactly once before entering the kernel loop.
+    unsafe { interrupts::init() };
 
     // Validate physical memory ranges before reporting a successful boot.
     let region_count = boot_info.memory_regions.len();
@@ -108,10 +113,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
 
+    #[cfg(feature = "test-double-fault")]
+    {
+        const INVALID_STACK_POINTER: usize = 0x8000_0000_0000_0000;
+        serial_write(b"ONE OS EXCEPTION TEST: triggering double fault\n");
+        // SAFETY: this test-only image deliberately installs a non-canonical
+        // RSP before raising #UD. The failed exception-frame push escalates to
+        // #DF, whose handler must switch to the configured IST stack.
+        unsafe {
+            asm!(
+                "mov rsp, {bad_stack}",
+                "ud2",
+                bad_stack = in(reg) INVALID_STACK_POINTER,
+                options(noreturn)
+            );
+        }
+    }
+
     #[cfg(not(any(
         feature = "test-exception",
         feature = "test-general-protection",
-        feature = "test-page-fault"
+        feature = "test-page-fault",
+        feature = "test-double-fault"
     )))]
     {
         serial_write(b"\nONE OS kernel booted\n");
