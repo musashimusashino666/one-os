@@ -79,3 +79,38 @@ jobs:
               --log "$log" \
               --exit-status "$status"
           done
+
+      - name: Verify exception diagnostics in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-exception
+          log="$CARGO_TARGET_DIR/qemu-exception-test.log"
+          set +e
+          timeout 10s qemu-system-x86_64 \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-exception-test-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+
+          if [ "$status" -ne 124 ]; then
+            echo "Expected QEMU to remain halted after the handled exception (timeout status 124); got $status" >&2
+            exit 1
+          fi
+
+          grep -F "ONE OS EXCEPTION TEST: triggering invalid opcode" "$log"
+          grep -F "ONE OS EXCEPTION" "$log"
+          grep -F "Exception: invalid opcode" "$log"
+          grep -F "Exception vector: 0x0000000000000006" "$log"
+          grep -F "Instruction pointer: 0x" "$log"
+          grep -F "ONE OS EXCEPTION HALTED" "$log"
+
+          if grep -Fq "ONE OS BOOTSTRAP COMPLETE" "$log"; then
+            echo "Fault-injection image incorrectly reported successful bootstrap" >&2
+            exit 1
+          fi
+          if grep -Fq "ONE OS KERNEL PANIC" "$log"; then
+            echo "Exception test unexpectedly entered the Rust panic handler" >&2
+            exit 1
+          fi
