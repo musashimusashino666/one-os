@@ -79,3 +79,32 @@ jobs:
               --log "$log" \
               --exit-status "$status"
           done
+
+      - name: Verify exception diagnostics in QEMU
+        shell: bash
+        run: |
+          verify_exception_case() {
+            local command="$1"
+            local image="$2"
+            local case_name="$3"
+            local log="$CARGO_TARGET_DIR/$command.log"
+
+            cargo run --locked -p oneos-xtask -- "$command"
+            set +e
+            timeout 10s qemu-system-x86_64 \
+              -drive format=raw,file="$CARGO_TARGET_DIR/$image" \
+              -serial stdio -display none -no-reboot -no-shutdown \
+              > "$log" 2>&1
+            local status=$?
+            set -e
+            cat "$log"
+
+            python3 tools/check_qemu_exception.py \
+              --log "$log" \
+              --exit-status "$status" \
+              --case "$case_name"
+          }
+
+          verify_exception_case image-test-exception one-os-exception-test-bios.img ud
+          verify_exception_case image-test-general-protection one-os-general-protection-test-bios.img gp
+          verify_exception_case image-test-page-fault one-os-page-fault-test-bios.img pf

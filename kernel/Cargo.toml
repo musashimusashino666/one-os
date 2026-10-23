@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Experimental x86_64 bare-metal kernel for ONE OS"
 
+[features]
+default = []
+# Test-only fault injection for the QEMU exception diagnostics checks.
+test-exception = []
+test-general-protection = []
+test-page-fault = []
+
 [dependencies]
 bootloader_api = "=0.11.17"
 oneos-core = { path = "../crates/oneos-core" }

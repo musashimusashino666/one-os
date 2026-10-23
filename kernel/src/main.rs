@@ -1,27 +1,43 @@
+#![feature(abi_x86_interrupt)]
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 //! Initial x86_64 kernel entry point.
 //!
-//! This bootstrap currently provides serial diagnostics and a halt loop only.
-//! It is not yet a complete or independently bootable OS image.
+//! This bootstrap provides serial diagnostics, basic CPU exception handling,
+//! and a halt loop. It is not yet a complete or independently bootable OS.
 
 use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
 
+#[cfg(any(
+    all(feature = "test-exception", feature = "test-general-protection"),
+    all(feature = "test-exception", feature = "test-page-fault"),
+    all(feature = "test-general-protection", feature = "test-page-fault")
+))]
+compile_error!("enable only one exception fault-injection feature at a time");
+
+mod interrupts;
+
 const COM1: u16 = 0x3F8;
 
 entry_point!(kernel_main);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    // SAFETY: this runs in the privileged kernel entry point on x86_64.
-    // COM1 is the conventional first PC serial port.
+    // Establish the interrupt state before any peripheral or IDT setup.
+    // SAFETY: this is privileged x86_64 kernel entry code. Maskable interrupts
+    // stay disabled throughout this bootstrap; the legacy PIC is also masked.
     unsafe {
+        asm!("cli", options(nomem, nostack));
+        outb(0x21, u8::MAX);
+        outb(0xA1, u8::MAX);
         serial_init();
     }
+
+    interrupts::init();
 
     // Validate physical memory ranges before reporting a successful boot.
     let region_count = boot_info.memory_regions.len();
@@ -42,18 +58,75 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
 
-    serial_write(b"\nONE OS kernel booted\n");
-    serial_write(b"Architecture: x86_64\n");
-    serial_write(b"Milestone: serial bootstrap\n");
-    serial_write(b"Memory map: structurally validated\n");
-    serial_write(
-        b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
-    );
-    // This marker is emitted only after memory-map validation and diagnostics.
-    // CI requires it and rejects panic or invalid-memory-map markers.
-    serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
+    // Fault-injection configurations are compiled only for dedicated QEMU
+    // tests. The normal BIOS image never executes these paths.
+    #[cfg(feature = "test-exception")]
+    {
+        serial_write(b"ONE OS EXCEPTION TEST: triggering invalid opcode\n");
+        // SAFETY: UD2 deliberately raises #UD in the dedicated test image.
+        unsafe { asm!("ud2", options(nomem, nostack, noreturn)) }
+    }
 
-    halt_forever()
+    #[cfg(feature = "test-general-protection")]
+    {
+        const NON_CANONICAL_ADDRESS: usize = 0x8000_0000_0000_0000;
+        serial_write(b"ONE OS EXCEPTION TEST: triggering non-canonical address access\n");
+        // SAFETY: this is a data load from an address that is non-canonical in
+        // both 48-bit and 57-bit paging modes, which raises #GP(0) before page
+        // translation. This path exists only in the dedicated test image.
+        let _fault_value: u64;
+        unsafe {
+            asm!(
+                "mov {value}, qword ptr [{address}]",
+                value = out(reg) _fault_value,
+                address = in(reg) NON_CANONICAL_ADDRESS,
+                options(nostack)
+            );
+        }
+        // This instruction must fault. Do not rely on options(noreturn) to
+        // synthesize a fallback UD2 if the test instruction unexpectedly returns.
+        serial_write(b"ONE OS EXCEPTION TEST FAILED: non-canonical load returned\n");
+        halt_forever()
+    }
+
+    #[cfg(feature = "test-page-fault")]
+    {
+        const FAULT_ADDRESS: usize = 0x0000_4000_0000_0000;
+        serial_write(b"ONE OS EXCEPTION TEST: triggering page fault\n");
+        // SAFETY: the assembly load deliberately reads this unmapped canonical
+        // address only in the dedicated test image, exercising #PF and CR2
+        // logging without relying on Rust pointer-dereference semantics.
+        let _fault_value: u64;
+        unsafe {
+            asm!(
+                "mov {value}, qword ptr [{address}]",
+                value = out(reg) _fault_value,
+                address = in(reg) FAULT_ADDRESS,
+                options(nostack, readonly)
+            );
+        }
+        halt_forever()
+    }
+
+    #[cfg(not(any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault"
+    )))]
+    {
+        serial_write(b"\nONE OS kernel booted\n");
+        serial_write(b"Architecture: x86_64\n");
+        serial_write(b"Milestone: serial bootstrap\n");
+        serial_write(b"Memory map: structurally validated\n");
+        serial_write(
+            b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
+        );
+        // This marker is emitted only after IDT installation and memory-map
+        // validation. CI rejects exception, panic, and invalid-map markers.
+        serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
+
+        halt_forever()
+    }
 }
 
 unsafe fn serial_init() {

@@ -46,6 +46,20 @@ The kernel rejects empty, inverted, or overlapping memory-map ranges before it e
 
 GitHub Actions builds a BIOS disk image, then performs three independent QEMU invocations against that image. Each attempt captures serial output and requires the startup and bootstrap-completion markers to appear in the correct order. Panic, invalid-memory-map markers, missing completion markers, and unexpected exit statuses fail the check. A timeout after the expected markers is normal because the bootstrap kernel deliberately halts without powering down. This smoke test checks boot integration, not OS completeness or security. CI installs the required toolchain components explicitly before building the image and imposes a job timeout to prevent hung runs.
 
+## Exception diagnostics test
+
+The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The current IDT uses the active kernel stack, so an IST stack for reliable double-fault diagnosis remains future work.
+
+The fault-injection BIOS images are enabled only for dedicated tests, never for the normal kernel image:
+
+    cargo run --locked -p oneos-xtask -- image-test-exception
+    cargo run --locked -p oneos-xtask -- image-test-general-protection
+    cargo run --locked -p oneos-xtask -- image-test-page-fault
+
+CI executes all three images in QEMU. It verifies that the invalid-opcode test reports vector 6, a direct assembly data load from a non-canonical address reports #GP (vector 13) with error code 0, and a direct assembly load from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each handler halts; stop local runs with Ctrl-C.
+
+The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagnostic marker, even if the bootstrap-completion marker was already printed.
+
 ## Contribution rules
 
 - Keep pull requests narrowly scoped and describe observable behavior.

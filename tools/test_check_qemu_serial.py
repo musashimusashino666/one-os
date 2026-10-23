@@ -8,6 +8,7 @@ from check_qemu_serial import validate_serial_output
 START = "ONE OS kernel booted"
 COMPLETE = "ONE OS BOOTSTRAP COMPLETE"
 PANIC = "ONE OS KERNEL PANIC"
+EXCEPTION = "ONE OS EXCEPTION"
 
 
 class ValidateSerialOutputTests(unittest.TestCase):
@@ -26,6 +27,13 @@ class ValidateSerialOutputTests(unittest.TestCase):
         valid, reason = validate_serial_output(f"{START}\n{COMPLETE}\n{PANIC}\n", 124)
         self.assertFalse(valid)
         self.assertIn("panic", reason.lower())
+
+    def test_exception_after_completion_marker_fails(self):
+        valid, reason = validate_serial_output(
+            f"{START}\n{COMPLETE}\n{EXCEPTION}\nException: invalid opcode\n", 124
+        )
+        self.assertFalse(valid)
+        self.assertIn("exception marker", reason.lower())
 
     def test_missing_completion_marker_fails(self):
         valid, reason = validate_serial_output(f"{START}\n", 124)
