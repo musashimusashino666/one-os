@@ -14,6 +14,7 @@ use oneos_core::{
     translate_4level, PageTableError, PageTranslation, PAGE_SIZE,
 };
 
+const CR0_WP: u64 = 1 << 16;
 const CR4_LA57: u64 = 1 << 12;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -28,6 +29,7 @@ pub enum PagingError {
     RecursiveMappingUnavailable,
     InvalidRecursiveIndex,
     UnsupportedFiveLevelPaging,
+    SupervisorWriteProtectionDisabled,
     InvalidRootTable,
     InvalidKernelImageRange,
     InvalidKernelCodeMapping,
@@ -47,16 +49,19 @@ impl PagingError {
             }
             Self::InvalidKernelImageRange => b"BootInfo kernel image range is invalid\n",
             Self::InvalidKernelCodeMapping => {
-                b"Kernel code mapping does not match expected physical address/permissions\n"
+                b"Kernel code translation is outside the ELF backing interval or has unexpected page-table permissions\n"
             }
             Self::InvalidStackMapping => {
-                b"Kernel stack mapping does not match expected range/permissions\n"
+                b"Kernel stack pointer is outside the expected virtual range or has unexpected page offset/page-table permissions\n"
             }
             Self::InvalidBootInfoMapping => {
-                b"BootInfo mapping does not match expected ownership/permissions\n"
+                b"BootInfo mapping has an unexpected page offset or page-table permissions\n"
             }
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
+            }
+            Self::SupervisorWriteProtectionDisabled => {
+                b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\n"
             }
             Self::InvalidRootTable => b"CR3 PML4 page is invalid or not fully Bootloader-owned\n",
             Self::Translation(PageTableError::NonCanonicalVirtualAddress) => {
@@ -99,15 +104,22 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidRecursiveIndex);
     }
 
+    let cr0: u64;
     let cr4: u64;
     let cr3: u64;
-    // SAFETY: reading CR4 and CR3 is valid in the privileged x86_64 kernel.
+    // SAFETY: reading CR0, CR3, and CR4 is valid in the privileged x86_64 kernel.
     unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
         asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
     }
     if cr4 & CR4_LA57 != 0 {
         return Err(PagingError::UnsupportedFiveLevelPaging);
+    }
+    // With CR0.WP clear, supervisor writes can bypass read-only PTEs. Require
+    // write protection before treating R/W=0 as an enforced kernel restriction.
+    if cr0 & CR0_WP == 0 {
+        return Err(PagingError::SupervisorWriteProtectionDisabled);
     }
 
     let root_table_physical = cr3 & PHYSICAL_ADDRESS_MASK;
