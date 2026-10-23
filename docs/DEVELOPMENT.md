@@ -17,6 +17,29 @@ Run these from the repository root:
     cargo clippy --locked -p oneos-core --all-targets -- -D warnings
     cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
+## CI and merge protection
+
+The CI workflow runs in the pull-request context when a PR is opened, reopened,
+marked ready for review, or updated with a new head commit (`synchronize`). The
+required check name is `Format, test, lint, and boot`; keep it synchronized with
+the active GitHub ruleset if the job is renamed. `workflow_dispatch` is useful
+for diagnosis, but a run for an older SHA or a non-PR event does not validate the
+current PR head.
+
+GitHub's active `Protect main` ruleset is the authoritative merge gate; comments
+in a workflow file cannot enforce repository settings. It must require the
+`Format, test, lint, and boot` check and keep the branch up to date with `main`.
+Review threads should be resolved; if approving reviews are configured, stale
+approvals should be dismissed after new commits. Avoid bypass actors where possible.
+
+**Single-maintainer policy:** the ruleset currently requires `0` approving reviews.
+Keep this at `0` while no independent reviewer is available. A requirement of one
+approval would prevent the sole PR author from approving their own change and can
+block all merges. Continue to review the diff deliberately and require a successful
+PR-context check on the exact latest HEAD before merging. Revisit the approval
+threshold only after an independent reviewer is available; do not present native
+review approval as enforced while its count is zero.
+
 ## Build a BIOS image
 
 Run:

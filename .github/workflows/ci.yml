@@ -1,39 +1,24 @@
 name: CI
 
 on:
-  # CI cost policy: intentionally omit `push` and `pull_request.synchronize`.
-  # Normal feature-branch pushes and each follow-up PR commit therefore do not
-  # automatically consume runner time. CI starts on PR opened/reopened/ready_for_review,
-  # or when explicitly dispatched from Actions -> CI -> Run workflow.
+  # Required PR validation runs for each candidate, including every new head commit.
+  # workflow_dispatch is for diagnostics; it is not a substitute for the PR-context check.
   #
-  # This is a scheduling policy, NOT a substitute for merge protection. The active
-  # repository ruleset "Protect main" currently enforces the following on the default
-  # branch (verify the ruleset if these assumptions are changed):
-  # - Changes must go through a pull request; review threads must be resolved.
-  # - Required check: "Format, test, lint, and boot", sourced from GitHub Actions.
-  # - Strict required checks: the PR branch must be up to date with main.
-  # - Linear history; deletion and non-fast-forward updates are blocked; no bypass
-  #   actors are configured.
+  # Merge protection is enforced by GitHub's active "Protect main" ruleset, not by
+  # these comments. The ruleset must require the named CI check, strict up-to-date checks,
+  # with review threads resolved. Required approving reviews are intentionally zero while
+  # this is a single-maintainer repository; requiring one would block self-authored PR merges.
+  # Raise that threshold only after an independent reviewer is available. Rulesets are GitHub-side settings, not YAML.
   #
-  # Safety consequence: after a new commit, a green check for an older revision is
-  # not sufficient. Because "synchronize" is intentionally disabled, GitHub's required
-  # check should remain Expected/Pending for the new PR candidate until that candidate
-  # is tested; do not merge unless the required check is green for the latest revision
-  # and the branch is up to date with main. A workflow_dispatch run is useful for
-  # diagnostics, but do not assume it satisfies the PR's required merge-context check.
-  # To create a fresh PR-context run after the final push, explicitly move the PR from
-  # Draft to Ready for review; this emits ready_for_review and runs CI on that candidate.
-  #
-  # Important limitations: this depends on "Protect main" remaining active and its
-  # required check/strict policy remaining enabled. The current ruleset requires ZERO
-  # approving reviews, so it does not independently require a human approval. The job
-  # name above is a required-check contract; if renamed, update the ruleset as well.
-  # If the ruleset is disabled, bypassed, or weakened, this no-push-trigger policy is
-  # not safe as a merge gate. Docs:
+  # Verification before merge: ensure the required check is green for the latest PR HEAD
+  # and the branch is up to date with main. workflow_dispatch runs are diagnostic only;
+  # do not treat a run from an older SHA or a non-PR event as approval of the current HEAD.
+  # The job name below is a contract with the Protect main ruleset; update both if renamed.
+  # Docs:
   # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
   # https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 permissions:
