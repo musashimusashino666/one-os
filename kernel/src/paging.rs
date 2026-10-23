@@ -1335,8 +1335,7 @@ pub fn prepare_mapping_transition_test(
         };
         let absent = matches!(
             translate_with_editor(&mut editor, root_table_physical, candidate),
-            Err(PageTableError::NotPresent { .. })
-                | Err(PageTableError::TableUnavailable { .. })
+            Err(PageTableError::NotPresent { .. }) | Err(PageTableError::TableUnavailable { .. })
         );
         if absent {
             return Ok(MappingTransitionTest {
@@ -1370,10 +1369,7 @@ impl MappingTransitionTest {
         // SAFETY: map_first installed a writable supervisor-only mapping to the
         // owned first frame and invalidated the target VA in the local TLB.
         unsafe {
-            ptr::write_volatile(
-                self.virtual_address as *mut u64,
-                TRANSITION_FIRST_SENTINEL,
-            );
+            ptr::write_volatile(self.virtual_address as *mut u64, TRANSITION_FIRST_SENTINEL);
         }
         let observed = unsafe { ptr::read_volatile(self.virtual_address as *const u64) };
         if observed != TRANSITION_FIRST_SENTINEL {
