@@ -30,7 +30,7 @@ pub use page_table::{
     recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
 };
 pub use page_table_mutation::{
-    map_4k, unmap_4k, PagePermissions, PageTableMutationError, UnmappedPage,
+    map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
 };
 
 /// Stable identifier for a resource managed by an authority.
