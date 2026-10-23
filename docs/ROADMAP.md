@@ -32,13 +32,18 @@ Exit criteria: allocator, ownership-registry, registry-backed mutation rollback,
 
 ## M2 — Isolation and IPC
 
-- Add user-mode entry/exit and independent address spaces.
-- Implement a minimal scheduler and thread lifecycle.
-- Define message formats with length and ownership validation.
-- Introduce kernel-enforced capability checks at each privileged interface.
-- Test denial, revocation, invalid pointers, and cross-process isolation.
+- [x] Define the implementation contract and adversarial acceptance plan in [ISOLATION_PLAN.md](ISOLATION_PLAN.md). This document specifies the required invariants and test criteria; it does not mean the isolation features are implemented.
+- [ ] Add host-testable address-space construction, validation, switching, and teardown primitives that preserve frame ownership and fail-closed rollback.
+- [ ] Implement a kernel-controlled ring 3 entry/return path with validated registers, selectors, user stack, and a kernel entry stack.
+- [ ] Create independent user address spaces while keeping any required shared kernel mappings supervisor-only; prevent user access to page tables and recursive aliases.
+- [ ] Add adversarial QEMU tests proving user code cannot access kernel-only memory or another process's private frames, including same-virtual-address/different-frame cases.
+- [ ] Verify effective U/S, R/W, NX, W^X, CR0.WP, EFER.NXE, and address-space-switch/TLB behavior; keep the existing M1 suite green on the exact PR head.
+- [ ] Implement a minimal scheduler and thread lifecycle only after the entry/exit and isolation acceptance tests pass.
+- [ ] Define IPC message framing, length and memory-ownership validation, sender/receiver identity, and failure behavior.
+- [ ] Introduce kernel-enforced capability checks at every protected operation; do not trust user-supplied IDs or serialized capability data as proof of authority.
+- [ ] Test denial, revocation, invalid pointers, malformed messages, teardown, and cross-process isolation.
 
-Exit criteria: adversarial tests cannot use one process's authority to access another process's protected resources.
+Exit criteria: a controlled user-mode execution and return path succeeds; adversarial tests demonstrate that a process cannot read or modify kernel-only memory or another process's private resources; address-space changes and teardown do not permit stale-TLB access or premature frame reuse; invalid state and resource exhaustion fail closed without publishing partial mappings or freeing foreign frames; and the complete documented acceptance suite passes on the exact reviewed commit. Passing QEMU tests demonstrate only the declared scenarios under the tested single-CPU environment, not SMP safety or production readiness. See the [user-space isolation plan](ISOLATION_PLAN.md).
 
 ## M3 — Storage and recovery
 
