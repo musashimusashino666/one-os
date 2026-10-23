@@ -100,23 +100,23 @@ impl PagingError {
                 b"Five-level paging is not supported by this inspector\n"
             }
             Self::SupervisorWriteProtectionDisabled => {
-                b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\\n"
+                b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\n"
             }
-            Self::UnsupportedNx => b"CPU does not expose the required NX feature\\n",
+            Self::UnsupportedNx => b"CPU does not expose the required NX feature\n",
             Self::InvalidPhysicalAddressWidth { .. } => {
-                b"CPU reported an unsupported physical-address width\\n"
+                b"CPU reported an unsupported physical-address width\n"
             }
             Self::PhysicalMemoryOffsetUnavailable => {
-                b"Bootloader did not provide a physical-memory offset\\n"
+                b"Bootloader did not provide a physical-memory offset\n"
             }
             Self::InterruptsEnabled => {
-                b"Page-table mutation requires maskable interrupts to remain disabled\\n"
+                b"Page-table mutation requires maskable interrupts to remain disabled\n"
             }
-            Self::FrameAllocationFailed => b"Could not allocate a data frame for the mapping smoke test\\n",
-            Self::FrameReleaseFailed => b"Could not release the mapping smoke-test frame\\n",
-            Self::NoUnusedVirtualAddress => b"No unused virtual address was available for the mapping smoke test\\n",
-            Self::MappingSmokeMismatch => b"Active page-table map/unmap smoke test failed\\n",
-            Self::MappingMutation(_) => b"Active page-table map/unmap operation failed\\n",
+            Self::FrameAllocationFailed => b"Could not allocate a data frame for the mapping smoke test\n",
+            Self::FrameReleaseFailed => b"Could not release the mapping smoke-test frame\n",
+            Self::NoUnusedVirtualAddress => b"No unused virtual address was available for the mapping smoke test\n",
+            Self::MappingSmokeMismatch => b"Active page-table map/unmap smoke test failed\n",
+            Self::MappingMutation(_) => b"Active page-table map/unmap operation failed\n",
             Self::InvalidRootTable => b"CR3 PML4 page is invalid or not fully Bootloader-owned\n",
             Self::Translation(PageTableError::NonCanonicalVirtualAddress) => {
                 b"Page-table inspection received a non-canonical virtual address\n"
@@ -1344,19 +1344,19 @@ pub fn prepare_mapping_transition_test(
         let Ok(mut editor) = KernelPageTableEditor::new(boot_info, candidate) else {
             return Err(PagingError::MappingSmokeMismatch);
         };
-        let absent = matches!(
-            translate_with_editor(&mut editor, root_table_physical, candidate),
-            Err(PageTableError::NotPresent { .. }) | Err(PageTableError::TableUnavailable { .. })
-        );
-        if absent {
-            return Ok(MappingTransitionTest {
-                virtual_address: candidate,
-                first_physical_address,
-                second_physical_address,
-                first_frame,
-                second_frame,
-                state: TransitionTestState::Unmapped,
-            });
+        match translate_with_editor(&mut editor, root_table_physical, candidate) {
+            Err(PageTableError::NotPresent { .. }) => {
+                return Ok(MappingTransitionTest {
+                    virtual_address: candidate,
+                    first_physical_address,
+                    second_physical_address,
+                    first_frame,
+                    second_frame,
+                    state: TransitionTestState::Unmapped,
+                });
+            }
+            Err(error) => return Err(PagingError::Translation(error)),
+            Ok(_) => {}
         }
     }
 
