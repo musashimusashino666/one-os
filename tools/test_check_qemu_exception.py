@@ -92,12 +92,16 @@ class ValidateExceptionOutputTests(unittest.TestCase):
 
     def test_missing_trigger_or_halt_marker_fails(self):
         log = valid_log("ud")
-        for mutated in (
-            log.replace("ONE OS EXCEPTION TEST: triggering invalid opcode\n", ""),
-            log.replace("ONE OS EXCEPTION HALTED\n", ""),
+        for marker in (
+            "ONE OS EXCEPTION TEST: triggering invalid opcode",
+            "ONE OS EXCEPTION HALTED",
         ):
-            valid, _ = validate_exception_output(mutated, 124, "ud")
-            self.assertFalse(valid)
+            with self.subTest(marker=marker):
+                mutated = "\n".join(
+                    line for line in log.splitlines() if line != marker
+                )
+                valid, _ = validate_exception_output(mutated, 124, "ud")
+                self.assertFalse(valid)
 
     def test_boot_completion_or_panic_marker_fails(self):
         for marker in ("ONE OS BOOTSTRAP COMPLETE", "ONE OS KERNEL PANIC"):
