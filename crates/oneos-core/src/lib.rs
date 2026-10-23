@@ -25,8 +25,8 @@ pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
 pub use page_table::{
-    is_canonical_4level, recursive_table_page_virtual_address, translate_4level, PageTableError,
-    PageTranslation,
+    is_canonical_4level, physical_page_is_in_allowed_region,
+    recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
 };
 
 /// Stable identifier for a resource managed by an authority.
