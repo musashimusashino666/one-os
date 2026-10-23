@@ -8,7 +8,7 @@ from check_qemu_exception import validate_exception_output
 def valid_log(case: str, *, error_code: str | None = None, fault_address: str | None = None) -> str:
     cases = {
         "ud": ("invalid opcode", "0x0000000000000006", "ONE OS EXCEPTION TEST: triggering invalid opcode"),
-        "gp": ("general protection fault", "0x000000000000000d", "ONE OS EXCEPTION TEST: triggering general protection fault"),
+        "gp": ("general protection fault", "0x000000000000000d", "ONE OS EXCEPTION TEST: triggering reserved MSR read"),
         "pf": ("page fault", "0x000000000000000e", "ONE OS EXCEPTION TEST: triggering page fault"),
     }
     description, vector, trigger = cases[case]
@@ -36,11 +36,11 @@ class ValidateExceptionOutputTests(unittest.TestCase):
         valid, message = validate_exception_output(valid_log("ud"), 124, "ud")
         self.assertTrue(valid, message)
 
-    def test_exact_general_protection_error_code_is_required(self):
-        log = valid_log("gp", error_code="0x000000000000fffc")
+    def test_reserved_msr_general_protection_error_code_is_zero(self):
+        log = valid_log("gp", error_code="0x0000000000000000")
         self.assertTrue(validate_exception_output(log, 124, "gp")[0])
 
-        wrong = log.replace("Error code: 0x000000000000fffc", "Error code: 0x0000000000000000")
+        wrong = log.replace("Error code: 0x0000000000000000", "Error code: 0x000000000000fffc")
         valid, message = validate_exception_output(wrong, 124, "gp")
         self.assertFalse(valid)
         self.assertIn("Error code", message)
