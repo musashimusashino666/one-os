@@ -44,7 +44,10 @@ For each mapping, the implementation must verify the effective permissions acros
 - User access requires the U/S permission to allow user mode at every level. Any supervisor-only level must deny ring 3 access.
 - Writable access requires writable permission at every level. Read-only user mappings must remain read-only to user code.
 - Executable access requires NX to be clear at every level. When NX is requested, the relevant CPU capability must exist and EFER.NXE must be enabled before the mapping is published.
-- Preserve W^X: reject writable-and-executable leaf mappings and prevent ancestor permissions from silently invalidating the requested policy.
+- Preserve W^X at physical-frame granularity across every live alias, not only within a single leaf entry. For a physical 4 KiB frame, mappings across all address spaces and kernel mappings must never simultaneously provide any writable effective alias and any executable effective alias. A writable mapping at one virtual address plus an executable mapping of the same frame at another address is a W^X violation, even though neither PTE is individually writable-and-executable.
+- Track all mappings of each physical frame, using a reverse-mapping registry or an equivalent reviewed mechanism that can establish the effective permissions of every alias. Include kernel mappings, the physical-memory-offset/direct-map alias, shared mappings, every user address space, and aliases overlapping large-page mappings. A 2 MiB or 1 GiB mapping must be treated as an alias of every 4 KiB frame in its physical range. If the implementation cannot enumerate or conservatively constrain all aliases, it must fail closed and must not publish an executable mapping.
+- Enforce the physical-frame-wide rule transactionally for map, unmap, remap, and permission changes. Check the proposed effective permissions before publishing page-table entries, and preserve ownership/rollback guarantees on rejection. Checking only a new leaf PTE's W and NX bits is necessary but not sufficient.
+- To transition a frame from writable data to executable code, first remove or downgrade every writable alias, then complete the required TLB invalidation before publishing or using an executable alias. A permanently writable kernel direct-map alias must not remain for a frame that is executable elsewhere. If any writable alias or stale writable translation may remain, keep the frame non-executable. An executable frame may have multiple read-only or executable aliases only when no writable alias exists.
 - Establish and verify CR0.WP before relying on read-only mappings to protect against supervisor writes.
 - Check and establish the required paging CPU state before mutating active page tables. Unsupported or inconsistent CPU state must fail closed.
 - A physical address returned by the frame allocator is not itself a usable virtual pointer. It may be dereferenced only through an explicitly validated alias appropriate to the frame's ownership and publication state.
@@ -104,10 +107,13 @@ Use dedicated QEMU test images or an equivalent deterministic harness to verify 
 2. User-mode read and write attempts against kernel-only pages fail with the expected fault context.
 3. Two independently created address spaces cannot read or modify each other's private frames, including when they use the same virtual address for different frames.
 4. A user mapping cannot expose a page-table page, a recursive page-table alias, a kernel stack, or another supervisor-only alias.
-5. W^X, NX, CR0.WP, ancestor permissions, and effective leaf permissions have the documented effect.
-6. Switching away from one address space and activating another cannot reuse stale TLB translations from the first address space.
-7. Invalid addresses, malformed page tables, allocation failure, and teardown do not publish dangling mappings, free foreign frames, or permit use-after-free through a stale translation.
-8. Existing M1 acceptance tests remain green on the same PR head.
+5. Physical-frame-wide W^X is enforced across aliases: mapping one frame writable at one virtual address and executable at another is rejected in either insertion order, even when the mappings are in different address spaces.
+6. W^X checks include kernel/direct-map aliases and any large-page mapping that covers the frame. A writable direct-map alias prevents an executable alias until the writable alias is removed or made read-only and its translation is invalidated.
+7. W^X permission transitions are tested: a frame may become executable only after every writable alias is removed/downgraded and the required TLB invalidation completes; stale writable translations must not create a write-to-execute bypass. Multiple read-only aliases may coexist with executable aliases when no writable alias remains.
+8. NX, CR0.WP, ancestor permissions, and effective leaf permissions have the documented effect.
+9. Switching away from one address space and activating another cannot reuse stale TLB translations from the first address space.
+10. Invalid addresses, malformed page tables, allocation failure, and teardown do not publish dangling mappings, free foreign frames, or permit use-after-free through a stale translation.
+11. Existing M1 acceptance tests remain green on the same PR head.
 
 For expected faults, validators must check the exact vector, CR2, saved instruction pointer, complete error code, test phase, and terminal status as appropriate to the chosen test. Each test must have a unique success marker. Missing or duplicate markers, a timeout, an unexpected exception, a panic, or the ordinary bootstrap-completion marker standing in for a test-specific pass must fail validation.
 
@@ -123,7 +129,7 @@ The milestone remains incomplete until all of the following are demonstrated on 
 - Independent address spaces are created with validated roots and explicit frame ownership.
 - User code is unable to read or write kernel-only memory or another process's private memory.
 - The kernel cannot be tricked by user-supplied mappings, pointers, IDs, or authority tokens into granting access outside the active process's rights.
-- Effective U/S, R/W, NX, W^X, CR0.WP, and EFER.NXE behavior is tested rather than inferred from source-level flags.
+- Effective U/S, R/W, NX, CR0.WP, and EFER.NXE behavior is tested rather than inferred from source-level flags; W^X is enforced across all aliases of the same physical frame, including aliases in other address spaces, kernel/direct-map aliases, and large-page overlaps.
 - Address-space switching, unmapping, and teardown have tests for TLB invalidation and stale translations under the stated single-CPU execution model.
 - Allocation failure and invalid state fail closed without leaking reachable mappings, freeing foreign frames, or leaving a partially published address space.
 - All existing M1 format, test, lint, kernel check, build, normal boot, exception, mapping protection, and TLB-transition checks pass.
