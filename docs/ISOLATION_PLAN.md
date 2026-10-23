@@ -145,7 +145,17 @@ The milestone remains incomplete until all of the following are demonstrated on 
 - All existing M1 format, test, lint, kernel check, build, normal boot, exception, mapping protection, and TLB-transition checks pass.
 - CI evidence identifies the exact commit and reports any test not run or any environment limitation.
 
-Passing this milestone demonstrates only the defined isolation scenarios in the tested QEMU environment. It does not establish SMP safety, general-purpose OS readiness, a complete capability system, production security, or correctness on untested physical hardware.
+Passing this milestone demonstrates only the defined I1–I3 isolation scenarios in the tested QEMU environment. It does not establish SMP safety, general-purpose OS readiness, a complete capability system, production security, or correctness on untested physical hardware. Completing I1–I3 may be reported as completion of the initial user-space isolation phase, but it must not be reported as completion of Roadmap M2.
+
+## Roadmap M2 completion gate
+
+Roadmap M2 is the combined **Isolation and IPC** milestone. Its completion is stricter than the I1–I3 isolation phase criteria above. M2 must remain incomplete until every implementation phase I1–I5 has met its acceptance criteria on the exact reviewed commit:
+
+- **I1–I3 — user-space isolation:** independent address spaces, controlled ring-3 entry/return, kernel-memory and cross-process access denial, physical-frame-wide W^X, correct TLB behavior, fail-closed construction and teardown, and the full existing M1 regression suite.
+- **I4 — scheduler, thread lifecycle, and IPC:** a minimal scheduler and lifecycle operating only on validated kernel-owned contexts; IPC messages with validated framing, lengths, sender/receiver identity, and memory ownership; defined cancellation and failure semantics; and tests for context integrity, privilege transitions, stack ownership, malformed messages, invalid pointers, cancellation, and teardown. IPC must be exercised between isolated participants, not satisfied by documenting a format alone.
+- **I5 — kernel-enforced capabilities:** each protected operation resolves authority through kernel-owned state and validates the calling principal and requested right. Tests must prove denial of insufficient-rights and wrong-principal requests, rejection of forged/modified/foreign/stale capabilities, correct revocation and stale-generation rejection, and preservation of resource ownership across IPC and teardown.
+
+The M2 exit decision must cite reproducible test evidence for all three groups and the existing M1 suite. Passing I1–I3 alone, implementing IPC transport without enforced authorization, or passing compilation/normal boot does not satisfy M2. If I4 or I5 remains incomplete, report the relevant phase as incomplete and keep the overall M2 checkbox open. These criteria do not claim SMP support; SMP synchronization and remote TLB shootdowns still require a separate design and acceptance suite.
 
 ## Related documents
 
