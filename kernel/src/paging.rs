@@ -10,8 +10,9 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, physical_page_is_in_allowed_region, recursive_table_page_virtual_address,
-    translate_4level, PageTableError, PageTranslation, PAGE_SIZE,
+    is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
+    PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -28,6 +29,7 @@ pub struct PageTableInspection {
 pub enum PagingError {
     RecursiveMappingUnavailable,
     InvalidRecursiveIndex,
+    InvalidRecursiveMapping,
     UnsupportedFiveLevelPaging,
     SupervisorWriteProtectionDisabled,
     InvalidRootTable,
@@ -46,6 +48,9 @@ impl PagingError {
             }
             Self::InvalidRecursiveIndex => {
                 b"Bootloader provided an invalid recursive table index\n"
+            }
+            Self::InvalidRecursiveMapping => {
+                b"Recursive mapping entry does not reference the CR3 PML4 frame\n"
             }
             Self::InvalidKernelImageRange => b"BootInfo kernel image range is invalid\n",
             Self::InvalidKernelCodeMapping => {
@@ -130,6 +135,9 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     {
         return Err(PagingError::InvalidRootTable);
     }
+    if !validate_recursive_mapping_entry(recursive_index, root_table_physical) {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
     let code_address = inspect_boot_mappings as *const () as usize as u64;
     let boot_info_address = boot_info as *const BootInfo as usize as u64;
     let mut stack_pointer: u64;
@@ -213,6 +221,36 @@ fn translation_preserves_page_offset(virtual_address: u64, translation: PageTran
         || translation.page_size == (1 << 30))
         && translation.physical_address & (translation.page_size - 1)
             == virtual_address & (translation.page_size - 1)
+}
+
+/// Checks the bootloader-provided recursive PML4 self-reference before walking other entries.
+///
+/// The first volatile read necessarily relies on BootInfo's contract: when the recursive
+/// mapping is requested, the reported index maps the active PML4 frame back into itself.
+/// This check catches a readable but inconsistent entry; it cannot make an absent or broken
+/// recursive virtual mapping safe to probe without potentially taking a page fault.
+fn validate_recursive_mapping_entry(recursive_index: u16, root_table_physical: u64) -> bool {
+    let Some(table_virtual) = recursive_table_page_virtual_address(recursive_index, 0, 4) else {
+        return false;
+    };
+    let Some(entry_offset) = u64::from(recursive_index).checked_mul(8) else {
+        return false;
+    };
+    let Some(entry_virtual) = table_virtual.checked_add(entry_offset) else {
+        return false;
+    };
+    if !is_canonical_4level(entry_virtual) || entry_virtual & 7 != 0 {
+        return false;
+    }
+    let Ok(entry_pointer) = usize::try_from(entry_virtual) else {
+        return false;
+    };
+
+    // SAFETY: this access depends on the bootloader API's recursive-index guarantee,
+    // and the physical CR3 frame was already confirmed to be a full Bootloader-owned page.
+    // The value read is then checked against the physical CR3 root frame.
+    let entry = unsafe { ptr::read_volatile(entry_pointer as *const u64) };
+    recursive_entry_matches_root(entry, root_table_physical)
 }
 
 fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
