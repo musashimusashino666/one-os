@@ -40,8 +40,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Normalize push and pull_request events to the same source branch.
-  # Include the head repository to avoid collisions between forks with equal branch names.
+  # Group by PR head repository/branch (or selected branch for workflow_dispatch).
+  # Include the repository so fork PRs with identical branch names do not collide.
   group: one-os-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
