@@ -40,9 +40,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Group by PR head repository/branch (or selected branch for workflow_dispatch).
-  # Include the repository so fork PRs with identical branch names do not collide.
-  group: one-os-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  # Separate event types so workflow_dispatch on a PR branch cannot cancel its
+  # required PR-context run. Within the same event type, newer PR runs still replace
+  # older ones for that head branch; repository qualification avoids fork collisions.
+  group: one-os-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
