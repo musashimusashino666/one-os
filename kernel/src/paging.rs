@@ -30,8 +30,7 @@ const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const TABLE_FRAME_CAPACITY: usize = 512;
-const MAPPING_SMOKE_BASE: u64 = 0xffff_a000_0000_0000;
-const MAPPING_SMOKE_CANDIDATES: u64 = 128;
+const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -348,7 +347,6 @@ fn translate_virtual_address(
         },
     )
 }
-
 
 /// Establish CPU controls required before interpreting or changing leaf permissions.
 ///
@@ -910,12 +908,35 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
     let root_table_physical = active_root_table_physical();
     let permissions = PagePermissions::new(true, false, false);
 
-    for candidate_index in 0..MAPPING_SMOKE_CANDIDATES {
-        let Some(candidate) = MAPPING_SMOKE_BASE.checked_add(candidate_index * PAGE_SIZE) else {
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => {
             let _ = release_data_frame(data_frame);
-            return Err(PagingError::NoUnusedVirtualAddress);
-        };
-        if ((candidate >> 39) & 0x1ff) == u64::from(recursive_index) {
+            return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+        }
+    };
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0);
+    let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end) else {
+        let _ = release_data_frame(data_frame);
+        return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+    };
+
+    // Probe one address at the base of each high-half PML4 slot. This avoids
+    // repeatedly retrying the same 2 MiB leaf when a candidate conflicts with
+    // a large page, and skips both the recursive slot and the bootloader's
+    // physical-memory-offset range before attempting to mutate page tables.
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
             continue;
         }
         let mut editor = match KernelPageTableEditor::new(boot_info, candidate) {
