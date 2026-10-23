@@ -69,13 +69,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     #[cfg(feature = "test-general-protection")]
     {
-        serial_write(b"ONE OS EXCEPTION TEST: triggering general protection fault\n");
-        // SAFETY: the deliberately invalid selector must raise #GP in this
-        // dedicated test image before the next instruction can execute.
+        serial_write(b"ONE OS EXCEPTION TEST: triggering reserved MSR read\n");
+        // SAFETY: 0xffff_ffff is a reserved/unimplemented MSR index. RDMSR
+        // deterministically raises #GP(0), without depending on the bootloader's
+        // GDT layout. This path exists only in the dedicated test image.
         unsafe {
             asm!(
-                "mov ds, ax",
-                in("ax") 0xffff_u16,
+                "rdmsr",
+                in("ecx") 0xffff_ffff_u32,
                 options(nomem, nostack, noreturn)
             )
         }
@@ -85,10 +86,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     {
         const FAULT_ADDRESS: usize = 0x0000_4000_0000_0000;
         serial_write(b"ONE OS EXCEPTION TEST: triggering page fault\n");
-        // SAFETY: this unmapped canonical address is deliberately read only in
-        // the dedicated fault-injection image to exercise #PF and CR2 logging.
+        // SAFETY: the assembly load deliberately reads this unmapped canonical
+        // address only in the dedicated test image, exercising #PF and CR2
+        // logging without relying on Rust pointer-dereference semantics.
+        let _fault_value: u64;
         unsafe {
-            core::ptr::read_volatile(FAULT_ADDRESS as *const u64);
+            asm!(
+                "mov {value}, qword ptr [{address}]",
+                value = out(reg) _fault_value,
+                address = in(reg) FAULT_ADDRESS,
+                options(nostack, readonly)
+            );
         }
         halt_forever()
     }
