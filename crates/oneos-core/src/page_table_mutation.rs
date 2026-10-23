@@ -4,6 +4,9 @@
 //! safe entry access and table-frame allocation. The implementation remains
 //! responsible for safe access to table frames, TLB invalidation, serializing
 //! mutations, and enabling EFER.NXE before requesting non-executable mappings.
+//! Callers relying on read-only page permissions to protect supervisor-mode writes
+//! must also ensure CR0.WP is enabled on every CPU executing with these tables.
+//! This module neither reads nor changes CR0.WP or EFER.NXE.
 
 use crate::{is_canonical_4level, PAGE_SIZE};
 
@@ -81,6 +84,7 @@ pub enum PageTableMutationError {
     NotMapped { level: u8 },
     MalformedEntry { level: u8 },
     LargePageConflict { level: u8 },
+    RecursiveTableReference { level: u8 },
     InvalidPageTableFrame,
     AllocationFailed,
     AlreadyMapped,
@@ -103,9 +107,14 @@ pub struct UnmappedPage {
 ///
 /// Existing ancestors are never widened: if an existing ancestor denies a
 /// requested writable, user-accessible, or executable mapping, the operation
-/// fails with AncestorPermissionConflict.
+/// fails with AncestorPermissionConflict. Repeated physical table frames along
+/// one walk are rejected to prevent recursive/cyclic references from being
+/// mistaken for ordinary levels.
 ///
-/// This function does not flush TLB entries or provide synchronization.
+/// The caller must enable CR0.WP on every CPU that uses these tables if
+/// read-only mappings are expected to block supervisor-mode writes. EFER.NXE
+/// must be enabled before using non-executable mappings. This function does not
+/// verify either control bit, flush TLB entries, or provide synchronization.
 pub fn map_4k<E: PageTableEditor>(
     root_table_physical: u64,
     virtual_address: u64,
@@ -149,13 +158,17 @@ pub fn map_4k<E: PageTableEditor>(
         if entry & LARGE_PAGE != 0 {
             return Err(PageTableMutationError::LargePageConflict { level });
         }
-        if !valid_physical_page(entry & PHYSICAL_ADDRESS_FIELD_MASK, physical_address_bits) {
+        let next_table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
+        if !valid_physical_page(next_table, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
+        }
+        if tables[..=path_index].contains(&next_table) {
+            return Err(PageTableMutationError::RecursiveTableReference { level });
         }
         if !ancestor_allows(entry, permissions) {
             return Err(PageTableMutationError::AncestorPermissionConflict { level });
         }
-        tables[path_index + 1] = entry & PHYSICAL_ADDRESS_FIELD_MASK;
+        tables[path_index + 1] = next_table;
     }
 
     if missing_parent.is_none() {
@@ -256,6 +269,8 @@ pub fn unmap_4k<E: PageTableEditor>(
 
     let indices = indices(virtual_address);
     let mut table_physical = root_table_physical;
+    let mut visited_tables = [0u64; 4];
+    visited_tables[0] = root_table_physical;
     let mut effective_writable = true;
     let mut effective_user = true;
     let mut effective_executable = true;
@@ -278,10 +293,15 @@ pub fn unmap_4k<E: PageTableEditor>(
         effective_user &= entry & USER_ACCESSIBLE != 0;
         effective_executable &= entry & NO_EXECUTE == 0;
 
-        table_physical = entry & PHYSICAL_ADDRESS_FIELD_MASK;
-        if !valid_physical_page(table_physical, physical_address_bits) {
+        let next_table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
+        if !valid_physical_page(next_table, physical_address_bits) {
             return Err(PageTableMutationError::MalformedEntry { level });
         }
+        if visited_tables[..=path_index].contains(&next_table) {
+            return Err(PageTableMutationError::RecursiveTableReference { level });
+        }
+        visited_tables[path_index + 1] = next_table;
+        table_physical = next_table;
     }
 
     let leaf = editor
@@ -869,6 +889,34 @@ mod tests {
             })
         );
         assert_eq!(tables.read_any(l2, indices[3]), Some(0));
+    }
+
+    #[test]
+    fn rejects_recursive_mapping_without_changing_page_tables() {
+        let root = 0x1000;
+        // All four paging indices are 511, inside a recursive mapping that
+        // self-references PML4[511] back to the PML4 frame.
+        let virtual_address = 0xffff_ffff_ffff_f000;
+        let recursive_entry = root | PRESENT | WRITABLE | USER_ACCESSIBLE;
+        let mut tables = TestTables::new(root);
+        tables.pages.get_mut(&root).unwrap()[511] = recursive_entry;
+        let before = tables.pages.clone();
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::RecursiveTableReference { level: 4 })
+        );
+        assert_eq!(
+            unmap(&mut tables, root, virtual_address),
+            Err(PageTableMutationError::RecursiveTableReference { level: 4 })
+        );
+        assert_eq!(tables.pages, before);
     }
 
     #[test]
