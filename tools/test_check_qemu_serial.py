@@ -75,14 +75,14 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_missing_page_table_inspection_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{START}\\n{ALLOCATOR_READY}\\n{COMPLETE}\\n", 124
+            f"{START}\n{ALLOCATOR_READY}\n{COMPLETE}\n", 124
         )
         self.assertFalse(valid)
         self.assertIn("page-table inspection marker", reason.lower())
 
     def test_page_table_inspection_failure_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{START}\\n{ALLOCATOR_READY}\\n{PAGING_FAILED}\\n{COMPLETE}\\n", 124
+            f"{START}\n{ALLOCATOR_READY}\n{PAGING_FAILED}\n{COMPLETE}\n", 124
         )
         self.assertFalse(valid)
         self.assertIn("page-table inspection failure marker", reason.lower())
