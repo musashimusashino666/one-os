@@ -907,7 +907,7 @@ fn report_exception(
     super::halt_forever()
 }
 
-fn write_hex(label: &[u8], value: u64) {
+pub(super) fn write_hex(label: &[u8], value: u64) {
     super::serial_write(label);
     super::serial_write(b"0x");
 
