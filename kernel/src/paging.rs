@@ -1257,6 +1257,260 @@ fn read_active_leaf_path(
     Ok(entries)
 }
 
+
+const TRANSITION_FIRST_SENTINEL: u64 = 0x4f4e_455f_564d_4131;
+const TRANSITION_SECOND_SENTINEL: u64 = 0x4f4e_455f_564d_4232;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TransitionTestState {
+    Unmapped,
+    FirstMapped,
+    UnmappedAfterFirst,
+    SecondMapped,
+    UnmappedAfterSecond,
+}
+
+/// Owns both data frames for the dedicated active map/unmap/remap QEMU case.
+/// The same virtual address is first mapped to one frame and then to a distinct
+/// frame so stale TLB translations are observable as stale payload data.
+pub struct MappingTransitionTest {
+    pub virtual_address: u64,
+    pub first_physical_address: u64,
+    pub second_physical_address: u64,
+    first_frame: Frame,
+    second_frame: Frame,
+    state: TransitionTestState,
+}
+
+pub fn prepare_mapping_transition_test(
+    boot_info: &BootInfo,
+) -> Result<MappingTransitionTest, PagingError> {
+    let first_frame =
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let second_frame =
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let first_physical_address = first_frame.physical_address();
+    let second_physical_address = second_frame.physical_address();
+    if first_physical_address == second_physical_address {
+        return Err(PagingError::MappingSmokeMismatch);
+    }
+
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if index < 512 => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let Some(physical_mapping_end) = physical_memory_offset.checked_add(highest_physical_end)
+    else {
+        return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+    };
+    let root_table_physical = active_root_table_physical();
+
+    // Select a canonical high-half VA whose translation is currently absent.
+    // Exclude the recursive PML4 slot and the complete bootloader direct-map
+    // range before any page-table mutation is attempted.
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
+            continue;
+        }
+        let Ok(mut editor) = KernelPageTableEditor::new(boot_info, candidate) else {
+            return Err(PagingError::MappingSmokeMismatch);
+        };
+        let absent = matches!(
+            translate_with_editor(&mut editor, root_table_physical, candidate),
+            Err(PageTableError::NotPresent { .. })
+                | Err(PageTableError::TableUnavailable { .. })
+        );
+        if absent {
+            return Ok(MappingTransitionTest {
+                virtual_address: candidate,
+                first_physical_address,
+                second_physical_address,
+                first_frame,
+                second_frame,
+                state: TransitionTestState::Unmapped,
+            });
+        }
+    }
+
+    Err(PagingError::NoUnusedVirtualAddress)
+}
+
+impl MappingTransitionTest {
+    pub fn map_first(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::Unmapped {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        self.map_frame(boot_info, self.first_physical_address)?;
+        self.state = TransitionTestState::FirstMapped;
+        Ok(())
+    }
+
+    pub fn verify_first(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::FirstMapped {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        // SAFETY: map_first installed a writable supervisor-only mapping to the
+        // owned first frame and invalidated the target VA in the local TLB.
+        unsafe {
+            ptr::write_volatile(
+                self.virtual_address as *mut u64,
+                TRANSITION_FIRST_SENTINEL,
+            );
+        }
+        let observed = unsafe { ptr::read_volatile(self.virtual_address as *const u64) };
+        if observed != TRANSITION_FIRST_SENTINEL {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        self.verify_translation(boot_info, self.first_physical_address)
+    }
+
+    pub fn unmap_first(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::FirstMapped {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        self.unmap_frame(boot_info, self.first_physical_address)?;
+        self.state = TransitionTestState::UnmappedAfterFirst;
+        Ok(())
+    }
+
+    pub fn map_second(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::UnmappedAfterFirst {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        let root_table_physical = active_root_table_physical();
+        let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
+        let direct_alias = editor
+            .offset_alias(self.second_physical_address)
+            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        // Initialize the second frame through its checked direct-map alias
+        // before remapping the same VA. If INVLPG is missing after remap, the
+        // stale translation still reads the first frame's different sentinel.
+        unsafe {
+            ptr::write_volatile(direct_alias.cast::<u64>(), TRANSITION_SECOND_SENTINEL);
+        }
+        map_4k(
+            root_table_physical,
+            self.virtual_address,
+            self.second_physical_address,
+            PagePermissions::new(true, false, false),
+            &mut editor,
+        )
+        .map_err(PagingError::MappingMutation)?;
+        invalidate_local_tlb(self.virtual_address);
+        self.state = TransitionTestState::SecondMapped;
+        Ok(())
+    }
+
+    pub fn verify_second(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::SecondMapped {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        // Do not write through the test VA before checking: the preloaded second
+        // sentinel detects stale TLB translations to the first physical frame.
+        let observed = unsafe { ptr::read_volatile(self.virtual_address as *const u64) };
+        if observed != TRANSITION_SECOND_SENTINEL {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        self.verify_translation(boot_info, self.second_physical_address)
+    }
+
+    pub fn unmap_second(&mut self, boot_info: &BootInfo) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::SecondMapped {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        self.unmap_frame(boot_info, self.second_physical_address)?;
+        self.state = TransitionTestState::UnmappedAfterSecond;
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<(), PagingError> {
+        if self.state != TransitionTestState::UnmappedAfterSecond {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        release_data_frame(self.first_frame)?;
+        release_data_frame(self.second_frame)
+    }
+
+    fn map_frame(
+        &mut self,
+        boot_info: &BootInfo,
+        physical_address: u64,
+    ) -> Result<(), PagingError> {
+        let root_table_physical = active_root_table_physical();
+        let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
+        map_4k(
+            root_table_physical,
+            self.virtual_address,
+            physical_address,
+            PagePermissions::new(true, false, false),
+            &mut editor,
+        )
+        .map_err(PagingError::MappingMutation)?;
+        invalidate_local_tlb(self.virtual_address);
+        Ok(())
+    }
+
+    fn unmap_frame(
+        &mut self,
+        boot_info: &BootInfo,
+        physical_address: u64,
+    ) -> Result<(), PagingError> {
+        let root_table_physical = active_root_table_physical();
+        let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
+        let removed = unmap_4k(root_table_physical, self.virtual_address, &mut editor)
+            .map_err(PagingError::MappingMutation)?;
+        invalidate_local_tlb(self.virtual_address);
+        if removed.physical_address != physical_address
+            || removed.permissions != PagePermissions::new(true, false, false)
+            || !matches!(
+                translate_with_editor(&mut editor, root_table_physical, self.virtual_address),
+                Err(PageTableError::NotPresent { .. })
+            )
+        {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        Ok(())
+    }
+
+    fn verify_translation(
+        &mut self,
+        boot_info: &BootInfo,
+        expected_physical_address: u64,
+    ) -> Result<(), PagingError> {
+        let root_table_physical = active_root_table_physical();
+        let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
+        let translation =
+            translate_with_editor(&mut editor, root_table_physical, self.virtual_address)
+                .map_err(PagingError::Translation)?;
+        if translation.physical_address != expected_physical_address
+            || translation.page_size != PAGE_SIZE
+            || !translation.writable
+            || translation.user_accessible
+            || translation.executable
+        {
+            return Err(PagingError::MappingSmokeMismatch);
+        }
+        Ok(())
+    }
+}
+
 fn invalidate_local_tlb(virtual_address: u64) {
     // SAFETY: INVLPG is available in the current x86_64 kernel and operates on
     // the target virtual address in the local CPU's translation cache.
