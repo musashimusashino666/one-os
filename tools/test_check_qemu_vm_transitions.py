@@ -79,9 +79,11 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
 
     def test_wrong_recovery_order_fails(self):
         log = valid_log().replace(
-            "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n",
-            "ONE OS VM TRANSITION EXPECTED PAGE FAULT\n"
-            "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n",
+            "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n", ""
+        ).replace(
+            "ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap\n",
+            "ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n"
+            "ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap\n",
         )
         valid, message = validate_vm_transition_output(log, 33)
         self.assertFalse(valid)
