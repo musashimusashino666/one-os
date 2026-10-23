@@ -66,7 +66,10 @@ def validate_exception_output(
     if PANIC_MARKER in log:
         return False, f"kernel panic marker found: {PANIC_MARKER}"
     if COMPLETE_MARKER in log:
-        return False, f"fault-injection image incorrectly reported {COMPLETE_MARKER}"
+        return False, (
+            "fault-injection image incorrectly reported "
+            f"boot-completion marker: {COMPLETE_MARKER}"
+        )
 
     lines = log.splitlines()
     case = CASES[case_name]
