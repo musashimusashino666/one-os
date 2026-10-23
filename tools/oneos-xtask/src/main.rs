@@ -21,6 +21,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-exception" => build_bios_image(Some("test-exception")),
         "image-test-general-protection" => build_bios_image(Some("test-general-protection")),
         "image-test-page-fault" => build_bios_image(Some("test-page-fault")),
+        "image-test-double-fault" => build_bios_image(Some("test-double-fault")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
@@ -33,6 +34,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a test-only general-protection exception image");
             println!("  cargo run -p oneos-xtask -- image-test-page-fault");
             println!("      Build a test-only page-fault exception image");
+            println!("  cargo run -p oneos-xtask -- image-test-double-fault");
+            println!("      Build a test-only double-fault/IST diagnostic image");
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -152,6 +155,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-exception") => "one-os-exception-test-bios.img",
         Some("test-general-protection") => "one-os-general-protection-test-bios.img",
         Some("test-page-fault") => "one-os-page-fault-test-bios.img",
+        Some("test-double-fault") => "one-os-double-fault-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
     let image_path = target_directory.join(image_name);
