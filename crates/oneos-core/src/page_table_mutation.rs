@@ -17,6 +17,7 @@ const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
+const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const PHYSICAL_ADDRESS_FIELD_MASK: u64 = 0x000f_ffff_ffff_f000;
 const MAX_PHYSICAL_ADDRESS_BITS: u8 = 52;
 const MIN_PHYSICAL_ADDRESS_BITS: u8 = 32;
@@ -157,6 +158,9 @@ pub fn map_4k<E: PageTableEditor>(
             missing_parent = Some(path_index);
             break;
         }
+        if entry & PROTECTION_KEY_FIELD_MASK != 0 {
+            return Err(PageTableMutationError::MalformedEntry { level });
+        }
         if entry & LARGE_PAGE != 0 {
             return Err(PageTableMutationError::LargePageConflict { level });
         }
@@ -288,6 +292,9 @@ pub fn unmap_4k<E: PageTableEditor>(
             }
             return Err(PageTableMutationError::NotMapped { level });
         }
+        if entry & PROTECTION_KEY_FIELD_MASK != 0 {
+            return Err(PageTableMutationError::MalformedEntry { level });
+        }
         if entry & LARGE_PAGE != 0 {
             return Err(PageTableMutationError::LargePageConflict { level });
         }
@@ -395,7 +402,8 @@ fn indices(virtual_address: u64) -> [usize; 4] {
 mod tests {
     use super::{
         map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
-        LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, USER_ACCESSIBLE, WRITABLE,
+        LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, PROTECTION_KEY_FIELD_MASK,
+        USER_ACCESSIBLE, WRITABLE,
     };
     use crate::{translate_4level, PageTableError, PAGE_SIZE};
     use std::boxed::Box;
@@ -759,11 +767,11 @@ mod tests {
         )
         .unwrap();
 
-        // Bits 58:52 are ignored/software-available. Bits 62:59 may contain
-        // protection keys on leaf mappings. Neither range is a physical-address
-        // field, so these values must not make an otherwise valid entry fail.
+        // Bits 58:52 are ignored/software-available in both non-leaf and leaf
+        // entries. Bits 62:59 are valid protection-key attributes on leaf entries,
+        // but are reserved on non-leaf entries.
         let software_available = 0x07f0_0000_0000_0000;
-        let protection_key = 0x7800_0000_0000_0000;
+        let protection_key = PROTECTION_KEY_FIELD_MASK;
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
@@ -794,6 +802,68 @@ mod tests {
                 permissions: PagePermissions::new(true, false, false),
             })
         );
+    }
+
+    #[test]
+    fn rejects_protection_key_bits_in_non_leaf_entries_for_map_and_unmap() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let permissions = PagePermissions::new(true, false, false);
+        let mut tables = TestTables::new(root);
+        map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
+
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let l3_table = tables.read_any(root, indices[0]).unwrap()
+            & PHYSICAL_ADDRESS_FIELD_MASK;
+        let l2_table = tables.read_any(l3_table, indices[1]).unwrap()
+            & PHYSICAL_ADDRESS_FIELD_MASK;
+        let leaf_table = tables.read_any(l2_table, indices[2]).unwrap()
+            & PHYSICAL_ADDRESS_FIELD_MASK;
+        let parent_tables = [root, l3_table, l2_table];
+        let original_leaf = tables.read_any(leaf_table, indices[3]).unwrap();
+        let page_count = tables.pages.len();
+
+        for (path_index, &parent_table) in parent_tables.iter().enumerate() {
+            let level = 4 - path_index as u8;
+            let index = indices[path_index];
+            let original_entry = tables.read_any(parent_table, index).unwrap();
+            let malformed_entry = original_entry | PROTECTION_KEY_FIELD_MASK;
+            tables.write_entry(parent_table, index, level, malformed_entry);
+
+            assert_eq!(
+                map(
+                    &mut tables,
+                    root,
+                    virtual_address,
+                    0x9000,
+                    permissions,
+                ),
+                Err(PageTableMutationError::MalformedEntry { level })
+            );
+            assert_eq!(
+                unmap(&mut tables, root, virtual_address),
+                Err(PageTableMutationError::MalformedEntry { level })
+            );
+
+            // Neither operation may alter the malformed parent, the leaf mapping,
+            // nor the page-table allocation count when validation fails.
+            assert_eq!(
+                tables.read_any(parent_table, index),
+                Some(malformed_entry)
+            );
+            assert_eq!(
+                tables.read_any(leaf_table, indices[3]),
+                Some(original_leaf)
+            );
+            assert_eq!(tables.pages.len(), page_count);
+
+            tables.write_entry(parent_table, index, level, original_entry);
+        }
     }
 
     #[test]
