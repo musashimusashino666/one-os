@@ -17,11 +17,16 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 mod frame_allocator;
 mod memory_policy;
+mod page_table;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
+};
+pub use page_table::{
+    is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
 };
 
 /// Stable identifier for a resource managed by an authority.

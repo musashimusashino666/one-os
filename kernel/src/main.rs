@@ -8,6 +8,7 @@
 //! This bootstrap provides serial diagnostics, basic CPU exception handling,
 //! and a halt loop. It is not yet a complete or independently bootable OS.
 
+use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -25,10 +26,17 @@ compile_error!("enable only one exception fault-injection feature at a time");
 
 mod interrupts;
 mod memory;
+mod paging;
 
 const COM1: u16 = 0x3F8;
 
-entry_point!(kernel_main);
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.page_table_recursive = Some(Mapping::Dynamic);
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Establish the interrupt state before any peripheral or IDT setup.
@@ -103,6 +111,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     interrupts::write_hex(
         b"Usable physical regions: ",
         allocator_stats.usable_regions as u64,
+    );
+
+    let paging_stats = match paging::inspect_boot_mappings(boot_info) {
+        Ok(stats) => stats,
+        Err(error) => {
+            serial_write(b"\nONE OS PAGING INSPECTION FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+    serial_write(b"ONE OS PAGE TABLE INSPECTION READY\n");
+    interrupts::write_hex(
+        b"Current PML4 physical address: ",
+        paging_stats.root_table_physical,
+    );
+    interrupts::write_hex(
+        b"Validated bootstrap mappings: ",
+        paging_stats.validated_mappings as u64,
     );
 
     #[cfg(feature = "test-exception")]
@@ -181,10 +207,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_write(b"Milestone: serial bootstrap\n");
         serial_write(b"Memory map: structurally validated\n");
         serial_write(
-            b"Status: physical allocation, user mode, scheduler, VM, and drivers are not implemented\n",
+            b"Status: physical allocation and read-only page-table inspection are available; new mappings, user mode, scheduler, and drivers are not implemented\n",
         );
-        // This marker is emitted only after IDT installation and memory-map
-        // validation. CI rejects exception, panic, and invalid-map markers.
+        // This marker is emitted only after IDT installation, memory-map validation,
+        // allocator smoke tests, and mapping/permission validation. CI rejects any failed stage.
         serial_write(b"ONE OS BOOTSTRAP COMPLETE\n");
 
         halt_forever()
