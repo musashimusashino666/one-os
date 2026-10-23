@@ -57,6 +57,17 @@ use oneos_core::{validate_memory_map, MemoryMapError};
     all(
         feature = "test-supervisor-write-protection",
         feature = "test-nx-protection"
+    ),
+    all(
+        feature = "test-vm-transitions",
+        any(
+            feature = "test-exception",
+            feature = "test-general-protection",
+            feature = "test-page-fault",
+            feature = "test-double-fault",
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection"
+        )
     )
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
@@ -107,6 +118,38 @@ global_asm!(
 unsafe extern "C" {
     fn oneos_vm_test_nx_execute(target: u64);
     static oneos_vm_test_nx_recovery: u8;
+}
+
+#[cfg(feature = "test-vm-transitions")]
+global_asm!(
+    ".global oneos_vm_test_transition_first_read",
+    ".global oneos_vm_test_transition_first_fault_ip",
+    ".global oneos_vm_test_transition_first_recovery",
+    ".global oneos_vm_test_transition_second_read",
+    ".global oneos_vm_test_transition_second_fault_ip",
+    ".global oneos_vm_test_transition_second_recovery",
+    "oneos_vm_test_transition_first_read:",
+    "mov rax, rdi",
+    "oneos_vm_test_transition_first_fault_ip:",
+    "mov rax, qword ptr [rax]",
+    "oneos_vm_test_transition_first_recovery:",
+    "ret",
+    "oneos_vm_test_transition_second_read:",
+    "mov rax, rdi",
+    "oneos_vm_test_transition_second_fault_ip:",
+    "mov rax, qword ptr [rax]",
+    "oneos_vm_test_transition_second_recovery:",
+    "ret",
+);
+
+#[cfg(feature = "test-vm-transitions")]
+unsafe extern "C" {
+    fn oneos_vm_test_transition_first_read(target: u64);
+    fn oneos_vm_test_transition_second_read(target: u64);
+    static oneos_vm_test_transition_first_fault_ip: u8;
+    static oneos_vm_test_transition_first_recovery: u8;
+    static oneos_vm_test_transition_second_fault_ip: u8;
+    static oneos_vm_test_transition_second_recovery: u8;
 }
 
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
@@ -216,6 +259,109 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
     serial_write(b"ONE OS VM MAPPING SMOKE TEST READY\n");
+
+    #[cfg(feature = "test-vm-transitions")]
+    {
+        serial_write(b"ONE OS VM TEST: mapping-transitions\n");
+        let mut transition = match paging::prepare_mapping_transition_test(boot_info) {
+            Ok(test) => test,
+            Err(error) => {
+                serial_write(b"ONE OS VM TEST FAILED: transition setup\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        let first_fault_ip =
+            unsafe { core::ptr::addr_of!(oneos_vm_test_transition_first_fault_ip) as u64 };
+        let first_recovery_ip =
+            unsafe { core::ptr::addr_of!(oneos_vm_test_transition_first_recovery) as u64 };
+        let second_fault_ip =
+            unsafe { core::ptr::addr_of!(oneos_vm_test_transition_second_fault_ip) as u64 };
+        let second_recovery_ip =
+            unsafe { core::ptr::addr_of!(oneos_vm_test_transition_second_recovery) as u64 };
+        interrupts::write_hex(b"ONE OS VM TRANSITION TARGET: ", transition.virtual_address);
+        interrupts::write_hex(b"ONE OS VM TRANSITION FIRST EXPECTED RIP: ", first_fault_ip);
+        interrupts::write_hex(b"ONE OS VM TRANSITION SECOND EXPECTED RIP: ", second_fault_ip);
+
+        interrupts::arm_expected_transition_page_fault(
+            transition.virtual_address,
+            first_fault_ip,
+            first_recovery_ip,
+            1,
+        );
+        // SAFETY: the dedicated assembly helper performs exactly one load from
+        // an address which setup confirmed is not present. The handler only
+        // resumes this exact fault at its paired recovery label.
+        unsafe { oneos_vm_test_transition_first_read(transition.virtual_address) };
+        if !interrupts::transition_page_fault_was_seen(1) {
+            serial_write(b"ONE OS VM TEST FAILED: initial not-present fault did not recover\n");
+            halt_forever()
+        }
+        serial_write(b"ONE OS VM TRANSITION RECOVERY VERIFIED: initial-unmapped\n");
+
+        if let Err(error) = transition.map_first(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: first map\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        if let Err(error) = transition.verify_first(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: first mapping access\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        if let Err(error) = transition.unmap_first(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: first unmap\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+
+        interrupts::arm_expected_transition_page_fault(
+            transition.virtual_address,
+            second_fault_ip,
+            second_recovery_ip,
+            2,
+        );
+        // SAFETY: this load must fault after the first mapping was removed and
+        // its local TLB entry invalidated. Only its exact fault can recover.
+        unsafe { oneos_vm_test_transition_second_read(transition.virtual_address) };
+        if !interrupts::transition_page_fault_was_seen(2) {
+            serial_write(b"ONE OS VM TEST FAILED: post-unmap fault did not recover\n");
+            halt_forever()
+        }
+        serial_write(b"ONE OS VM TRANSITION RECOVERY VERIFIED: after-unmap\n");
+
+        if let Err(error) = transition.map_second(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: remap second frame\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        if let Err(error) = transition.verify_second(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: stale TLB or second-frame mismatch\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        if let Err(error) = transition.unmap_second(boot_info) {
+            serial_write(b"ONE OS VM TEST FAILED: second unmap\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        if let Err(error) = transition.finish() {
+            serial_write(b"ONE OS VM TEST FAILED: release transition frames\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+
+        serial_write(b"ONE OS VM TEST PASS: mapping-transitions\n");
+        unsafe {
+            asm!(
+                "out dx, al",
+                in("dx") 0xf4u16,
+                in("al") 0x10u8,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        halt_forever()
+    }
 
     #[cfg(feature = "test-supervisor-write-protection")]
     {
