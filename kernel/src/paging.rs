@@ -7,10 +7,11 @@
 use core::arch::asm;
 use core::ptr;
 
-use bootloader_api::info::{MemoryRegion, Optional};
+use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, translate_4level, PageTableError, PageTranslation, PAGE_SIZE,
+    is_canonical_4level, page_table_page_is_permitted, translate_4level, PageTableError,
+    PageTranslation, PAGE_SIZE,
 };
 
 const CR4_LA57: u64 = 1 << 12;
@@ -68,9 +69,10 @@ impl PagingError {
 /// Walks the current PML4 read-only and verifies core bootstrap mappings.
 ///
 /// The bootloader's dynamic physical-memory mapping is required to read table
-/// pages. Each table page is checked against the supplied physical memory map
-/// before a volatile read is performed. Only table pages, never allocated data
-/// frames, are read by this diagnostic path.
+/// pages. Each table page must be fully contained in a region classified as
+/// bootloader-owned by the supplied memory map before a volatile read. Usable,
+/// unknown, reserved, and MMIO regions are rejected. Only table pages, never
+/// allocated data frames, are read by this diagnostic path.
 pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection, PagingError> {
     let physical_memory_offset = match &boot_info.physical_memory_offset {
         Optional::Some(offset) => *offset,
@@ -148,11 +150,14 @@ fn read_page_table_entry(
     if table_physical == 0 || table_physical & (PAGE_SIZE - 1) != 0 {
         return None;
     }
-    let table_end = table_physical.checked_add(PAGE_SIZE)?;
-    if !regions
-        .iter()
-        .any(|region| region.start <= table_physical && table_end <= region.end)
-    {
+    if !page_table_page_is_permitted(table_physical, regions.len(), |index| {
+        let region = regions[index];
+        (
+            region.start,
+            region.end,
+            matches!(region.kind, MemoryRegionKind::Bootloader),
+        )
+    }) {
         return None;
     }
 
@@ -165,8 +170,8 @@ fn read_page_table_entry(
     let entry_pointer = usize::try_from(entry_virtual).ok()? as *const u64;
 
     // SAFETY: BOOTLOADER_CONFIG requests a physical-memory mapping; the entire
-    // table page was checked against BootInfo's memory map, the entry address is
-    // aligned, and this is a volatile read-only inspection. This path never
+    // table page was confirmed to lie in a bootloader-owned memory-map region,
+    // the entry address is aligned, and this is a volatile read-only inspection. This path never
     // creates a Rust reference to the bootloader-owned page-table storage.
     Some(unsafe { ptr::read_volatile(entry_pointer) })
 }

@@ -48,6 +48,32 @@ pub const fn is_canonical_4level(address: u64) -> bool {
     address <= 0x0000_7fff_ffff_ffff || address >= 0xffff_8000_0000_0000
 }
 
+/// Returns whether a full page-table page is inside a caller-approved memory region.
+///
+/// The caller must classify the memory map and set the third tuple element only
+/// for region kinds that are safe to inspect as page-table storage. Firmware
+/// regions, MMIO, and any unknown kinds must be marked as not permitted.
+pub fn page_table_page_is_permitted<F>(
+    table_physical: u64,
+    region_count: usize,
+    mut region_bounds: F,
+) -> bool
+where
+    F: FnMut(usize) -> (u64, u64, bool),
+{
+    if table_physical == 0 || table_physical & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    let Some(table_end) = table_physical.checked_add(PAGE_SIZE) else {
+        return false;
+    };
+
+    (0..region_count).any(|index| {
+        let (start, end, permitted) = region_bounds(index);
+        permitted && start <= table_physical && table_end <= end
+    })
+}
+
 /// Walks an existing x86_64 four-level page table without changing it.
 ///
 /// root_table_physical must be the physical base address of the PML4 table.
@@ -158,8 +184,65 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_canonical_4level, translate_4level, PageTableError, PageTranslation};
+    use super::{
+        is_canonical_4level, page_table_page_is_permitted, translate_4level, PageTableError,
+        PageTranslation,
+    };
     use crate::PAGE_SIZE;
+
+    #[test]
+    fn permits_a_page_table_page_in_an_explicitly_allowed_region() {
+        let regions = [
+            (0x1000, 0x5000, true),
+            (0x5000, 0x9000, false),
+        ];
+
+        assert!(page_table_page_is_permitted(0x2000, regions.len(), |index| regions[index]));
+    }
+
+    #[test]
+    fn rejects_usable_mmio_reserved_and_unknown_regions() {
+        // The caller only marks bootloader-owned regions as permitted. Usable
+        // frames, MMIO/reserved firmware ranges, and unknown firmware kinds fail closed.
+        let untrusted_regions = [
+            (0x1000, 0x5000, false),
+            (0x5000, 0x9000, false),
+            (0x9000, 0xd000, false),
+        ];
+
+        assert!(!page_table_page_is_permitted(0x2000, untrusted_regions.len(), |index| {
+            untrusted_regions[index]
+        }));
+        assert!(!page_table_page_is_permitted(0x6000, untrusted_regions.len(), |index| {
+            untrusted_regions[index]
+        }));
+        assert!(!page_table_page_is_permitted(0xa000, untrusted_regions.len(), |index| {
+            untrusted_regions[index]
+        }));
+    }
+
+    #[test]
+    fn rejects_page_table_page_spanning_regions() {
+        let regions = [
+            (0x1000, 0x2800, true),
+            (0x2800, 0x5000, true),
+        ];
+
+        assert!(!page_table_page_is_permitted(0x2000, regions.len(), |index| regions[index]));
+    }
+
+    #[test]
+    fn rejects_invalid_page_table_storage_addresses() {
+        let regions = [(0x1000, 0x5000, true)];
+
+        assert!(!page_table_page_is_permitted(0, regions.len(), |index| regions[index]));
+        assert!(!page_table_page_is_permitted(0x1001, regions.len(), |index| regions[index]));
+        assert!(!page_table_page_is_permitted(
+            0xffff_ffff_ffff_f000,
+            regions.len(),
+            |index| regions[index]
+        ));
+    }
 
     #[test]
     fn canonical_address_boundaries_are_checked() {

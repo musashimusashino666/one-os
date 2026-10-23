@@ -24,7 +24,10 @@ pub use frame_allocator::{
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
-pub use page_table::{is_canonical_4level, translate_4level, PageTableError, PageTranslation};
+pub use page_table::{
+    is_canonical_4level, page_table_page_is_permitted, translate_4level, PageTableError,
+    PageTranslation,
+};
 
 /// Stable identifier for a resource managed by an authority.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
