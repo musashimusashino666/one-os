@@ -108,3 +108,4 @@ jobs:
           verify_exception_case image-test-exception one-os-exception-test-bios.img ud
           verify_exception_case image-test-general-protection one-os-general-protection-test-bios.img gp
           verify_exception_case image-test-page-fault one-os-page-fault-test-bios.img pf
+          verify_exception_case image-test-double-fault one-os-double-fault-test-bios.img df
