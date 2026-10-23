@@ -114,6 +114,18 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         if log.count(marker) != 1:
             return False, f"expected exactly one mapping verification marker: {marker}"
 
+    transition_start_position = log.find(START_MARKER)
+    first_mapping_position = log.find(FIRST_MAPPING_MARKER)
+    zero_verified_before_publication = any(
+        transition_start_position < match.start() < first_mapping_position
+        for match in re.finditer(re.escape(TABLE_ZERO_MARKER), log)
+    )
+    if not zero_verified_before_publication:
+        return False, (
+            "the real kernel editor must verify all table entries are zero through "
+            "the checked offset alias before the first mapping succeeds"
+        )
+
     first_fault_position = log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT")
     second_fault_position = log.find(
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT", first_fault_position + 1
