@@ -45,6 +45,15 @@ Expected serial output includes:
     Memory map: structurally validated
     ONE OS BOOTSTRAP COMPLETE
 
+For the dedicated memory-acceptance images, CI additionally builds and runs:
+`image-test-supervisor-write-protection`, `image-test-nx-protection`, and
+`image-test-vm-transitions`. The protected-write case requires the exact page-fault
+error code `0x3`; NX instruction fetch requires `0x11`; transition reads require
+two exact non-present faults (`0x0`) at their expected RIPs and CR2. These cases use
+QEMU's `isa-debug-exit` and separate validators, and their serial logs are uploaded
+as the `one-os-qemu-serial-logs` CI artifact. M1 remains open until the latest PR head
+passes the full suite.
+
 The kernel rejects empty, inverted, or overlapping memory-map ranges before initializing the physical-frame allocator. The allocator admits only regions marked Usable, excludes physical frame zero, and performs an allocation/free smoke test before the ready marker. It fails closed if the fixed metadata cannot cover the usable map (16 GiB aggregate usable memory or 256 regions). The kernel now performs a real active-page-table smoke cycle during bootstrap: it selects an unused canonical virtual page, maps an owned data frame as writable/supervisor-only/NX, writes and reads a sentinel through that virtual address, unmaps it, invalidates the local TLB, and verifies that translation reports the page as not present. Newly allocated page-table frames are zeroed through the checked physical-memory offset before publication and retain their non-Copy Frame ownership tokens while reachable. This is not yet full virtual-memory management: the dedicated QEMU tests for recoverable not-present transitions, supervisor write-protection, NX instruction-fetch protection, and their per-case CI gates remain required before M1 can be completed. The kernel then deliberately halts. Stop the virtual machine with Ctrl-C. A successful build does not prove that the image boots, which is why CI captures serial output and requires the startup, allocator-ready, page-table-inspection, mapping-smoke, and completion markers while rejecting failure, panic, and invalid-map markers.
 
 ## Automated boot smoke test
