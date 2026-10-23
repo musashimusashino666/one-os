@@ -165,7 +165,6 @@ error_handler!(security_exception_handler, 30, "security exception");
 no_error_handler!(reserved_31_handler, 31, "reserved exception vector");
 no_error_handler!(reserved_15_handler, 15, "reserved exception vector");
 
-
 type InterruptHandler = extern "x86-interrupt" fn(InterruptStackFrame) -> !;
 
 macro_rules! default_vector_handler {
