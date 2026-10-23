@@ -48,13 +48,17 @@ GitHub Actions builds a BIOS disk image, then performs three independent QEMU in
 
 ## Exception diagnostics test
 
-To build the CI-only BIOS image that deliberately raises an invalid-opcode exception:
+The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The current IDT uses the active kernel stack, so an IST stack for reliable double-fault diagnosis remains future work.
+
+The fault-injection BIOS images are enabled only for dedicated tests, never for the normal kernel image:
 
     cargo run --locked -p oneos-xtask -- image-test-exception
+    cargo run --locked -p oneos-xtask -- image-test-general-protection
+    cargo run --locked -p oneos-xtask -- image-test-page-fault
 
-Run it in QEMU using the image `one-os-exception-test-bios.img` in Cargo's target directory. The expected serial output includes the invalid-opcode vector (6), instruction pointer, and `ONE OS EXCEPTION HALTED`. QEMU will remain running after the handler halts; stop it with Ctrl-C. This test-only feature is not enabled in the normal kernel image. CI runs the same check and rejects a false bootstrap-completion marker or a Rust panic marker.
+CI executes all three images in QEMU. It verifies that the invalid-opcode test reports vector 6, the deliberately invalid segment selector reports #GP (vector 13) and an error code, and a read from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each handler halts; stop local runs with Ctrl-C.
 
-The kernel uses the current stack for exception handlers. A dedicated IST stack for double-fault recovery remains future work.
+The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagnostic marker, even if the bootstrap-completion marker was already printed.
 
 ## Contribution rules
 
