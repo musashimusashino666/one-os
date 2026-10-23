@@ -11,7 +11,7 @@
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::arch::asm;
-#[cfg(feature = "test-supervisor-write-protection")]
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 use core::arch::global_asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
@@ -61,6 +61,23 @@ global_asm!(
 unsafe extern "C" {
     fn oneos_vm_test_supervisor_write(target: u64, value: u64);
     static oneos_vm_test_supervisor_write_fault_ip: u8;
+}
+
+#[cfg(feature = "test-nx-protection")]
+global_asm!(
+    ".global oneos_vm_test_nx_execute",
+    ".global oneos_vm_test_nx_recovery",
+    "oneos_vm_test_nx_execute:",
+    "mov rax, rdi",
+    "call rax",
+    "oneos_vm_test_nx_recovery:",
+    "ret",
+);
+
+#[cfg(feature = "test-nx-protection")]
+unsafe extern "C" {
+    fn oneos_vm_test_nx_execute(target: u64);
+    static oneos_vm_test_nx_recovery: u8;
 }
 
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
@@ -188,7 +205,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             unsafe { core::ptr::addr_of!(oneos_vm_test_supervisor_write_fault_ip) as u64 };
         interrupts::write_hex(b"ONE OS VM TEST TARGET: ", mapping.virtual_address);
         interrupts::write_hex(b"ONE OS VM TEST EXPECTED RIP: ", expected_ip);
-        interrupts::arm_expected_protection_page_fault(mapping.virtual_address, expected_ip);
+        interrupts::arm_expected_protection_page_fault(mapping.virtual_address, expected_ip, 0);
         // SAFETY: this test-only store deliberately writes to the read-only
         // target mapping. The armed handler accepts only its exact RIP, CR2,
         // and complete error_code == 0x3, then exits QEMU via isa-debug-exit.
@@ -213,13 +230,32 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let expected_ip = mapping.virtual_address;
         interrupts::write_hex(b"ONE OS VM TEST TARGET: ", mapping.virtual_address);
         interrupts::write_hex(b"ONE OS VM TEST EXPECTED RIP: ", expected_ip);
-        interrupts::arm_expected_protection_page_fault(mapping.virtual_address, expected_ip);
-        // SAFETY: the target contains UD2 but is mapped NX. The dedicated #PF
-        // handler accepts only error_code == 0x11 at this exact CR2/RIP.
-        let entry: extern "C" fn() =
-            unsafe { core::mem::transmute(mapping.virtual_address as usize) };
-        entry();
-        serial_write(b"ONE OS VM TEST FAILED: NX target executed\n");
+        // SAFETY: the assembly continuation is immediately after the indirect
+        // call that attempted instruction fetch at the NX target.
+        let recovery_ip = unsafe { core::ptr::addr_of!(oneos_vm_test_nx_recovery) as u64 };
+        interrupts::arm_expected_protection_page_fault(
+            mapping.virtual_address,
+            expected_ip,
+            recovery_ip,
+        );
+        // SAFETY: the target contains UD2 but is mapped NX. The handler checks
+        // the exact CR2/RIP and full error_code == 0x11, then redirects only
+        // that one saved instruction pointer to the known continuation.
+        unsafe { oneos_vm_test_nx_execute(mapping.virtual_address) };
+        if !interrupts::expected_protection_page_fault_was_seen() {
+            serial_write(b"ONE OS VM TEST FAILED: NX fault was not recovered\n");
+            halt_forever()
+        }
+        serial_write(b"ONE OS VM TEST NX RECOVERY VERIFIED\n");
+        serial_write(b"ONE OS VM TEST PASS: nx-instruction-fetch\n");
+        unsafe {
+            asm!(
+                "out dx, al",
+                in("dx") 0xf4u16,
+                in("al") 0x10u8,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
         halt_forever()
     }
 
