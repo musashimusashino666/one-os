@@ -7,8 +7,10 @@ description = "Experimental x86_64 bare-metal kernel for ONE OS"
 
 [features]
 default = []
-# Test-only: trigger UD2 after IDT initialization to verify fault diagnostics.
+# Test-only fault injection for the QEMU exception diagnostics checks.
 test-exception = []
+test-general-protection = []
+test-page-fault = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
