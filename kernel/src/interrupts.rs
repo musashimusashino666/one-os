@@ -159,9 +159,9 @@ error_handler!(general_protection_handler, 13, "general protection fault");
 
 #[cfg(not(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")))]
 extern "x86-interrupt" fn page_fault_handler(
-    frame: InterruptStackFrame,
+    mut frame: InterruptStackFrame,
     error_code: u64,
-) -> ! {
+) {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
     unsafe {
@@ -186,6 +186,8 @@ static EXPECTED_PROTECTION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 static EXPECTED_PROTECTION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+static EXPECTED_PROTECTION_FAULT_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 static EXPECTED_PROTECTION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
 static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
@@ -193,11 +195,21 @@ static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 /// Arms exactly one known, terminal page-fault expectation in a dedicated QEMU image.
 /// The ordinary production page-fault handler remains fail-stop.
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
-pub(super) fn arm_expected_protection_page_fault(target: u64, instruction_pointer: u64) {
+pub(super) fn arm_expected_protection_page_fault(
+    target: u64,
+    instruction_pointer: u64,
+    recovery_instruction_pointer: u64,
+) {
     EXPECTED_PROTECTION_FAULT_ADDRESS.store(target, Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT_RIP.store(instruction_pointer, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_RECOVERY_RIP.store(recovery_instruction_pointer, Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT_SEEN.store(false, Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT_ARMED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "test-nx-protection")]
+pub(super) fn expected_protection_page_fault_was_seen() -> bool {
+    EXPECTED_PROTECTION_FAULT_SEEN.load(Ordering::Acquire)
 }
 
 #[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
@@ -224,6 +236,7 @@ extern "x86-interrupt" fn page_fault_handler(
     let previously_seen = EXPECTED_PROTECTION_FAULT_SEEN.swap(true, Ordering::AcqRel);
     let expected_address = EXPECTED_PROTECTION_FAULT_ADDRESS.load(Ordering::Relaxed);
     let expected_rip = EXPECTED_PROTECTION_FAULT_RIP.load(Ordering::Relaxed);
+    let recovery_rip = EXPECTED_PROTECTION_FAULT_RECOVERY_RIP.load(Ordering::Relaxed);
 
     if armed
         && !previously_seen
@@ -237,21 +250,41 @@ extern "x86-interrupt" fn page_fault_handler(
         write_hex(b"Fault address (CR2): ", fault_address);
 
         #[cfg(feature = "test-supervisor-write-protection")]
-        super::serial_write(b"ONE OS VM TEST PASS: supervisor-write-protection\n");
-        #[cfg(feature = "test-nx-protection")]
-        super::serial_write(b"ONE OS VM TEST PASS: nx-instruction-fetch\n");
-
-        // QEMU is launched with isa-debug-exit. Value 0x10 yields status 33,
-        // making a terminal expected fault distinguishable from timeout/fail-stop.
-        unsafe {
-            asm!(
-                "out dx, al",
-                in("dx") 0xf4u16,
-                in("al") 0x10u8,
-                options(nomem, nostack, preserves_flags)
-            );
+        {
+            if recovery_rip != 0 {
+                report_exception(Some(14), "invalid test recovery state", frame, Some(error_code), Some(fault_address));
+            }
+            super::serial_write(b"ONE OS VM TEST PASS: supervisor-write-protection\n");
+            // QEMU is launched with isa-debug-exit. Value 0x10 yields status 33.
+            unsafe {
+                asm!(
+                    "out dx, al",
+                    in("dx") 0xf4u16,
+                    in("al") 0x10u8,
+                    options(nomem, nostack, preserves_flags)
+                );
+            }
+            super::halt_forever()
         }
-        super::halt_forever()
+
+        #[cfg(feature = "test-nx-protection")]
+        {
+            if recovery_rip == 0 {
+                report_exception(Some(14), "invalid NX test recovery state", frame, Some(error_code), Some(fault_address));
+            }
+            // SAFETY: the one armed NX test fault matched the exact target VA,
+            // saved RIP, and complete error code. This known executable
+            // continuation is outside the NX target page; use a volatile write
+            // so the hardware-saved instruction pointer is updated before IRETQ.
+            unsafe {
+                ptr::write_volatile(
+                    ptr::addr_of_mut!(frame.instruction_pointer),
+                    recovery_rip,
+                );
+            }
+            super::serial_write(b"ONE OS VM TEST NX FAULT MATCHED\n");
+            return;
+        }
     }
 
     report_exception(
