@@ -13,6 +13,13 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use oneos_core::{validate_memory_map, MemoryMapError};
 
+#[cfg(any(
+    all(feature = "test-exception", feature = "test-general-protection"),
+    all(feature = "test-exception", feature = "test-page-fault"),
+    all(feature = "test-general-protection", feature = "test-page-fault")
+))]
+compile_error!("enable only one exception fault-injection feature at a time");
+
 mod interrupts;
 
 const COM1: u16 = 0x3F8;
