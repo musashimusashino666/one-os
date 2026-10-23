@@ -3,7 +3,6 @@
 //! These pure checks let the kernel reject missing CPU capabilities and required
 //! control bits before it invokes the active-page-table mutation path.
 
-const REQUIRED_PHYSICAL_WIDTH_LEAF: u32 = 0x8000_0008;
 const NX_FEATURE: u32 = 1 << 20;
 const CR0_WP: u64 = 1 << 16;
 const EFER_NXE: u64 = 1 << 11;
