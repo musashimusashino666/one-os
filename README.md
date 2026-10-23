@@ -19,7 +19,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 - [x] Define initial memory-region ownership and implement a fixed-capacity physical page allocator with unit and QEMU smoke tests.
 - [x] Enable the bootloader recursive page-table mapping and perform read-only structural checks of sampled four-level translations for kernel code, the active stack, and BootInfo; this is not an exact ELF PT_LOAD virtual-to-physical mapping proof.
 - [x] Set up and test initial active-kernel mappings and permission enforcement (limited map/unmap smoke test plus dedicated QEMU protection and TLB-transition cases).
-- [ ] Add process isolation and kernel-enforced capability/IPC.
+- [ ] Add process isolation and kernel-enforced capability/IPC (see [docs/ISOLATION_PLAN.md](docs/ISOLATION_PLAN.md)).
 - [ ] Add storage, networking, drivers, and a user-space service manager.
 
 ## Repository layout
@@ -28,6 +28,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 - kernel — x86_64 bare-metal kernel entry point
 - tools/oneos-xtask — kernel build and BIOS image tooling
 - docs/ARCHITECTURE.md — layering and design decisions
+- docs/ISOLATION_PLAN.md — user-space isolation contract and acceptance tests
 - docs/SECURITY.md — threat model and limitations
 - docs/DEVELOPMENT.md — build and test instructions
 - docs/ROADMAP.md — incremental milestones

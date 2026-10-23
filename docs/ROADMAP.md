@@ -32,13 +32,18 @@ Exit criteria: allocator, ownership-registry, registry-backed mutation rollback,
 
 ## M2 — Isolation and IPC
 
-- Add user-mode entry/exit and independent address spaces.
-- Implement a minimal scheduler and thread lifecycle.
-- Define message formats with length and ownership validation.
-- Introduce kernel-enforced capability checks at each privileged interface.
-- Test denial, revocation, invalid pointers, and cross-process isolation.
+- [x] Define the implementation contract and adversarial acceptance plan in [ISOLATION_PLAN.md](ISOLATION_PLAN.md). This document specifies the required invariants and test criteria; it does not mean the isolation features are implemented.
+- [ ] Add host-testable address-space construction, validation, switching, and teardown primitives that preserve frame ownership and fail-closed rollback.
+- [ ] Implement a kernel-controlled ring 3 entry/return path with validated registers, selectors, user stack, and a kernel entry stack.
+- [ ] Create independent user address spaces while keeping any required shared kernel mappings supervisor-only; prevent user access to page tables and recursive aliases.
+- [ ] Add adversarial QEMU tests proving user code cannot read, write, or execute kernel-only memory or another process's private frames, including same-virtual-address/different-frame cases. Explicitly test ring-3 instruction fetch from a present supervisor-only executable page (require #PF vector 14, CR2 and saved RIP equal to the target VA, exact error code `0x15`) and instruction fetch of code mapped only in another process (require exact non-present instruction-fetch fault `0x14`). For both cases, the #PF handler must validate the user exception frame and redirect RIP to a validated user-mode recovery stub; that stub must re-enter the kernel through a dedicated DPL-3 test interrupt using the TSS kernel entry stack. Only the second, validated kernel entry may emit the unique marker and trigger the required `isa-debug-exit` status. See the fault recovery protocol in [ISOLATION_PLAN.md](ISOLATION_PLAN.md).
+- [ ] Verify effective U/S, R/W, NX, CR0.WP, EFER.NXE, and address-space-switch/TLB behavior, and enforce physical-frame-wide W^X across all aliases: reject writable and executable aliases of the same frame in either mapping order and across address spaces; account for kernel/direct-map aliases and overlapping large-page mappings; allow write-to-execute transitions only after every writable alias is removed or downgraded and required TLB invalidation completes; keep the existing M1 suite green on the exact PR head.
+- [ ] Implement a minimal scheduler and thread lifecycle only after the entry/exit and isolation acceptance tests pass.
+- [ ] Define IPC message framing, length and memory-ownership validation, sender/receiver identity, and failure behavior.
+- [ ] Introduce kernel-enforced capability checks at every protected operation; do not trust user-supplied IDs or serialized capability data as proof of authority.
+- [ ] Test denial, revocation, invalid pointers, malformed messages, teardown, and cross-process isolation.
 
-Exit criteria: adversarial tests cannot use one process's authority to access another process's protected resources.
+Exit criteria: **M2 is complete only when every M2 implementation item above passes on the exact reviewed commit; I1–I3 isolation success alone is not sufficient.** A controlled ring-3 execution and return path succeeds; adversarial tests show that processes cannot read, write, or execute kernel-only memory or one another's private resources, including the dedicated supervisor-only and cross-process instruction-fetch denial cases with validated user-mode recovery stubs and a second, normal kernel entry; address-space changes and teardown prevent stale-TLB access and premature frame reuse; and invalid state/resource exhaustion fail closed without partial publication or foreign-frame release. A minimal scheduler and thread lifecycle must operate on validated kernel-owned contexts. IPC must be exercised between isolated participants with framing, lengths, sender/receiver identity, memory ownership, cancellation, malformed-message, invalid-pointer, and failure semantics tested. Kernel-enforced capability checks must guard every protected operation, with test evidence for insufficient rights, wrong principals, forged/modified/foreign/stale tokens, revocation, and resource lifetime across IPC/teardown. The full M1 regression suite and all M2 isolation, scheduler/IPC, and capability acceptance tests must pass. I1–I3 may be reported separately as the initial user-space isolation phase, but M2 stays incomplete until I4 and I5 also pass. Passing QEMU tests demonstrate only the declared scenarios under the tested single-CPU environment, not SMP safety or production readiness. See the [user-space isolation plan](ISOLATION_PLAN.md).
 
 ## M3 — Storage and recovery
 

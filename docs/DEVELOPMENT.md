@@ -53,7 +53,7 @@ The build tool compiles one-os-kernel for x86_64-unknown-none, discovers the act
 Run:
 
     IMAGE_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
-    qemu-system-x86_64 -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
+    qemu-system-x86_64 -machine pc-i440fx-8.2,accel=tcg -cpu qemu64,+nx -smp 1 -m 128M -drive format=raw,file="$IMAGE_DIR/one-os-bios.img" -serial stdio -display none -no-reboot -no-shutdown
 
 Expected serial output includes:
 
