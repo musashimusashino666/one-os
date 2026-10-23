@@ -110,7 +110,7 @@ global_asm!(
     ".global oneos_vm_test_nx_recovery",
     "oneos_vm_test_nx_execute:",
     "mov rax, rdi",
-    "call rax",
+    "jmp rax",
     "oneos_vm_test_nx_recovery:",
     "ret",
 );
