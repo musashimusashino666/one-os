@@ -282,7 +282,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             unsafe { core::ptr::addr_of!(oneos_vm_test_transition_second_recovery) as u64 };
         interrupts::write_hex(b"ONE OS VM TRANSITION TARGET: ", transition.virtual_address);
         interrupts::write_hex(b"ONE OS VM TRANSITION FIRST EXPECTED RIP: ", first_fault_ip);
-        interrupts::write_hex(b"ONE OS VM TRANSITION SECOND EXPECTED RIP: ", second_fault_ip);
+        interrupts::write_hex(
+            b"ONE OS VM TRANSITION SECOND EXPECTED RIP: ",
+            second_fault_ip,
+        );
 
         interrupts::arm_expected_transition_page_fault(
             transition.virtual_address,
