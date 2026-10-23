@@ -181,6 +181,25 @@ jobs:
             --exit-status "$status" \
             --case nx-instruction-fetch
 
+      - name: Verify map/unmap/remap and TLB transitions in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-vm-transitions
+          log="$CARGO_TARGET_DIR/qemu-vm-transitions.log"
+          set +e
+          timeout 10s qemu-system-x86_64 \
+            -cpu max \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-vm-transitions-test-bios.img" \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          python3 tools/check_qemu_vm_transitions.py \
+            --log "$log" \
+            --exit-status "$status"
+
       - name: Upload QEMU serial logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
