@@ -333,24 +333,36 @@ mod tests {
     #[test]
     fn permits_only_full_pages_inside_an_approved_region() {
         let regions = [(0x1000, 0x5000, true), (0x5000, 0x9000, false)];
-        assert!(physical_page_is_in_allowed_region(0x2000, regions.len(), |index| {
-            regions[index]
-        }));
-        assert!(!physical_page_is_in_allowed_region(0x4000, regions.len(), |index| {
-            regions[index]
-        }));
-        assert!(!physical_page_is_in_allowed_region(0x5000, regions.len(), |index| {
-            regions[index]
-        }));
+        assert!(physical_page_is_in_allowed_region(
+            0x2000,
+            regions.len(),
+            |index| { regions[index] }
+        ));
+        assert!(!physical_page_is_in_allowed_region(
+            0x4000,
+            regions.len(),
+            |index| { regions[index] }
+        ));
+        assert!(!physical_page_is_in_allowed_region(
+            0x5000,
+            regions.len(),
+            |index| { regions[index] }
+        ));
     }
 
     #[test]
     fn rejects_invalid_or_unaligned_page_ranges() {
         let regions = [(0x1000, 0x5000, true)];
-        assert!(!physical_page_is_in_allowed_region(0, regions.len(), |index| regions[index]));
-        assert!(!physical_page_is_in_allowed_region(0x1001, regions.len(), |index| {
-            regions[index]
-        }));
+        assert!(!physical_page_is_in_allowed_region(
+            0,
+            regions.len(),
+            |index| regions[index]
+        ));
+        assert!(!physical_page_is_in_allowed_region(
+            0x1001,
+            regions.len(),
+            |index| { regions[index] }
+        ));
         assert!(!physical_page_is_in_allowed_region(
             0xffff_ffff_ffff_f000,
             regions.len(),
