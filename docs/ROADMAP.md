@@ -20,6 +20,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [ ] Define memory-region ownership and the physical page allocator.
 - [ ] Set up and test kernel virtual-memory mappings.
 - [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting (verified in CI Run #120 at `892b9268c9a6774229189c60557be4d0d22bf541`).
+- [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).
 - Keep unsafe code small and document safety invariants.
 
 Exit criteria: allocator tests pass, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, and memory-fault tests do not corrupt unrelated memory.

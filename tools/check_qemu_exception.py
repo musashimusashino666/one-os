@@ -45,6 +45,13 @@ CASES = {
         error_code="0x0000000000000000",
         fault_address="0x0000400000000000",
     ),
+    "df": ExceptionCase(
+        trigger="ONE OS EXCEPTION TEST: triggering double fault",
+        description="double fault",
+        vector="0x0000000000000008",
+        # x86_64 double-fault exception always pushes an error code of zero.
+        error_code="0x0000000000000000",
+    ),
 }
 
 

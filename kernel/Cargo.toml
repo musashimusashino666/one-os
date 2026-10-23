@@ -11,6 +11,8 @@ default = []
 test-exception = []
 test-general-protection = []
 test-page-fault = []
+# Test-only invalid-stack fault injection to exercise the double-fault IST stack.
+test-double-fault = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

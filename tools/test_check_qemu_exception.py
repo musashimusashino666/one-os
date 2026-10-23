@@ -10,6 +10,7 @@ def valid_log(case: str, *, error_code: str | None = None, fault_address: str | 
         "ud": ("invalid opcode", "0x0000000000000006", "ONE OS EXCEPTION TEST: triggering invalid opcode"),
         "gp": ("general protection fault", "0x000000000000000d", "ONE OS EXCEPTION TEST: triggering non-canonical address access"),
         "pf": ("page fault", "0x000000000000000e", "ONE OS EXCEPTION TEST: triggering page fault"),
+        "df": ("double fault", "0x0000000000000008", "ONE OS EXCEPTION TEST: triggering double fault"),
     }
     description, vector, trigger = cases[case]
     lines = [
@@ -34,6 +35,11 @@ def valid_log(case: str, *, error_code: str | None = None, fault_address: str | 
 class ValidateExceptionOutputTests(unittest.TestCase):
     def test_valid_invalid_opcode_diagnostics_pass(self):
         valid, message = validate_exception_output(valid_log("ud"), 124, "ud")
+        self.assertTrue(valid, message)
+
+    def test_valid_double_fault_reports_zero_error_code_and_ist_frame(self):
+        log = valid_log("df", error_code="0x0000000000000000")
+        valid, message = validate_exception_output(log, 124, "df")
         self.assertTrue(valid, message)
 
     def test_non_canonical_access_general_protection_error_code_is_zero(self):
@@ -70,12 +76,11 @@ class ValidateExceptionOutputTests(unittest.TestCase):
             "Stack segment",
         ):
             with self.subTest(label=label):
-                log = valid_log("ud").replace(
-                    f"{label}: 0x0000000000101234\n", ""
-                )
                 # Remove the exact sample field irrespective of its value.
                 log = "\n".join(
-                    line for line in log.splitlines() if not line.startswith(label + ":")
+                    line
+                    for line in valid_log("ud").splitlines()
+                    if not line.startswith(label + ":")
                 )
                 valid, message = validate_exception_output(log, 124, "ud")
                 self.assertFalse(valid)

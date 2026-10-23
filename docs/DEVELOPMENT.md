@@ -48,7 +48,7 @@ GitHub Actions builds a BIOS disk image, then performs three independent QEMU in
 
 ## Exception diagnostics test
 
-The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The current IDT uses the active kernel stack, so an IST stack for reliable double-fault diagnosis remains future work.
+The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The bootstrap installs a TSS with IST1 pointing to a dedicated double-fault stack; the double-fault IDT gate selects IST1. Other exception handlers continue to use the active stack. The dedicated `image-test-double-fault` image sets RSP to a non-canonical value before raising #UD, testing that exception delivery escalates to #DF and reaches the handler on IST1.
 
 The fault-injection BIOS images are enabled only for dedicated tests, never for the normal kernel image:
 
