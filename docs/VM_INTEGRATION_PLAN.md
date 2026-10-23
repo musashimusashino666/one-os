@@ -179,9 +179,12 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 6. Add dedicated QEMU memory test images for transition/TLB behavior, read-only write
    protection, and NX instruction-fetch protection. Keep fault-injection code out of
    the normal BIOS image and ensure the QEMU CPU configuration exposes NX.
-7. Update CI so pull requests run on `opened`, `reopened`, `ready_for_review`, and
-   every `synchronize` (new head commit), plus manual dispatch. Run the full required
-   validation on the exact final PR head and retain the serial logs and result summary.
+7. Integrate the full required validation into CI and run it on the exact final PR
+   head. Preserve the repository's explicit CI trigger policy: after the final push,
+   create a fresh PR-context run using the documented Draft-to-Ready transition; do not
+   rely on a green result from an earlier head or treat manual dispatch as the merge
+   gate unless the repository's required-check policy explicitly says so. Retain logs
+   and the result summary.
 
 ## Acceptance tests
 
@@ -318,9 +321,13 @@ the recoverable test handlers, the NX test image, or CI jobs. The next implement
 PR must add these tests and make them required CI gates rather than documenting them
 as manual-only checks.
 
-- CI must run on the new head commit for every pull-request `synchronize` event, as
-  well as `opened`, `reopened`, and `ready_for_review`; retain manual workflow
-  dispatch. A successful run for an earlier commit does not validate a newer head.
+- Integrate every acceptance test below into the required GitHub Actions check;
+  do not leave memory-safety tests as manual-only checklist items. Preserve the
+  repository's current trigger policy, which intentionally omits
+  `pull_request.synchronize`: after the final code push, transition the PR from Draft
+  to Ready for review to create a fresh PR-context run for that exact head. A green run
+  for an earlier commit does not validate the new head. A `workflow_dispatch` run is
+  diagnostic and must not be assumed to satisfy the required PR-context check.
 - The required job must build the normal boot image and each dedicated memory-test
   image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
   checks, image creation, serial-log validator tests, repeated normal boots, and
