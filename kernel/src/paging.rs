@@ -26,11 +26,17 @@ const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
 const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const TABLE_FRAME_CAPACITY: usize = 512;
@@ -1035,14 +1041,20 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 
 /// Holds the owned data frame and target VA for one dedicated QEMU protection test.
 /// The frame token deliberately remains alive for as long as the mapping is used.
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 pub struct ProtectionTestMapping {
     pub virtual_address: u64,
     pub physical_address: u64,
     _frame: Frame,
 }
 
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 #[derive(Clone, Copy)]
 enum ProtectionTestPayload {
     Sentinel,
@@ -1075,7 +1087,10 @@ pub fn install_nx_execution_protection_test(
     )
 }
 
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 fn prepare_protection_test_mapping(
     boot_info: &BootInfo,
     protected_permissions: PagePermissions,
@@ -1236,7 +1251,10 @@ fn prepare_protection_test_mapping(
     Err(PagingError::NoUnusedVirtualAddress)
 }
 
-#[cfg(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection"))]
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 fn read_active_leaf_path(
     editor: &mut KernelPageTableEditor<'_>,
     root_table_physical: u64,
@@ -1265,7 +1283,6 @@ fn read_active_leaf_path(
     }
     Ok(entries)
 }
-
 
 #[cfg(feature = "test-vm-transitions")]
 const TRANSITION_FIRST_SENTINEL: u64 = 0x4f4e_455f_564d_4131;
