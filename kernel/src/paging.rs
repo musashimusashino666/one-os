@@ -13,10 +13,9 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    map_4k, recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame,
-    PagePermissions, PageTableEditor, PageTableError, PageTableMutationError, PageTranslation,
-    PAGE_SIZE,
+    is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame, PagePermissions,
+    PageTableEditor, PageTableError, PageTableMutationError, PageTranslation, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -367,8 +366,7 @@ pub fn initialize_paging_controls() -> Result<(), PagingError> {
         return Err(PagingError::UnsupportedNx);
     }
     // SAFETY: the extended physical-address-width CPUID leaf was checked above.
-    let physical_address_bits =
-        (unsafe { __cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH) }.eax & 0xff) as u8;
+    let physical_address_bits = (unsafe { __cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH) }.eax & 0xff) as u8;
     if !(32..=52).contains(&physical_address_bits) {
         return Err(PagingError::InvalidPhysicalAddressWidth {
             bits: physical_address_bits,
@@ -564,14 +562,11 @@ struct KernelPageTableEditor<'a> {
 }
 
 impl<'a> KernelPageTableEditor<'a> {
-    fn new(
-        boot_info: &'a BootInfo,
-        target_virtual_address: u64,
-    ) -> Result<Self, PagingError> {
+    fn new(boot_info: &'a BootInfo, target_virtual_address: u64) -> Result<Self, PagingError> {
         let flags: u64;
         // SAFETY: PUSHFQ reads the current flags register; no flags are changed.
         unsafe {
-            asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
+            asm!("pushfq", "pop {}", out(reg) flags, options(preserves_flags));
         }
         if flags & (1 << 9) != 0 {
             return Err(PagingError::InterruptsEnabled);
@@ -873,7 +868,9 @@ fn entry_pointer_from_page(table_virtual_address: u64, index: usize) -> Option<*
     {
         return None;
     }
-    let offset = u64::try_from(index).ok()?.checked_mul(size_of::<u64>() as u64)?;
+    let offset = u64::try_from(index)
+        .ok()?
+        .checked_mul(size_of::<u64>() as u64)?;
     let address = table_virtual_address.checked_add(offset)?;
     let end = address.checked_add(size_of::<u64>() as u64 - 1)?;
     if !is_canonical_4level(address) || !is_canonical_4level(end) || address & 7 != 0 {
@@ -900,7 +897,8 @@ fn translate_with_editor(
 /// separate acceptance tests; this smoke test does not claim those tests exist.
 pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     // The caller has already initialized and smoke-tested the physical allocator.
-    let data_frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let data_frame =
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let data_physical = data_frame.physical_address();
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) => index,
@@ -965,10 +963,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                     translate_with_editor(&mut editor, root_table_physical, candidate);
                 let removed_correctly = unmapped_page.physical_address == data_physical
                     && unmapped_page.permissions == permissions
-                    && matches!(
-                        unmapped_translation,
-                        Err(PageTableError::NotPresent { .. })
-                    );
+                    && matches!(unmapped_translation, Err(PageTableError::NotPresent { .. }));
                 let release_result = release_data_frame(data_frame);
                 if release_result.is_err() || !mapped_correctly || !removed_correctly {
                     return Err(PagingError::MappingSmokeMismatch);
