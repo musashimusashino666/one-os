@@ -22,6 +22,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-general-protection" => build_bios_image(Some("test-general-protection")),
         "image-test-page-fault" => build_bios_image(Some("test-page-fault")),
         "image-test-double-fault" => build_bios_image(Some("test-double-fault")),
+        "image-test-supervisor-write-protection" => {
+            build_bios_image(Some("test-supervisor-write-protection"))
+        }
+        "image-test-nx-protection" => build_bios_image(Some("test-nx-protection")),
+        "image-test-vm-transitions" => build_bios_image(Some("test-vm-transitions")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
@@ -36,6 +41,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a test-only page-fault exception image");
             println!("  cargo run -p oneos-xtask -- image-test-double-fault");
             println!("      Build a test-only double-fault/IST diagnostic image");
+            println!("  cargo run -p oneos-xtask -- image-test-supervisor-write-protection");
+            println!("      Build a test-only supervisor read-only protection image");
+            println!("  cargo run -p oneos-xtask -- image-test-nx-protection");
+            println!("      Build a test-only NX instruction-fetch protection image");
+            println!("  cargo run -p oneos-xtask -- image-test-vm-transitions");
+            println!("      Build a test-only map/unmap/remap and TLB-transition image");
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -156,6 +167,11 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-general-protection") => "one-os-general-protection-test-bios.img",
         Some("test-page-fault") => "one-os-page-fault-test-bios.img",
         Some("test-double-fault") => "one-os-double-fault-test-bios.img",
+        Some("test-supervisor-write-protection") => {
+            "one-os-supervisor-write-protection-test-bios.img"
+        }
+        Some("test-nx-protection") => "one-os-nx-protection-test-bios.img",
+        Some("test-vm-transitions") => "one-os-vm-transitions-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
     let image_path = target_directory.join(image_name);

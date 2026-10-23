@@ -4,8 +4,12 @@
 
 This document defines the implementation contract and acceptance tests for integrating
 the host-testable page-table mutation primitives into the active x86_64 kernel. It is
-a plan, not evidence that kernel-enforced memory protection exists. M1 remains open
-until the integration and QEMU acceptance tests pass.
+the implementation contract and acceptance tests for the initial integration. The
+required QEMU suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
+at candidate `18e8aa54363999787afe40f3442f4e999deb0637`. Any subsequent commit must be
+revalidated on its exact head. These tests establish the listed QEMU behavior, not SMP
+safety, generalized virtual-memory management, process isolation, or protection across
+untested hardware.
 
 ## Current baseline
 
@@ -14,15 +18,25 @@ until the integration and QEMU acceptance tests pass.
 - The mutation helpers validate four-level canonical addresses, alignment, physical
   address width, ancestor permissions, and large-page conflicts; enforce W^X at the
   leaf; and roll back intermediate-table allocations on allocation failure.
-- `kernel/src/paging.rs` currently inspects existing bootloader mappings read-only.
-  It does not invoke the mutation helpers.
+- `kernel/src/paging.rs` inspects bootloader mappings and now contains a guarded
+  `PageTableEditor` for active four-level page tables. It resolves reachable tables
+  through recursive aliases and accesses only owned, unpublished Usable frames through
+  a verified writable physical-memory-offset mapping.
 - `kernel/src/memory.rs` allocates physical frames from bootloader-designated Usable
   memory. A returned `Frame` is an owned, non-`Copy` token; its physical address
   alone is not the ownership token.
-- The kernel currently checks `CR0.WP` during inspection. The mapping integration must
-  separately establish the `EFER.NXE` precondition before relying on NX entries.
-- The existing QEMU tests validate boot and selected exception diagnostics; they do
-  not yet validate map/unmap against the active page tables.
+- The kernel establishes `CR0.WP` and `EFER.NXE`, and the normal QEMU boot path
+  performs an active map/access/unmap smoke cycle with local TLB invalidation.
+- Dedicated QEMU images and required CI steps have been added for supervisor write
+  protection (`error_code == 0x3`) and NX instruction fetch (`error_code == 0x11`).
+  Their exact fault metadata and terminal `isa-debug-exit` status are checked by a
+  separate serial-log validator. The current-head result is tracked in the required PR-context check linked from PR #11.
+- A dedicated map/unmap/remap QEMU image now performs two expected non-present reads,
+  recovers only from their exact #PF contexts, verifies the first frame's payload,
+  unmaps and re-faults, remaps a distinct frame, and verifies its preloaded different
+  payload. Its validator checks both full `error_code == 0x0` values, target CR2,
+  exact saved RIPs, recovery order, and terminal QEMU exit status. These tests must
+  still pass on the final reviewed head.
 
 ## Goals
 
@@ -205,17 +219,11 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
 - Test the recursive-alias helper with each page-table level and multiple target VAs,
   including canonical boundaries, invalid indices/levels, checked entry-offset
   arithmetic, and alignment requirements.
-- Test the concrete editor's ownership registry and lifecycle using a test backend:
-  fresh frames are zero-filled, tokens are retained before publication, failed
-  allocations are returned exactly once, and foreign/double releases fail closed.
-- Test registry exhaustion when no slot is available before allocation and when
-  capacity is insufficient for a mapping requiring multiple intermediate tables.
-  The failure must leave all pre-existing table entries unchanged, remove all
-  reservations, and return every physical frame acquired by that operation exactly
-  once. Include allocation/free counters or equivalent ownership assertions.
-- Test that no leaf-data frame is freed merely because its mapping was removed.
-- Test that invalid CPU capability data or a missing required control-state precondition
-  prevents mutation.
+- [x] Add host-testable fixed-capacity ownership-registry tests covering reserve-before-allocation, full-capacity rejection without invoking allocation, non-Copy token retention, single release of unpublished frames, published-frame retention, duplicate physical-address rejection, invalid/foreign release rejection, and metadata-slot reuse.
+- [x] Combine the generic map mutation engine with a registry-backed test editor. Tests verify zeroed newly allocated table pages, slot reservation before allocation, capacity exhaustion for a three-intermediate-table mapping, unchanged root entries on failure, released reservations, and exactly-once token release in reverse allocation order.
+- [x] Verify unmap returns the leaf physical address and permissions without calling the table-frame release path or registering/releasing the leaf data frame.
+- [x] Add a target-specific integration assertion for the concrete `KernelPageTableEditor`'s physical-memory-offset alias and zero-before-publication path. The `test-vm-transitions` kernel checks all 512 entries through the validated offset alias before the editor returns the table frame; the QEMU log validator requires this assertion to be observed during the active-mapping smoke test before the dedicated transition sequence starts.
+- [x] Validate required extended-CPUID leaf availability, NX feature presence, MAXPHYADDR range, CR0.WP, and EFER.NXE through pure host-testable helpers used by the kernel bootstrap; unit tests cover unsupported and valid states, and bootstrap propagates any failure before page-table mutation.
 
 ### QEMU integration tests
 
@@ -358,10 +366,16 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 
 ## Validation and CI contract
 
-This PR specifies acceptance criteria; it does not implement the kernel integration,
-the recoverable test handlers, the NX test image, or CI jobs. The next implementation
-PR must add these tests and make them required CI gates rather than documenting them
-as manual-only checks.
+PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
+supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
+test-only fault handlers; exact serial validators; required CI steps; retained QEMU
+logs; and host-testable fixed-capacity frame ownership registry logic. The complete
+suite passed in [CI run #317](https://github.com/musashimusashino666/one-os/actions/runs/39955564451)
+at candidate `18e8aa54363999787afe40f3442f4e999deb0637`; any later commit must be
+validated by a fresh required PR-context run on that exact head. The transition test
+verifies exact non-present fault metadata, recovery order, remapping to a distinct
+physical frame, observable TLB behavior, and the checked-alias zero-before-publication
+assertion.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
@@ -370,13 +384,12 @@ as manual-only checks.
   to Ready for review to create a fresh PR-context run for that exact head. A green run
   for an earlier commit does not validate the new head. A `workflow_dispatch` run is
   diagnostic and must not be assumed to satisfy the required PR-context check.
-- The required job must build the normal boot image and each dedicated memory-test
-  image, run all `oneos-core` tests, formatting, Clippy with warnings denied, kernel
-  checks, image creation, serial-log validator tests, repeated normal boots, and
-  existing exception tests. It must also run the map/unmap and TLB-transition tests,
-  the dedicated supervisor write-protection image and the dedicated NX
-  instruction-fetch image under QEMU. The current unmapped-read #PF image does not
-  satisfy the write-protection acceptance test and must remain a separate case.
+- The required job builds the normal boot image and each dedicated memory-test image,
+  runs all `oneos-core` tests, formatting, Clippy with warnings denied, kernel checks,
+  image creation, serial-log validator tests, repeated normal boots, existing exception
+  tests, supervisor write-protection, NX instruction-fetch, and map/unmap/remap
+  transition/TLB QEMU tests. The ordinary unmapped-read #PF image does not replace the
+  separate supervisor write-protection case.
 - Serial-log validators must fail the job on timeout, panic/fail-stop, unexpected
   exceptions, missing or duplicate test success markers, an incorrect recovery path,
   or the normal bootstrap-completion marker being used in place of a memory-test

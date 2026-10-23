@@ -1,12 +1,19 @@
 //! Minimal x86_64 exception and interrupt diagnostics.
 //!
 //! The IDT is installed during single-core bootstrap, before enabling external
-//! interrupts. Handlers are fail-stop: they report the saved machine state and
-//! halt rather than attempting recovery from an unknown kernel state.
+//! interrupts. Production handlers are fail-stop. Dedicated memory-acceptance
+//! images can arm one exact test fault and recover only from its validated RIP,
+//! CR2, and complete error code; every other exception remains fail-stop.
 
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
+))]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
@@ -155,6 +162,11 @@ error_handler!(segment_not_present_handler, 11, "segment not present");
 error_handler!(stack_segment_fault_handler, 12, "stack-segment fault");
 error_handler!(general_protection_handler, 13, "general protection fault");
 
+#[cfg(not(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
+)))]
 extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: u64) -> ! {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
@@ -169,6 +181,233 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
     report_exception(
         Some(14),
         "page fault",
+        frame,
+        Some(error_code),
+        Some(fault_address),
+    )
+}
+
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+static EXPECTED_PROTECTION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+static EXPECTED_PROTECTION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+static EXPECTED_PROTECTION_FAULT_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+static EXPECTED_PROTECTION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Arms exactly one known, terminal page-fault expectation in a dedicated QEMU image.
+/// The ordinary production page-fault handler remains fail-stop.
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+pub(super) fn arm_expected_protection_page_fault(
+    target: u64,
+    instruction_pointer: u64,
+    recovery_instruction_pointer: u64,
+) {
+    EXPECTED_PROTECTION_FAULT_ADDRESS.store(target, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_RIP.store(instruction_pointer, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_RECOVERY_RIP.store(recovery_instruction_pointer, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_SEEN.store(false, Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT_ARMED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "test-nx-protection")]
+pub(super) fn expected_protection_page_fault_was_seen() -> bool {
+    EXPECTED_PROTECTION_FAULT_SEEN.load(Ordering::Acquire)
+}
+
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: u64) {
+    let fault_address: u64;
+    // SAFETY: CR2 is read in the x86_64 page-fault exception context.
+    unsafe {
+        asm!(
+            "mov {}, cr2",
+            out(reg) fault_address,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    #[cfg(feature = "test-supervisor-write-protection")]
+    let expected_error_code = 0x3;
+    #[cfg(feature = "test-nx-protection")]
+    let expected_error_code = 0x11;
+
+    let armed = EXPECTED_PROTECTION_FAULT_ARMED.swap(false, Ordering::AcqRel);
+    let previously_seen = EXPECTED_PROTECTION_FAULT_SEEN.swap(true, Ordering::AcqRel);
+    let expected_address = EXPECTED_PROTECTION_FAULT_ADDRESS.load(Ordering::Relaxed);
+    let expected_rip = EXPECTED_PROTECTION_FAULT_RIP.load(Ordering::Relaxed);
+    let recovery_rip = EXPECTED_PROTECTION_FAULT_RECOVERY_RIP.load(Ordering::Relaxed);
+
+    if armed
+        && !previously_seen
+        && error_code == expected_error_code
+        && fault_address == expected_address
+        && frame.instruction_pointer == expected_rip
+    {
+        super::serial_write(b"\nONE OS VM TEST EXPECTED PAGE FAULT\n");
+        write_hex(b"Instruction pointer: ", frame.instruction_pointer);
+        write_hex(b"Error code: ", error_code);
+        write_hex(b"Fault address (CR2): ", fault_address);
+
+        #[cfg(feature = "test-supervisor-write-protection")]
+        {
+            if recovery_rip != 0 {
+                report_exception(
+                    Some(14),
+                    "invalid test recovery state",
+                    frame,
+                    Some(error_code),
+                    Some(fault_address),
+                );
+            }
+            super::serial_write(b"ONE OS VM TEST PASS: supervisor-write-protection\n");
+            // QEMU is launched with isa-debug-exit. Value 0x10 yields status 33.
+            unsafe {
+                asm!(
+                    "out dx, al",
+                    in("dx") 0xf4u16,
+                    in("al") 0x10u8,
+                    options(nomem, nostack, preserves_flags)
+                );
+            }
+            super::halt_forever()
+        }
+
+        #[cfg(feature = "test-nx-protection")]
+        {
+            if recovery_rip == 0 {
+                report_exception(
+                    Some(14),
+                    "invalid NX test recovery state",
+                    frame,
+                    Some(error_code),
+                    Some(fault_address),
+                );
+            }
+            // SAFETY: the one armed NX test fault matched the exact target VA,
+            // saved RIP, and complete error code. This known executable
+            // continuation is outside the NX target page; use a volatile write
+            // so the hardware-saved instruction pointer is updated before IRETQ.
+            unsafe {
+                ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
+            }
+            super::serial_write(b"ONE OS VM TEST NX FAULT MATCHED\n");
+            return;
+        }
+    }
+
+    report_exception(
+        Some(14),
+        "page fault",
+        frame,
+        Some(error_code),
+        Some(fault_address),
+    )
+}
+
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_PHASE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-vm-transitions")]
+static EXPECTED_TRANSITION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-vm-transitions")]
+static TRANSITION_FAULT_SEEN_PHASE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "test-vm-transitions")]
+pub(super) fn arm_expected_transition_page_fault(
+    target: u64,
+    instruction_pointer: u64,
+    recovery_instruction_pointer: u64,
+    phase: u64,
+) {
+    EXPECTED_TRANSITION_FAULT_ADDRESS.store(target, Ordering::Relaxed);
+    EXPECTED_TRANSITION_FAULT_RIP.store(instruction_pointer, Ordering::Relaxed);
+    EXPECTED_TRANSITION_RECOVERY_RIP.store(recovery_instruction_pointer, Ordering::Relaxed);
+    EXPECTED_TRANSITION_PHASE.store(phase, Ordering::Relaxed);
+    EXPECTED_TRANSITION_FAULT_ARMED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "test-vm-transitions")]
+pub(super) fn transition_page_fault_was_seen(phase: u64) -> bool {
+    TRANSITION_FAULT_SEEN_PHASE.load(Ordering::Acquire) == phase
+}
+
+#[cfg(feature = "test-vm-transitions")]
+extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: u64) {
+    let fault_address: u64;
+    // SAFETY: CR2 is read in the x86_64 page-fault exception context.
+    unsafe {
+        asm!(
+            "mov {}, cr2",
+            out(reg) fault_address,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    let armed = EXPECTED_TRANSITION_FAULT_ARMED.swap(false, Ordering::AcqRel);
+    let expected_address = EXPECTED_TRANSITION_FAULT_ADDRESS.load(Ordering::Relaxed);
+    let expected_rip = EXPECTED_TRANSITION_FAULT_RIP.load(Ordering::Relaxed);
+    let recovery_rip = EXPECTED_TRANSITION_RECOVERY_RIP.load(Ordering::Relaxed);
+    let phase = EXPECTED_TRANSITION_PHASE.load(Ordering::Relaxed);
+    if armed
+        && error_code == 0
+        && fault_address == expected_address
+        && frame.instruction_pointer == expected_rip
+        && recovery_rip != 0
+        && (phase == 1 || phase == 2)
+    {
+        super::serial_write(b"\nONE OS VM TRANSITION EXPECTED PAGE FAULT\n");
+        write_hex(b"Instruction pointer: ", frame.instruction_pointer);
+        write_hex(b"Error code: ", error_code);
+        write_hex(b"Fault address (CR2): ", fault_address);
+
+        // SAFETY: the one armed non-present fault matched the exact target,
+        // saved RIP, and complete error_code == 0. This recovery label is paired
+        // with the faulting assembly load and returns to its C caller.
+        unsafe {
+            ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
+        }
+        if phase == 1 {
+            super::serial_write(b"ONE OS VM TRANSITION FAULT MATCHED: initial-unmapped\n");
+        } else {
+            super::serial_write(b"ONE OS VM TRANSITION FAULT MATCHED: after-unmap\n");
+        }
+        TRANSITION_FAULT_SEEN_PHASE.store(phase, Ordering::Release);
+        return;
+    }
+
+    report_exception(
+        Some(14),
+        "unexpected page fault during mapping-transition test",
         frame,
         Some(error_code),
         Some(fault_address),

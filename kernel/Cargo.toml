@@ -13,6 +13,11 @@ test-general-protection = []
 test-page-fault = []
 # Test-only invalid-stack fault injection to exercise the double-fault IST stack.
 test-double-fault = []
+# Dedicated hardware memory-protection acceptance images (terminal expected #PF).
+test-supervisor-write-protection = []
+test-nx-protection = []
+# Dedicated map/unmap/remap and page-fault/TLB transition acceptance image.
+test-vm-transitions = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

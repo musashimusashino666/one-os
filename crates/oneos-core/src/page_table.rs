@@ -35,6 +35,15 @@ pub enum PageTableError {
     InvalidTableAddress { level: u8 },
 }
 
+impl PageTableError {
+    /// Returns whether a failed translation may be retried with another mapping
+    /// candidate. Table access can be unavailable for one recursive alias path;
+    /// malformed or invalid page-table structures must remain hard errors.
+    pub const fn is_retryable_for_mapping_candidate(self) -> bool {
+        matches!(self, Self::TableUnavailable { .. })
+    }
+}
+
 /// The result of a successful four-level address translation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTranslation {
@@ -321,6 +330,38 @@ mod tests {
     }
 
     #[test]
+    fn recursive_alias_resolution_handles_multiple_canonical_virtual_paths() {
+        let virtual_addresses = [
+            0xffff_8123_4567_89ab,
+            0xffff_ffff_ffff_f123,
+            0x0000_7fff_fedc_ba98,
+        ];
+        let aliases: [[u64; 4]; 3] = virtual_addresses.map(|virtual_address| {
+            [
+                recursive_table_page_virtual_address(510, virtual_address, 4).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 3).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 2).unwrap(),
+                recursive_table_page_virtual_address(510, virtual_address, 1).unwrap(),
+            ]
+        });
+
+        for alias_set in &aliases {
+            for &alias in alias_set {
+                assert!(is_canonical_4level(alias));
+                assert_eq!(alias & (PAGE_SIZE - 1), 0);
+            }
+        }
+
+        // The PML4 page alias is shared, while lower-level table aliases follow
+        // the target VA's PML4/PDPTE/PDE path and must not collide across paths.
+        assert_eq!(aliases[0][0], aliases[1][0]);
+        assert_ne!(aliases[0][1], aliases[1][1]);
+        assert_ne!(aliases[0][2], aliases[1][2]);
+        assert_ne!(aliases[0][3], aliases[1][3]);
+        assert_ne!(aliases[0][3], aliases[2][3]);
+    }
+
+    #[test]
     fn rejects_invalid_recursive_mapping_inputs() {
         assert_eq!(
             recursive_table_page_virtual_address(512, 0xffff_8000_0000_0000, 4),
@@ -531,6 +572,22 @@ mod tests {
     fn unavailable_table_is_reported() {
         let error = translate_4level(0x1000, 0x1000, |_, _| None).unwrap_err();
         assert_eq!(error, PageTableError::TableUnavailable { level: 4 });
+    }
+
+    #[test]
+    fn only_unavailable_table_errors_allow_mapping_candidate_retry() {
+        assert!(PageTableError::TableUnavailable { level: 3 }.is_retryable_for_mapping_candidate());
+        assert!(!PageTableError::NotPresent { level: 4 }.is_retryable_for_mapping_candidate());
+        assert!(
+            !PageTableError::MalformedLargePage { level: 3 }.is_retryable_for_mapping_candidate()
+        );
+        assert!(!PageTableError::LargePageAtInvalidLevel { level: 2 }
+            .is_retryable_for_mapping_candidate());
+        assert!(
+            !PageTableError::InvalidTableAddress { level: 1 }.is_retryable_for_mapping_candidate()
+        );
+        assert!(!PageTableError::InvalidRootTable.is_retryable_for_mapping_candidate());
+        assert!(!PageTableError::NonCanonicalVirtualAddress.is_retryable_for_mapping_candidate());
     }
 
     #[test]

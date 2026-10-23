@@ -16,12 +16,15 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod frame_allocator;
+mod frame_registry;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
+mod paging_preconditions;
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
+pub use frame_registry::{FrameRegistryError, FrameToken, PageTableFrameRegistry};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
@@ -31,6 +34,10 @@ pub use page_table::{
 };
 pub use page_table_mutation::{
     map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+};
+pub use paging_preconditions::{
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, PagingPreconditionError,
 };
 
 /// Stable identifier for a resource managed by an authority.
