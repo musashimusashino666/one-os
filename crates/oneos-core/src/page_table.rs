@@ -576,20 +576,18 @@ mod tests {
 
     #[test]
     fn only_unavailable_table_errors_allow_mapping_candidate_retry() {
-        assert!(PageTableError::TableUnavailable { level: 3 }
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableError::NotPresent { level: 4 }
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableError::MalformedLargePage { level: 3 }
-            .is_retryable_for_mapping_candidate());
+        assert!(PageTableError::TableUnavailable { level: 3 }.is_retryable_for_mapping_candidate());
+        assert!(!PageTableError::NotPresent { level: 4 }.is_retryable_for_mapping_candidate());
+        assert!(
+            !PageTableError::MalformedLargePage { level: 3 }.is_retryable_for_mapping_candidate()
+        );
         assert!(!PageTableError::LargePageAtInvalidLevel { level: 2 }
             .is_retryable_for_mapping_candidate());
-        assert!(!PageTableError::InvalidTableAddress { level: 1 }
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableError::InvalidRootTable
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableError::NonCanonicalVirtualAddress
-            .is_retryable_for_mapping_candidate());
+        assert!(
+            !PageTableError::InvalidTableAddress { level: 1 }.is_retryable_for_mapping_candidate()
+        );
+        assert!(!PageTableError::InvalidRootTable.is_retryable_for_mapping_candidate());
+        assert!(!PageTableError::NonCanonicalVirtualAddress.is_retryable_for_mapping_candidate());
     }
 
     #[test]
