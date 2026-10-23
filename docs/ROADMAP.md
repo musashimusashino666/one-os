@@ -20,11 +20,12 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [x] Define initial memory-region ownership and implement a fixed-capacity 4 KiB bitmap physical-frame allocator; host tests cover kernel-image overlap rejection, invalid ranges/maps, usable-region/frame capacity exhaustion, reserved-region exclusion, alignment, exhaustion, release/reuse, and foreign tokens.
 - [x] Enable the bootloader recursive page-table mapping and inspect the active four-level page tables read-only; check sampled translations for kernel code, the active stack, and BootInfo without claiming segment-by-segment ELF mapping verification.
 - [ ] Set up and test kernel virtual-memory mappings, including map/unmap operations and permission enforcement.
+- [x] Add host-testable 4 KiB map/unmap mutation primitives with W^X policy and allocation-failure rollback tests; active-kernel integration and QEMU mapping/protection tests remain open.
 - [x] Establish exception handlers and diagnostic fault output, including QEMU tests for invalid opcode, general protection, and page-fault/CR2 reporting (verified in CI Run #120 at `892b9268c9a6774229189c60557be4d0d22bf541`).
 - [x] Configure a TSS/IST stack for double-fault diagnostics and verify it with controlled QEMU fault injection (verified by CI Run #149 at `c2ba82663f8fcca40b396b61e6f764434d38abd7`).
 - Keep unsafe code small and document safety invariants.
 
-Exit criteria: allocator tests pass, reserved and unknown regions are never allocated, insufficient metadata fails closed, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, read-only page-table walks complete their documented structural and sampled-address checks for essential bootstrap addresses without claiming exact ELF PT_LOAD correspondence or system-wide memory-protection enforcement, and mapping mutation remains out of scope until dedicated map/unmap and permission tests exist.
+Exit criteria: allocator tests pass, reserved and unknown regions are never allocated, insufficient metadata fails closed, invalid maps fail closed, controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker, read-only page-table walks complete their documented structural and sampled-address checks for essential bootstrap addresses without claiming exact ELF PT_LOAD correspondence or system-wide memory-protection enforcement, ; host-tested map/unmap mutation primitives now exist, but M1 cannot exit until these are integrated with the active kernel page tables and dedicated QEMU mapping/protection tests pass.
 
 ## M2 — Isolation and IPC
 
