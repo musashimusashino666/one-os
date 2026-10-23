@@ -216,9 +216,9 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
   including canonical boundaries, invalid indices/levels, checked entry-offset
   arithmetic, and alignment requirements.
 - [x] Add host-testable fixed-capacity ownership-registry tests covering reserve-before-allocation, full-capacity rejection without invoking allocation, non-Copy token retention, single release of unpublished frames, published-frame retention, duplicate physical-address rejection, invalid/foreign release rejection, and metadata-slot reuse.
-- [ ] Add a test backend around the concrete `KernelPageTableEditor` that validates fresh table pages are zeroed and tokens are registered before publication; failed multi-intermediate allocations must roll back table entries, release every acquired frame exactly once, and leave the registry unchanged.
-- [ ] Add registry-capacity-exhaustion tests for mappings requiring multiple intermediate tables, with explicit allocation/free counters to prove all reservations and frames are rolled back exactly once.
-- [ ] Keep data-frame ownership independent from page-table mutation: unmapping must return the removed physical address and permissions without releasing the data frame token. Add an explicit owner-lifecycle test.
+- [x] Combine the generic map mutation engine with a registry-backed test editor. Tests verify zeroed newly allocated table pages, slot reservation before allocation, capacity exhaustion for a three-intermediate-table mapping, unchanged root entries on failure, released reservations, and exactly-once token release in reverse allocation order.
+- [x] Verify unmap returns the leaf physical address and permissions without calling the table-frame release path or registering/releasing the leaf data frame.
+- [ ] Add a target-specific integration assertion for the concrete `KernelPageTableEditor`'s physical-memory-offset alias and zero-before-publication path; the QEMU transition tests exercise the real editor, but this internal implementation detail is not independently host-tested.
 - Test that invalid CPU capability data or a missing required control-state precondition
   prevents mutation.
 
