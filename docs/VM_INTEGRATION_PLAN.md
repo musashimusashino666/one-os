@@ -27,8 +27,12 @@ until the integration and QEMU acceptance tests pass.
   protection (`error_code == 0x3`) and NX instruction fetch (`error_code == 0x11`).
   Their exact fault metadata and terminal `isa-debug-exit` status are checked by a
   separate serial-log validator. The tests must still pass on the final reviewed head.
-- Dedicated not-present-to-present and unmap/remap transition tests with exact fault
-  metadata and TLB behavior remain an outstanding acceptance item.
+- A dedicated map/unmap/remap QEMU image now performs two expected non-present reads,
+  recovers only from their exact #PF contexts, verifies the first frame's payload,
+  unmaps and re-faults, remaps a distinct frame, and verifies its preloaded different
+  payload. Its validator checks both full `error_code == 0x0` values, target CR2,
+  exact saved RIPs, recovery order, and terminal QEMU exit status. These tests must
+  still pass on the final reviewed head.
 
 ## Goals
 
@@ -364,11 +368,12 @@ fail-stop handler and the read-only-protection test's fail-stop path.
 
 ## Validation and CI contract
 
-PR #11 implements the initial active-kernel editor and smoke cycle, and adds
-dedicated supervisor-write-protection and NX test images, a narrowly armed test-only
-fault handler, exact serial validators, CI steps, and retained QEMU logs. M1 remains
-open until the new tests pass on the latest PR head and dedicated map/unmap transition
-tests verify expected #PF metadata and TLB behavior.
+PR #11 implements the initial active-kernel editor and smoke cycle, and adds dedicated
+supervisor-write-protection, NX, and map/unmap/remap test images; narrowly armed
+test-only fault handlers; exact serial validators; required CI steps; and retained QEMU
+logs. M1 remains open until these tests pass on the latest PR head. The transition test
+must verify the exact non-present fault metadata, recovery order, remap to a distinct
+physical frame, and observable TLB behavior.
 
 - Integrate every acceptance test below into the required GitHub Actions check;
   do not leave memory-safety tests as manual-only checklist items. Preserve the
