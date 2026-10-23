@@ -719,7 +719,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn accepts_software_available_and_protection_key_bits_in_existing_entries() {
         let root = 0x1000;
