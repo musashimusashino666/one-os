@@ -1002,11 +1002,9 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 }
                 return Ok(());
             }
-            Err(PageTableMutationError::AlreadyMapped)
-            | Err(PageTableMutationError::LargePageConflict { .. })
-            | Err(PageTableMutationError::AncestorPermissionConflict { .. }) => {
-                // This candidate is reserved or its existing ancestors cannot
-                // satisfy the requested writable mapping. Try the next page.
+            Err(error) if error.is_retryable_for_mapping_candidate() => {
+                // map_4k reports these failures during its read-only preflight,
+                // before allocating a table or writing a page-table entry.
                 continue;
             }
             Err(error) => {
@@ -1106,7 +1104,6 @@ fn prepare_protection_test_mapping(
         return Err(PagingError::PhysicalMemoryOffsetUnavailable);
     };
     let root_table_physical = active_root_table_physical();
-    let temporary_permissions = PagePermissions::new(true, false, false);
 
     for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
         if candidate_pml4_index == recursive_index {
@@ -1123,50 +1120,25 @@ fn prepare_protection_test_mapping(
             Err(error) => return Err(error),
         };
 
-        // First install a temporary writable, NX mapping, initialize the data,
-        // and remove that mapping. Then remap the same VA with the protected
-        // leaf permissions. The bootloader physical-memory-offset direct map is
-        // maintained; the access tested below is always through the target VA.
-        match map_4k(
-            root_table_physical,
-            candidate,
-            physical_address,
-            temporary_permissions,
-            &mut editor,
-        ) {
-            Ok(()) => {}
-            Err(PageTableMutationError::AlreadyMapped)
-            | Err(PageTableMutationError::LargePageConflict { .. })
-            | Err(PageTableMutationError::AncestorPermissionConflict { .. }) => continue,
-            Err(error) => return Err(PagingError::MappingMutation(error)),
-        }
-
-        invalidate_local_tlb(candidate);
-        // SAFETY: the temporary supervisor-only writable mapping was just
-        // installed to this allocator-owned frame and its TLB entry invalidated.
+        // Initialize the owned Usable data frame through the checked physical-
+        // memory-offset alias. This avoids a temporary VA mapping and unmap, so
+        // a candidate that fails map_4k's read-only preflight leaves the page-table
+        // tree untouched and can safely be skipped.
+        let direct_alias = editor
+            .offset_alias(physical_address)
+            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        // SAFETY: offset_alias verifies that this Usable frame is mapped to the
+        // expected physical page and that the alias permits supervisor writes.
         unsafe {
             match payload {
                 ProtectionTestPayload::Sentinel => {
-                    ptr::write_volatile(candidate as *mut u64, MAPPING_SMOKE_SENTINEL);
+                    ptr::write_volatile(direct_alias.cast::<u64>(), MAPPING_SMOKE_SENTINEL);
                 }
                 ProtectionTestPayload::Ud2 => {
                     // x86 UD2 encoding is 0x0f, 0x0b in little-endian order.
-                    ptr::write_volatile(candidate as *mut u16, 0x0b0f);
+                    ptr::write_volatile(direct_alias.cast::<u16>(), 0x0b0f);
                 }
             }
-        }
-
-        let temporary_unmap = unmap_4k(root_table_physical, candidate, &mut editor);
-        if temporary_unmap.is_err() {
-            // Do not free the data frame while a mapping may still reference it.
-            return Err(PagingError::MappingSmokeMismatch);
-        }
-        invalidate_local_tlb(candidate);
-        if !matches!(
-            translate_with_editor(&mut editor, root_table_physical, candidate),
-            Err(PageTableError::NotPresent { .. })
-        ) {
-            return Err(PagingError::MappingSmokeMismatch);
         }
 
         match map_4k(
@@ -1177,6 +1149,7 @@ fn prepare_protection_test_mapping(
             &mut editor,
         ) {
             Ok(()) => {}
+            Err(error) if error.is_retryable_for_mapping_candidate() => continue,
             Err(error) => return Err(PagingError::MappingMutation(error)),
         }
         invalidate_local_tlb(candidate);
