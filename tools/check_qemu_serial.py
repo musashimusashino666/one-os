@@ -13,6 +13,9 @@ ALLOCATOR_READY_MARKER = "ONE OS FRAME ALLOCATOR READY"
 ALLOCATOR_FAILED_MARKER = "ONE OS FRAME ALLOCATOR FAILED"
 PAGING_READY_MARKER = "ONE OS PAGE TABLE INSPECTION READY"
 PAGING_FAILED_MARKER = "ONE OS PAGING INSPECTION FAILED"
+PAGING_CONTROL_FAILED_MARKER = "ONE OS PAGING CONTROL INITIALIZATION FAILED"
+MUTATION_READY_MARKER = "ONE OS VM MAPPING SMOKE TEST READY"
+MUTATION_FAILED_MARKER = "ONE OS PAGING MUTATION FAILED"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 EXCEPTION_MARKER = "ONE OS EXCEPTION"
@@ -24,6 +27,10 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Physical frame allocator failure marker found: {ALLOCATOR_FAILED_MARKER}"
     if PAGING_FAILED_MARKER in log:
         return False, f"Page-table inspection failure marker found: {PAGING_FAILED_MARKER}"
+    if PAGING_CONTROL_FAILED_MARKER in log:
+        return False, f"Paging control initialization failure marker found: {PAGING_CONTROL_FAILED_MARKER}"
+    if MUTATION_FAILED_MARKER in log:
+        return False, f"Page-table mutation failure marker found: {MUTATION_FAILED_MARKER}"
     if INVALID_MAP_MARKER in log:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
@@ -48,6 +55,11 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Page-table inspection marker missing: {PAGING_READY_MARKER}"
     if paging_index < allocator_index or paging_index > complete_index:
         return False, "Page-table inspection marker appeared outside allocator/completion markers"
+    mutation_index = log.find(MUTATION_READY_MARKER)
+    if mutation_index < 0:
+        return False, f"Active page-table mutation marker missing: {MUTATION_READY_MARKER}"
+    if mutation_index < paging_index or mutation_index > complete_index:
+        return False, "Active page-table mutation marker appeared outside inspection/completion markers"
     # QEMU is deliberately configured with -no-shutdown and the kernel halts
     # forever, so timeout(1)'s 124 is the expected result of a healthy run.
     if exit_status != 124:
