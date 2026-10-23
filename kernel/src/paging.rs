@@ -26,6 +26,7 @@ const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
 const NX_FEATURE: u32 = 1 << 20;
 const WRITABLE: u64 = 1 << 1;
+const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
