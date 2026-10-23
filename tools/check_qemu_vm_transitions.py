@@ -109,6 +109,10 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
     if fault_addresses != [target, target]:
         return False, f"both CR2 values must equal the transition target {target}: {fault_addresses}"
 
+    for marker in (FIRST_MAPPING_MARKER, SECOND_MAPPING_MARKER):
+        if log.count(marker) != 1:
+            return False, f"expected exactly one mapping verification marker: {marker}"
+
     first_fault_position = log.find("ONE OS VM TRANSITION EXPECTED PAGE FAULT")
     second_fault_position = log.find(
         "ONE OS VM TRANSITION EXPECTED PAGE FAULT", first_fault_position + 1
@@ -128,9 +132,6 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
     ]
     if any(position < 0 for position in positions) or positions != sorted(positions):
         return False, "transition faults, mapping verifications, recoveries, and final success are out of order"
-    for marker in (FIRST_MAPPING_MARKER, SECOND_MAPPING_MARKER):
-        if log.count(marker) != 1:
-            return False, f"expected exactly one mapping verification marker: {marker}"
 
     for label in (
         "ONE OS VM TRANSITION TARGET",
