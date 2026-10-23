@@ -161,7 +161,11 @@ error_handler!(segment_not_present_handler, 11, "segment not present");
 error_handler!(stack_segment_fault_handler, 12, "stack-segment fault");
 error_handler!(general_protection_handler, 13, "general protection fault");
 
-#[cfg(not(any(feature = "test-supervisor-write-protection", feature = "test-nx-protection")))]
+#[cfg(not(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
+)))]
 extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: u64) -> ! {
     let fault_address: u64;
     // SAFETY: CR2 is read in the x86_64 page-fault exception context.
