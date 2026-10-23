@@ -1014,23 +1014,20 @@ mod tests {
     fn only_candidate_local_mapping_errors_are_retryable() {
         assert!(PageTableMutationError::TableUnavailable { level: 3 }
             .is_retryable_for_mapping_candidate());
-        assert!(PageTableMutationError::AlreadyMapped
-            .is_retryable_for_mapping_candidate());
+        assert!(PageTableMutationError::AlreadyMapped.is_retryable_for_mapping_candidate());
         assert!(PageTableMutationError::LargePageConflict { level: 2 }
             .is_retryable_for_mapping_candidate());
-        assert!(PageTableMutationError::AncestorPermissionConflict { level: 3 }
-            .is_retryable_for_mapping_candidate());
+        assert!(
+            PageTableMutationError::AncestorPermissionConflict { level: 3 }
+                .is_retryable_for_mapping_candidate()
+        );
 
         assert!(!PageTableMutationError::MalformedEntry { level: 3 }
             .is_retryable_for_mapping_candidate());
-        assert!(!PageTableMutationError::InvalidRootTable
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableMutationError::InvalidPageTableFrame
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableMutationError::AllocationFailed
-            .is_retryable_for_mapping_candidate());
-        assert!(!PageTableMutationError::WritableExecutable
-            .is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::InvalidRootTable.is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::InvalidPageTableFrame.is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::AllocationFailed.is_retryable_for_mapping_candidate());
+        assert!(!PageTableMutationError::WritableExecutable.is_retryable_for_mapping_candidate());
     }
 
     #[test]
