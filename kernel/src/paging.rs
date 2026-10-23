@@ -14,8 +14,9 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame, PagePermissions,
-    PageTableEditor, PageTableError, PageTableMutationError, PageTranslation, PAGE_SIZE,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, Frame,
+    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
+    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -436,26 +437,19 @@ pub fn initialize_paging_controls() -> Result<(), PagingError> {
     Ok(())
 }
 
-enum TableFrameSlot {
-    Empty,
-    Reserved,
-    Owned { frame: Frame, published: bool },
-}
-
 struct TableFrameRegistry {
-    slots: core::cell::UnsafeCell<[TableFrameSlot; TABLE_FRAME_CAPACITY]>,
+    registry: core::cell::UnsafeCell<PageTableFrameRegistry<Frame, TABLE_FRAME_CAPACITY>>,
 }
 
-// SAFETY: mutations are currently permitted only during single-CPU bootstrap
-// with maskable interrupts disabled. SMP support must replace this precondition
-// with explicit cross-CPU synchronization before page-table mutations are used.
+// SAFETY: mutations are permitted only during single-CPU bootstrap with
+// maskable interrupts disabled. SMP must add cross-CPU synchronization first.
 unsafe impl Sync for TableFrameRegistry {}
 
 impl TableFrameRegistry {
     const fn new() -> Self {
         Self {
-            slots: core::cell::UnsafeCell::new(
-                [const { TableFrameSlot::Empty }; TABLE_FRAME_CAPACITY],
+            registry: core::cell::UnsafeCell::new(
+                PageTableFrameRegistry::new(),
             ),
         }
     }
@@ -464,99 +458,65 @@ impl TableFrameRegistry {
 static TABLE_FRAMES: TableFrameRegistry = TableFrameRegistry::new();
 
 fn reserve_table_frame_slot() -> Option<usize> {
-    // SAFETY: this mutation is called only from the bootstrap mapping path,
-    // while maskable interrupts are disabled and before SMP is introduced.
-    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
-    let index = slots
-        .iter()
-        .position(|slot| matches!(slot, TableFrameSlot::Empty))?;
-    slots[index] = TableFrameSlot::Reserved;
-    Some(index)
+    // SAFETY: this mutation is only used in the single-core, interrupts-disabled
+    // bootstrap mapping path, before SMP is introduced.
+    unsafe { &mut *TABLE_FRAMES.registry.get() }.reserve_slot()
 }
 
 fn clear_reserved_table_frame_slot(index: usize) {
-    // SAFETY: registry mutations are serialized by the single-CPU,
+    // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
-    if !matches!(slots.get(index), Some(TableFrameSlot::Reserved)) {
+    if unsafe { &mut *TABLE_FRAMES.registry.get() }
+        .cancel_reservation(index)
+        .is_err()
+    {
         panic!("page-table frame registry reservation invariant violated");
     }
-    slots[index] = TableFrameSlot::Empty;
 }
 
 fn install_table_frame(index: usize, frame: Frame) {
-    // SAFETY: registry mutations are serialized by the single-CPU,
+    // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
-    if !matches!(slots.get(index), Some(TableFrameSlot::Reserved)) {
+    if let Err((_error, _frame)) =
+        unsafe { &mut *TABLE_FRAMES.registry.get() }.install_reserved(index, frame)
+    {
         panic!("page-table frame registry reservation invariant violated");
     }
-    slots[index] = TableFrameSlot::Owned {
-        frame,
-        published: false,
-    };
 }
 
 fn registered_table_frame(physical_address: u64) -> bool {
-    // SAFETY: the registry is only accessed under the bootstrap's single-CPU
-    // contract; no concurrent mutation can occur during this read.
-    let slots = unsafe { &*TABLE_FRAMES.slots.get() };
-    slots.iter().any(|slot| match slot {
-        TableFrameSlot::Owned { frame, .. } => frame.physical_address() == physical_address,
-        TableFrameSlot::Empty | TableFrameSlot::Reserved => false,
-    })
+    // SAFETY: the registry is read only under the same single-core bootstrap
+    // contract as its mutations.
+    unsafe { &*TABLE_FRAMES.registry.get() }.contains(physical_address)
 }
 
 fn unpublished_table_frame(physical_address: u64) -> bool {
-    // SAFETY: the registry is only accessed under the bootstrap's single-CPU
-    // contract; no concurrent mutation can occur during this read.
-    let slots = unsafe { &*TABLE_FRAMES.slots.get() };
-    slots.iter().any(|slot| match slot {
-        TableFrameSlot::Owned {
-            frame,
-            published: false,
-        } => frame.physical_address() == physical_address,
-        TableFrameSlot::Empty
-        | TableFrameSlot::Reserved
-        | TableFrameSlot::Owned {
-            published: true, ..
-        } => false,
-    })
+    // SAFETY: the registry is read only under the same single-core bootstrap
+    // contract as its mutations.
+    unsafe { &*TABLE_FRAMES.registry.get() }.contains_unpublished(physical_address)
 }
 
 fn mark_table_frame_published(physical_address: u64) {
-    // SAFETY: registry mutations are serialized by the single-CPU,
-    // interrupts-disabled bootstrap precondition.
-    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
-    for slot in slots.iter_mut() {
-        if let TableFrameSlot::Owned { frame, published } = slot {
-            if frame.physical_address() == physical_address {
-                *published = true;
-                return;
-            }
-        }
-    }
+    // SAFETY: registry mutations are serialized by the single-core,
+    // interrupts-disabled bootstrap precondition. Bootloader-owned frames are
+    // not in this registry, so their expected lookup miss is intentionally ignored.
+    let _ = unsafe { &mut *TABLE_FRAMES.registry.get() }.mark_published(physical_address);
 }
 
 fn release_registered_table_frame(physical_address: u64) {
-    // SAFETY: registry mutations are serialized by the single-CPU,
+    // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    let slots = unsafe { &mut *TABLE_FRAMES.slots.get() };
-    let Some(index) = slots.iter().position(|slot| {
-        matches!(slot, TableFrameSlot::Owned { frame, .. } if frame.physical_address() == physical_address)
-    }) else {
-        panic!("attempted to release an unregistered page-table frame");
-    };
-    let slot = core::mem::replace(&mut slots[index], TableFrameSlot::Empty);
-    let frame = match slot {
-        TableFrameSlot::Owned {
-            frame,
-            published: false,
-        } => frame,
-        TableFrameSlot::Owned {
-            published: true, ..
-        } => panic!("attempted to release a published page-table frame"),
-        TableFrameSlot::Empty | TableFrameSlot::Reserved => {
+    let frame = match unsafe { &mut *TABLE_FRAMES.registry.get() }
+        .take_unpublished(physical_address)
+    {
+        Ok(frame) => frame,
+        Err(FrameRegistryError::PublishedFrame) => {
+            panic!("attempted to release a published page-table frame")
+        }
+        Err(FrameRegistryError::FrameNotFound) => {
+            panic!("attempted to release an unregistered page-table frame")
+        }
+        Err(FrameRegistryError::InvalidReservation | FrameRegistryError::DuplicateFrameAddress) => {
             panic!("page-table frame registry state is invalid")
         }
     };
