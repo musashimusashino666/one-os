@@ -10,8 +10,9 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, recursive_table_page_virtual_address, translate_4level, PageTableError,
-    PageTranslation, PAGE_SIZE,
+    is_canonical_4level, physical_page_is_in_allowed_region,
+    recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
+    PAGE_SIZE,
 };
 
 const CR4_LA57: u64 = 1 << 12;
@@ -58,7 +59,9 @@ impl PagingError {
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
             }
-            Self::InvalidRootTable => b"CR3 contains an invalid PML4 physical address\n",
+            Self::InvalidRootTable => {
+                b"CR3 PML4 page is invalid or not fully Bootloader-owned\n"
+            },
             Self::Translation(PageTableError::NonCanonicalVirtualAddress) => {
                 b"Page-table inspection received a non-canonical virtual address\n"
             }
@@ -111,11 +114,13 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     }
 
     let root_table_physical = cr3 & PHYSICAL_ADDRESS_MASK;
-    if root_table_physical == 0 || root_table_physical & (PAGE_SIZE - 1) != 0 {
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    if root_table_physical == 0
+        || root_table_physical & (PAGE_SIZE - 1) != 0
+        || !is_bootloader_owned_page(regions, root_table_physical)
+    {
         return Err(PagingError::InvalidRootTable);
     }
-
-    let regions: &[MemoryRegion] = &boot_info.memory_regions;
     let code_address = inspect_boot_mappings as *const () as usize as u64;
     let boot_info_address = boot_info as *const BootInfo as usize as u64;
     let mut stack_pointer: u64;
@@ -154,7 +159,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     }
 
     let code_translation =
-        translate_virtual_address(code_address, root_table_physical, recursive_index)
+        translate_virtual_address(code_address, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
     if code_translation.physical_address != expected_code_physical
         || !translation_preserves_page_offset(code_address, code_translation)
@@ -167,7 +172,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     }
 
     let stack_translation =
-        translate_virtual_address(stack_pointer, root_table_physical, recursive_index)
+        translate_virtual_address(stack_pointer, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
     if !translation_preserves_page_offset(stack_pointer, stack_translation)
         || !stack_translation.writable
@@ -179,7 +184,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     }
 
     let boot_info_translation =
-        translate_virtual_address(boot_info_address, root_table_physical, recursive_index)
+        translate_virtual_address(boot_info_address, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
     if !translation_preserves_page_offset(boot_info_address, boot_info_translation)
         || !boot_info_translation.writable
@@ -212,10 +217,22 @@ fn is_bootloader_owned_physical_address(regions: &[MemoryRegion], physical_addre
     })
 }
 
+fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
+    physical_page_is_in_allowed_region(page_physical, regions.len(), |index| {
+        let region = regions[index];
+        (
+            region.start,
+            region.end,
+            matches!(region.kind, MemoryRegionKind::Bootloader),
+        )
+    })
+}
+
 fn translate_virtual_address(
     virtual_address: u64,
     root_table_physical: u64,
     recursive_index: u16,
+    regions: &[MemoryRegion],
 ) -> Result<PageTranslation, PageTableError> {
     let mut level = 4u8;
     translate_4level(
@@ -226,6 +243,7 @@ fn translate_virtual_address(
             if current_level == 0
                 || table_physical == 0
                 || table_physical & (PAGE_SIZE - 1) != 0
+                || !is_bootloader_owned_page(regions, table_physical)
                 || (current_level == 4 && table_physical != root_table_physical)
             {
                 return None;
@@ -247,11 +265,11 @@ fn translate_virtual_address(
             // mapping, and BootInfo supplies that mapping's index. The address is
             // derived from the current virtual address and level, uses the active
             // paging structures rather than the physical-memory alias, and is
-            // checked for canonicality and alignment before a volatile read.
+            // checked for canonicality and alignment. The current physical table
+            // page was checked as a full Bootloader-owned range before this read.
             let entry = unsafe { ptr::read_volatile(entry_pointer) };
             level = level.checked_sub(1)?;
             Some(entry)
         },
     )
 }
-
