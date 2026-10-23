@@ -10,6 +10,25 @@ The existing capability types in `oneos-core` remain a host-testable reference a
 
 Implementation changes must preserve the current rule that the M1 host tests, Clippy checks, build checks, boot smoke tests, exception tests, and dedicated QEMU memory-protection/TLB acceptance tests pass on the exact reviewed PR head. A passing build or boot is not proof of process isolation.
 
+
+## Reproducible QEMU test profile
+
+All QEMU boots and acceptance tests used by CI and this plan must use this explicit profile:
+
+```sh
+-machine pc-i440fx-8.2,accel=tcg
+-cpu qemu64,+nx
+-smp 1
+-m 128M
+```
+
+- `pc-i440fx-8.2` selects a versioned PC machine type rather than a moving `pc` alias.
+- `accel=tcg` explicitly selects software emulation instead of relying on the host's accelerator selection.
+- `qemu64,+nx` selects a named x86_64 CPU model and explicitly exposes NX. Kernel code must still verify NX support and enable EFER.NXE before relying on NX page-table entries.
+- `-smp 1` keeps the guest single-CPU, matching the current paging-mutation contract; `-m 128M` fixes the guest's configured RAM size.
+
+Use this profile for normal boots, exception diagnostics, memory-protection and TLB-transition tests, and the future I3 ring-3 instruction-fetch acceptance tests. Do not substitute QEMU defaults, `-cpu max`, or host passthrough in an individual test. The exact `0x14` and `0x15` page-fault error-code expectations below are valid only for the declared test profile and must be revalidated if it changes. Keep this section and the QEMU arguments in `.github/workflows/ci.yml` synchronized.
+
 ## Goals
 
 1. Establish a real privilege boundary between ring 3 user code and ring 0 kernel code.
