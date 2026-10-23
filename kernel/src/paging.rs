@@ -693,7 +693,8 @@ impl<'a> KernelPageTableEditor<'a> {
             self.target_virtual_address,
             4,
         )?;
-        let recursive_entry_pointer = entry_pointer_from_page(root_alias, usize::from(self.recursive_index))?;
+        let recursive_entry_pointer =
+            entry_pointer_from_page(root_alias, usize::from(self.recursive_index))?;
         // SAFETY: the bootloader contract supplied this recursive index, and
         // the root frame was validated as Bootloader-owned above.
         let recursive_entry = unsafe { ptr::read_volatile(recursive_entry_pointer) };
