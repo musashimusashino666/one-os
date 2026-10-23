@@ -814,6 +814,8 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         // SAFETY: the full frame lies within one Usable region and its canonical,
         // aligned physical-memory-offset alias was checked. Clearing it before
         // publication gives the hardware an initialized page table.
+        #[cfg(feature = "test-vm-transitions")]
+        super::interrupts::write_hex(b"ONE OS VM TABLE FRAME ALLOCATED: ", physical_address);
         unsafe { ptr::write_bytes(alias, 0, PAGE_SIZE as usize) };
         #[cfg(feature = "test-vm-transitions")]
         {
@@ -831,9 +833,13 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
                     return None;
                 }
             }
-            // This marker is emitted only after the real kernel editor has checked
-            // all 512 entries, before the core mutator can publish the parent entry.
-            super::serial_write(b"ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED\n");
+            // Include the physical frame address so the QEMU validator can
+            // pair every successful 512-entry verification with one allocation.
+            // This is emitted before map_4k can publish the parent entry.
+            super::interrupts::write_hex(
+                b"ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: ",
+                physical_address,
+            );
         }
         Some(physical_address)
     }
