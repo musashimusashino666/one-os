@@ -61,6 +61,13 @@ failure path. A production kernel-backed initializer and its integration with th
 user-address-space editor are still outstanding, so this is not evidence that live
 user-process pages are currently being exposed safely.
 
+The unmap API now returns a raw Frame rather than a ZeroedFrame, since user mode
+may write to the page before it is unmapped. Reassignment to any address space must
+run initialize_user_frame again. UserFrameInitializer is an unsafe trait, making
+correct zeroing an explicit obligation of reviewed trusted code; a safe implementer
+can no longer return success without acknowledging that contract. The active-root
+constructor is also unsafe so safe code cannot forge the hardware-active state.
+
 The remaining review findings are tracked in
 [`SECURITY_REVIEW_2026-10-24.md](SECURITY_REVIEW_2026-10-24.md). In particular,
 process isolation and kernel-enforced capabilities are not implemented; page-table
