@@ -869,7 +869,11 @@ mod tests {
         let mut table = root;
         for (level, index) in [(4u8, indices[0]), (3, indices[1]), (2, indices[2])] {
             let entry = tables.read_any(table, index).unwrap();
-            assert_eq!(entry & USER_ACCESSIBLE, 0, "level {level} must be supervisor-only");
+            assert_eq!(
+                entry & USER_ACCESSIBLE,
+                0,
+                "level {level} must be supervisor-only"
+            );
             table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
         }
     }
@@ -897,7 +901,11 @@ mod tests {
         let mut table = root;
         for (level, index) in [(4u8, indices[0]), (3, indices[1]), (2, indices[2])] {
             let entry = tables.read_any(table, index).unwrap();
-            assert_ne!(entry & USER_ACCESSIBLE, 0, "level {level} must permit user pages");
+            assert_ne!(
+                entry & USER_ACCESSIBLE,
+                0,
+                "level {level} must permit user pages"
+            );
             table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
         }
     }
