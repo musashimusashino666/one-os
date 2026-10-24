@@ -294,13 +294,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_write(b"ONE OS ADDRESS SPACE ROOT INITIALIZATION READY\n");
 
     #[cfg(feature = "test-vm-transitions")]
+    serial_write(b"ONE OS VM TEST: mapping-transitions\n");
+
+    // Exercise the real kernel-backed frame initializer during normal bootstrap
+    // as well as the transition acceptance image. No user mapping is published.
+    if let Err(error) = paging::verify_user_frame_zeroing_test(boot_info) {
+        serial_write(b"ONE OS USER FRAME ZERO TEST FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+
+    #[cfg(feature = "test-vm-transitions")]
     {
-        serial_write(b"ONE OS VM TEST: mapping-transitions\n");
-        if let Err(error) = paging::verify_user_frame_zeroing_test(boot_info) {
-            serial_write(b"ONE OS VM TEST FAILED: user-frame zeroing\n");
-            serial_write(error.message());
-            halt_forever()
-        }
         let mut transition = match paging::prepare_mapping_transition_test(boot_info) {
             Ok(test) => test,
             Err(error) => {
