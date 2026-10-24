@@ -83,6 +83,12 @@ pub trait PageTableEditor {
     /// Allocates and zeroes a fresh physical frame for a page-table page.
     fn allocate_table(&mut self) -> Option<u64>;
 
+    /// Returns true only when this exact frame is currently allocated by the
+    /// physical allocator. Implementations must fail closed if the allocation
+    /// state cannot be queried. This is not, by itself, proof that the caller
+    /// owns the token; callers must synchronize allocation/freeing with mapping.
+    fn is_frame_allocated(&self, physical_address: u64) -> bool;
+
     /// Reports whether a frame is reserved for kernel/bootloader use or is
     /// known to be used as a page table. `map_4k` rejects such frames as leaf
     /// targets. Implementations must fail closed when frame role is unknown.
@@ -107,6 +113,7 @@ pub enum PageTableMutationError {
     InvalidPhysicalAddressWidth { bits: u8 },
     InvalidPhysicalAddress,
     MappedFrameIsReserved,
+    FrameNotAllocated,
     WritableExecutable,
     ExecutableAliasConflict,
     UserAddressOutsideUserHalf,
@@ -160,7 +167,9 @@ pub struct UnmappedPage {
 /// mistaken for ordinary levels.
 ///
 /// The leaf target may not be the root, a reserved frame, or a known page-table
-/// frame. Executable mappings additionally require the editor to prove that
+/// frame, and must be currently allocated by the physical allocator. The editor
+/// must serialize allocation/freeing with this check and publication. Executable
+/// mappings additionally require the editor to prove that
 /// frame-wide W^X can be preserved; unknown writable-alias state fails closed.
 ///
 /// The caller must enable CR0.WP on every CPU that uses these tables if
@@ -192,6 +201,9 @@ pub fn map_4k<E: PageTableEditor>(
         || editor.is_page_table_or_reserved_frame(physical_address)
     {
         return Err(PageTableMutationError::MappedFrameIsReserved);
+    }
+    if !editor.is_frame_allocated(physical_address) {
+        return Err(PageTableMutationError::FrameNotAllocated);
     }
     if permissions.writable && permissions.executable {
         return Err(PageTableMutationError::WritableExecutable);
@@ -497,6 +509,7 @@ mod tests {
         allocations_remaining: Option<usize>,
         physical_address_bits: u8,
         allow_executable_mappings: bool,
+        unallocated_frames: Vec<u64>,
     }
 
     impl TestTables {
@@ -509,6 +522,7 @@ mod tests {
                 allocations_remaining: None,
                 physical_address_bits: 48,
                 allow_executable_mappings: true,
+                unallocated_frames: Vec::new(),
             }
         }
 
@@ -528,6 +542,10 @@ mod tests {
 
         fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
             self.pages.contains_key(&physical_address)
+        }
+
+        fn is_frame_allocated(&self, physical_address: u64) -> bool {
+            !self.unallocated_frames.contains(&physical_address)
         }
 
         fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
@@ -619,6 +637,10 @@ mod tests {
 
         fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
             self.pages.contains_key(&physical_address) || self.registry.contains(physical_address)
+        }
+
+        fn is_frame_allocated(&self, _physical_address: u64) -> bool {
+            true
         }
 
         fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
@@ -1006,6 +1028,27 @@ mod tests {
         assert_eq!(tables.pages.len(), 1);
         assert!(tables.registry.contains_unpublished(0x9000));
         assert_eq!(tables.allocation_attempts, 0);
+    }
+
+    #[test]
+    fn rejects_mapping_an_unallocated_usable_frame_as_leaf_target() {
+        let root = 0x1000;
+        let mut tables = TestTables::new(root);
+        tables.unallocated_frames.push(0x8000);
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                0xffff_8000_1234_5000,
+                0x8000,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::FrameNotAllocated)
+        );
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.read_any(root, 0x100), Some(0));
+        assert_eq!(tables.next_physical, 0x10_000);
     }
 
     #[test]
