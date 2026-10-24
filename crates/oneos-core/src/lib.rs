@@ -22,6 +22,7 @@ mod memory_policy;
 mod page_table;
 mod page_table_mutation;
 mod paging_preconditions;
+mod user_pages;
 pub use address_space::{
     validate_user_virtual_range, AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
     AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
@@ -40,6 +41,10 @@ pub use page_table::{
 };
 pub use page_table_mutation::{
     map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+};
+pub use user_pages::{
+    map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
+    UserPageMappingRegistry,
 };
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
