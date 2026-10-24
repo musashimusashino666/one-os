@@ -44,15 +44,15 @@ pub enum UserFrameInitializationError {
 
 /// Architecture-provided operation for clearing a complete physical frame.
 ///
-/// # Safety
+/// Trusted-kernel implementation contract:
 ///
 /// Implementations must only report success after every byte in the specified
 /// exclusively owned frame is zero. The frame must be accessed through a
 /// validated writable supervisor-only alias, and an error must never produce a
 /// `ZeroedFrame`. Implementations must preserve frame ownership on all paths.
-/// This is a trusted-kernel contract; a faulty implementation can violate the
-/// confidentiality property, so it must be implemented and reviewed in the kernel.
-pub unsafe trait UserFrameInitializer {
+/// A faulty implementation can violate confidentiality, so only reviewed kernel
+/// code may implement this trait. The host-testable core cannot validate physical
+/// memory contents by itself.
     /// Clears the complete 4 KiB frame, failing closed if it cannot be verified.
     fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError>;
 }
@@ -650,7 +650,7 @@ mod tests {
         }
     }
 
-    unsafe impl UserFrameInitializer for TestEditor {
+    impl UserFrameInitializer for TestEditor {
         fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
             if self.fail_zeroing {
                 return Err(UserFrameInitializationError::InitializationFailed);
