@@ -431,10 +431,17 @@ pub fn activate_supervisor_kernel_root(
             );
         }
     }
+    // This asm intentionally omits `nomem`: changing CR3 is a compiler
+    // memory-ordering boundary. Keep page-table initialization and all memory
+    // accesses that depend on the active address space ordered around the switch.
     // SAFETY: root initialization and complete required mapping checks have
     // succeeded; all execution-critical mappings are in the copied upper half.
     unsafe {
-        asm!("mov cr3, {}", in(reg) root_physical, options(nomem, nostack, preserves_flags));
+        asm!(
+            "mov cr3, {}",
+            in(reg) root_physical,
+            options(nostack, preserves_flags)
+        );
     }
     if cr4 & CR4_PGE != 0 {
         // SAFETY: restore the original paging-feature configuration after CR3
