@@ -27,7 +27,7 @@ class ActivationAssemblyTests(unittest.TestCase):
     def test_finds_activation_function_in_optimized_assembly(self):
         source = assembly_with(
             "    movq %cr4, %rbx\n"
-            "    andq $-129, %rax\n"
+            "    andq $-131201, %rax\n"
             "    movq %rax, %r11\n"
             "    movq %r11, %cr4\n"
             "    movq %r12, %cr3\n"
@@ -38,6 +38,21 @@ class ActivationAssemblyTests(unittest.TestCase):
         functions = activation_function_bodies(source)
         self.assertEqual(len(functions), 1)
         valid, message = validate_function_body(functions[0][1])
+        self.assertTrue(valid, message)
+
+
+    def test_accepts_fast_path_cr3_before_pge_path(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "movq %rbx, %cr3",  # PGE is already clear: optimized fast path.
+                "movq %r13, %rax",
+                "andq $-131201, %rax",  # Clears PGE and the already-validated PCIDE bit.
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+            ]
+        )
         self.assertTrue(valid, message)
 
     def test_rejects_missing_pge_clear(self):
