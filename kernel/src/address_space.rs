@@ -447,10 +447,8 @@ fn switch_address_space(
 
     let observed_root = active_root_table_physical();
     if observed_root != root_physical {
-        // The hardware's active root is uncertain. Intentionally leak both
-        // ownership tokens so neither frame can be recycled while referenced.
-        core::mem::forget(current);
-        core::mem::forget(next);
+        // The hardware's active root is uncertain. These ownership wrappers do
+        // not free allocator frames on drop, so the caller must fail-stop here.
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -462,11 +460,9 @@ fn switch_address_space(
     // PGE was cleared around the CR3 write, and the original CR4 value is back.
     let previous_inactive = match unsafe { current.into_inactive_after_switch(observed_root) } {
         Ok(root) => root,
-        Err((still_active_handle, _error)) => {
+        Err((_still_active_handle, _error)) => {
             // A mismatch after the hardware switch is not recoverable in-place.
-            // Retain both allocations and make the caller fail closed.
-            core::mem::forget(still_active_handle);
-            core::mem::forget(next_active);
+            // Dropping these wrappers does not return their frames to the allocator.
             return Err(AddressSpaceError::RootActivationFailed);
         }
     };
@@ -494,8 +490,8 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         .ok_or(AddressSpaceError::RootActivationFailed)?;
 
     if second_physical == original_physical || second_recursive_index == original_recursive_index {
-        core::mem::forget(active_root);
-        core::mem::forget(second_root);
+        // Both frame allocations remain reserved because their ownership wrappers
+        // do not free allocator entries when dropped.
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -504,8 +500,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     if second_active.physical_address() != second_physical
         || second_active.recursive_index() != second_recursive_index
     {
-        core::mem::forget(original_inactive);
-        core::mem::forget(second_active);
+        // Neither root is returned to the allocator on this failure path.
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -515,8 +510,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         || restored_active.recursive_index() != original_recursive_index
         || second_inactive.physical_address() != second_physical
     {
-        core::mem::forget(second_inactive);
-        core::mem::forget(restored_active);
+        // Both root-frame allocator entries remain allocated on failure.
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -536,7 +530,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     if !editor.table_is_readable(original_physical)
         || !editor.table_is_read_write_accessible(second_physical)
     {
-        core::mem::forget(second_inactive);
+        // The temporary root remains allocated; do not continue after failure.
         return Err(AddressSpaceError::RootTableUnavailable);
     }
     clear_and_release_root(second_inactive, &mut editor, second_physical)?;
@@ -644,7 +638,7 @@ fn validate_runtime_root_context(
     // Check the active root's recursive self-reference before relying on it to
     // inspect any page-table entries. Its root frame is owned Usable memory,
     // unlike the original bootloader root used during initial activation.
-    let mut editor = KernelAddressSpaceRootEditor {
+    let editor = KernelAddressSpaceRootEditor {
         regions: &boot_info.memory_regions,
         physical_memory_offset,
         kernel_root_physical: root_physical,
