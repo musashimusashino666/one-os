@@ -626,6 +626,7 @@ impl KernelAddressSpaceRootEditor<'_> {
         if translation.physical_address != self.root_physical
             || !translation.writable
             || translation.user_accessible
+            || translation.executable
         {
             return None;
         }
