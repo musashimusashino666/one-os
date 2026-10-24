@@ -28,9 +28,11 @@ class ActivationAssemblyTests(unittest.TestCase):
         source = assembly_with(
             "    movq %cr4, %rbx\n"
             "    andq $-129, %rax\n"
-            "    movq %rax, %cr4\n"
+            "    movq %rax, %r11\n"
+            "    movq %r11, %cr4\n"
             "    movq %r12, %cr3\n"
-            "    movq %rbx, %cr4\n"
+            "    movq %rbx, %r10\n"
+            "    movq %r10, %cr4\n"
             "    retq\n"
         )
         functions = activation_function_bodies(source)
@@ -97,7 +99,7 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("not cleared in the register written to CR4", message)
+        self.assertIn("PGE-cleared value did not reach a CR4 write", message)
 
     def test_rejects_restore_from_masked_value(self):
         valid, message = validate_function_body(
@@ -109,7 +111,7 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("separate saved CR4 value", message)
+        self.assertIn("original pre-switch CR4 value was not restored", message)
 
     def test_source_restores_original_cr4_value(self):
         source = """
