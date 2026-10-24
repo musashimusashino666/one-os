@@ -25,7 +25,8 @@ mod paging_preconditions;
 mod user_pages;
 pub use address_space::{
     validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootEditor,
-    AddressSpaceRootError, AddressSpaceRootInitializationError, UserVirtualRangeError,
+    AddressSpaceRootDeactivationError, AddressSpaceRootError,
+    AddressSpaceRootInitializationError, UserVirtualRangeError,
     USER_VIRTUAL_ADDRESS_LIMIT,
 };
 pub use frame_allocator::{

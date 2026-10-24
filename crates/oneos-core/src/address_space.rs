@@ -60,6 +60,7 @@ pub struct AddressSpaceRoot {
     frame: Frame,
     physical_address_bits: u8,
     initialized: bool,
+    recursive_index: Option<u16>,
 }
 
 impl AddressSpaceRoot {
@@ -82,6 +83,7 @@ impl AddressSpaceRoot {
             frame,
             physical_address_bits,
             initialized: false,
+            recursive_index: None,
         })
     }
 
@@ -98,6 +100,13 @@ impl AddressSpaceRoot {
     /// Returns whether the root has been initialized with supervisor-only kernel mappings.
     pub const fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    /// Returns the root's private recursive PML4 index after initialization.
+    ///
+    /// A newly allocated root has no recursive index until initialization succeeds.
+    pub const fn recursive_index(&self) -> Option<u16> {
+        self.recursive_index
     }
 
     /// Initializes this inactive root from the kernel's validated PML4.
@@ -146,6 +155,9 @@ impl AddressSpaceRoot {
             root_recursive_index,
             editor,
         )?;
+        // initialize_root_entries rejects any destination index outside the
+        // 512-entry PML4 and constrains it to the upper half.
+        self.recursive_index = Some(root_recursive_index as u16);
         self.initialized = true;
         Ok(())
     }
@@ -164,11 +176,11 @@ impl AddressSpaceRoot {
 
 /// A root that the kernel has activated in CR3.
 ///
-/// Unlike `AddressSpaceRoot`, this type does not expose the root frame token
-/// and has no conversion back to an inactive root. Dropping this handle leaks
-/// the frame token by design; the allocator therefore continues to regard the
-/// active root frame as allocated rather than recycling memory still used by
-/// hardware.
+/// Unlike `AddressSpaceRoot`, this type does not expose the root frame token.
+/// Demotion back to `AddressSpaceRoot` is available only through an unsafe
+/// architecture-layer transition that has already switched CR3 away and
+/// completed the required TLB invalidation. Dropping this handle still leaks
+/// the frame token by design; it never returns active memory to the allocator.
 ///
 /// This wrapper records a kernel-established state transition. It is not a
 /// substitute for synchronizing a CR3 switch with other CPUs; the initial
@@ -199,6 +211,17 @@ pub struct ActiveAddressSpaceRoot {
     recursive_index: u16,
 }
 
+/// Failure when an active root is being transitioned back to an inactive root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressSpaceRootDeactivationError {
+    /// The observed CR3 root still names the root being demoted.
+    RootStillActive,
+    /// The observed CR3 root is invalid for the root's physical-address width.
+    InvalidObservedRoot,
+    /// The active handle's recursive index does not match the initialized root.
+    RecursiveIndexMismatch,
+}
+
 impl ActiveAddressSpaceRoot {
     /// Records an already-activated root and its private recursive PML4 index.
     ///
@@ -207,10 +230,12 @@ impl ActiveAddressSpaceRoot {
     ///
     /// # Safety
     ///
-    /// The caller must have switched CR3 to `root.physical_address()`, verified
-    /// the resulting CR3 value, and verified that `recursive_index` is the
-    /// supervisor-writable self-reference in that active root. The caller must
-    /// also preserve the address-space lifetime and synchronization contract.
+    /// The root must have completed initialization, and its recorded recursive
+    /// index must equal `recursive_index`. The caller must have switched CR3 to
+    /// `root.physical_address()`, verified the resulting CR3 value, and verified
+    /// that the index is the supervisor-writable self-reference in that active
+    /// root. The caller must also preserve the address-space lifetime and
+    /// synchronization contract.
     #[allow(unsafe_code)]
     pub unsafe fn from_activated(root: AddressSpaceRoot, recursive_index: u16) -> Self {
         Self {
@@ -232,6 +257,43 @@ impl ActiveAddressSpaceRoot {
     /// Returns the physical-address width used to validate this root.
     pub const fn physical_address_bits(&self) -> u8 {
         self.root.physical_address_bits()
+    }
+
+    /// Returns an active root to the inactive state after an architecture-layer switch.
+    ///
+    /// This only transitions ownership of the root handle. It does not remove
+    /// child mappings, reclaim lower-level page tables, or free the root frame.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have completed a real address-space switch away from this
+    /// root, read and validate the resulting CR3 root physical address, and
+    /// completed every required local/global TLB invalidation before calling
+    /// this method. No CPU may still use the old root or stale translations, and
+    /// the root must not be reactivated while the returned inactive handle exists.
+    /// The supplied address must be the physical root extracted from that actual
+    /// CR3 readback, with unsupported PCID state already rejected. The caller is
+    /// responsible for detaching/reclaiming child tables before returning the
+    /// root frame to the allocator.
+    ///
+    /// On validation failure, the original active handle is returned intact.
+    #[allow(unsafe_code)]
+    pub unsafe fn into_inactive_after_switch(
+        self,
+        observed_cr3_root_physical: u64,
+    ) -> Result<AddressSpaceRoot, (Self, AddressSpaceRootDeactivationError)> {
+        if self.root.recursive_index != Some(self.recursive_index) {
+            return Err((self, AddressSpaceRootDeactivationError::RecursiveIndexMismatch));
+        }
+        if let Err(error) = validate_deactivation_root(
+            self.root.physical_address(),
+            self.root.physical_address_bits(),
+            observed_cr3_root_physical,
+        ) {
+            return Err((self, error));
+        }
+
+        Ok(self.root)
     }
 }
 
@@ -468,6 +530,20 @@ fn validate_kernel_entry(
 /// This function validates arithmetic and the user/kernel canonical-half
 /// boundary only. It does not check mappings, page permissions, frame
 /// ownership, guard regions, or whether address zero is intentionally unmapped.
+fn validate_deactivation_root(
+    root_physical_address: u64,
+    physical_address_bits: u8,
+    observed_cr3_root_physical: u64,
+) -> Result<(), AddressSpaceRootDeactivationError> {
+    if validate_root_frame_address(observed_cr3_root_physical, physical_address_bits).is_err() {
+        return Err(AddressSpaceRootDeactivationError::InvalidObservedRoot);
+    }
+    if observed_cr3_root_physical == root_physical_address {
+        return Err(AddressSpaceRootDeactivationError::RootStillActive);
+    }
+    Ok(())
+}
+
 pub fn validate_user_virtual_range(start: u64, length: u64) -> Result<(), UserVirtualRangeError> {
     if length == 0 {
         return Err(UserVirtualRangeError::EmptyRange);
@@ -513,9 +589,10 @@ fn validate_root_frame_address(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_root_frame_address, validate_user_virtual_range, AddressSpaceRoot,
-        AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
-        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
+        validate_deactivation_root, validate_root_frame_address, validate_user_virtual_range,
+        AddressSpaceRoot, AddressSpaceRootDeactivationError, AddressSpaceRootEditor,
+        AddressSpaceRootError, AddressSpaceRootInitializationError, UserVirtualRangeError,
+        LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
         USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
@@ -526,6 +603,23 @@ mod tests {
         bitmap: &'a mut [u64],
     ) -> Result<FrameAllocator<'a>, FrameAllocatorError> {
         FrameAllocator::initialize(regions.len(), |index| regions[index], slots, bitmap)
+    }
+
+    #[test]
+    fn deactivation_requires_a_valid_different_cr3_root() {
+        assert_eq!(
+            validate_deactivation_root(0x3000, 32, 0x3000),
+            Err(AddressSpaceRootDeactivationError::RootStillActive)
+        );
+        assert_eq!(validate_deactivation_root(0x3000, 32, 0x5000), Ok(()));
+        assert_eq!(
+            validate_deactivation_root(0x3000, 32, 0),
+            Err(AddressSpaceRootDeactivationError::InvalidObservedRoot)
+        );
+        assert_eq!(
+            validate_deactivation_root(0x3000, 32, 0x1_0000_0000),
+            Err(AddressSpaceRootDeactivationError::InvalidObservedRoot)
+        );
     }
 
     #[test]
@@ -743,6 +837,7 @@ mod tests {
         let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
         let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
         let root_address = root.physical_address();
+        assert_eq!(root.recursive_index(), None);
         let mut editor = TestRootEditor::new(root_address, kernel_address);
         editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
         editor.set_entry(kernel_address, 256, 0x3000 | PRESENT | WRITABLE);
@@ -756,6 +851,7 @@ mod tests {
             .unwrap();
 
         assert!(root.is_initialized());
+        assert_eq!(root.recursive_index(), Some(510));
         for index in 0..LOWER_HALF_PML4_ENTRIES {
             assert_eq!(editor.entry(root_address, index), 0);
         }
