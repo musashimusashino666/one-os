@@ -173,6 +173,16 @@ impl AddressSpaceRoot {
 /// This wrapper records a kernel-established state transition. It is not a
 /// substitute for synchronizing a CR3 switch with other CPUs; the initial
 /// implementation remains single-CPU.
+///
+/// The active handle deliberately has no `into_frame` method:
+///
+/// ```compile_fail
+/// use oneos_core::ActiveAddressSpaceRoot;
+///
+/// fn release_active_root(root: ActiveAddressSpaceRoot) {
+///     let _frame = root.into_frame();
+/// }
+/// ```
 #[must_use = "keep the active address-space root alive for its active lifetime"]
 #[derive(Debug)]
 pub struct ActiveAddressSpaceRoot {
