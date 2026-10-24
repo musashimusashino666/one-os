@@ -50,15 +50,23 @@ def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
     return found
 
 
-def _instruction(raw_line: str) -> tuple[str, str] | None:
-    # LLVM x86_64 ELF output is normally AT&T syntax; accept Intel syntax too.
+def _instruction(raw_line: str) -> tuple[str, list[str]] | None:
+    """Parse a simple emitted instruction, accepting AT&T and Intel operand order."""
     line = raw_line.split("#", 1)[0].strip()
     if not line or line.startswith(".") or line.endswith(":"):
         return None
     match = INSTRUCTION_RE.match(line)
     if not match:
         return None
-    return match.group(1).lower(), match.group(2).strip()
+    return match.group(1).lower(), [part.strip() for part in match.group(2).split(",")]
+
+
+def _att_syntax(operands: list[str]) -> bool:
+    return any("%" in part for part in operands)
+
+
+def _register_name(operand: str) -> str:
+    return operand.strip().lstrip("%").lower()
 
 
 def _writes_control_register(raw_line: str, register: str) -> bool:
@@ -66,39 +74,71 @@ def _writes_control_register(raw_line: str, register: str) -> bool:
     if parsed is None:
         return False
     mnemonic, operands = parsed
-    if not mnemonic.startswith("mov"):
+    if not mnemonic.startswith("mov") or not operands:
         return False
-
-    parts = [part.strip() for part in operands.split(",")]
-    if not parts:
-        return False
-    # AT&T puts the destination last; Intel puts it first.
-    destination = parts[-1] if any("%" in part for part in parts) else parts[0]
-    return re.fullmatch(r"%?" + re.escape(register), destination, re.IGNORECASE) is not None
+    destination = operands[-1] if _att_syntax(operands) else operands[0]
+    return _register_name(destination) == register
 
 
-def _clears_pge_bit(raw_line: str) -> bool:
+def _control_register_write_source(raw_line: str, register: str) -> str | None:
     parsed = _instruction(raw_line)
     if parsed is None:
-        return False
+        return None
     mnemonic, operands = parsed
-    operands_lower = operands.lower()
+    if not mnemonic.startswith("mov") or not operands:
+        return None
+    destination = operands[-1] if _att_syntax(operands) else operands[0]
+    if _register_name(destination) != register or len(operands) < 2:
+        return None
+    source = operands[0] if _att_syntax(operands) else operands[-1]
+    return _register_name(source)
 
-    # CR4.PGE is bit 7. AND with -129 clears that bit; accept hexadecimal too.
+
+def _control_register_read_destination(raw_line: str, register: str) -> str | None:
+    parsed = _instruction(raw_line)
+    if parsed is None:
+        return None
+    mnemonic, operands = parsed
+    if not mnemonic.startswith("mov") or len(operands) < 2:
+        return None
+    if _att_syntax(operands):
+        source, destination = operands[0], operands[-1]
+    else:
+        destination, source = operands[0], operands[-1]
+    if _register_name(source) != register:
+        return None
+    return _register_name(destination)
+
+
+def _pge_clear_destination(raw_line: str) -> str | None:
+    """Return the register modified by an instruction that clears CR4.PGE bit 7."""
+    parsed = _instruction(raw_line)
+    if parsed is None:
+        return None
+    mnemonic, operands = parsed
+    joined = ", ".join(operands).lower()
+
+    clears_pge = False
     if re.fullmatch(r"and(?:b|w|l|q)?", mnemonic):
-        if re.search(r"(?<![\w])(?:\$)?-129(?!\d)", operands_lower):
-            return True
-        if re.search(r"0x0*ffffffffffffff7f\b", operands_lower):
-            return True
-        if re.search(r"18446744073709551487\b", operands_lower):
-            return True
-    if re.fullmatch(r"btr(?:b|w|l|q)?", mnemonic):
-        return bool(re.search(r"(?:\$)?7\b", operands_lower))
-    return False
+        clears_pge = bool(
+            re.search(r"(?<![\w])(?:\$)?-129(?!\d)", joined)
+            or re.search(r"0x0*ffffffffffffff7f\b", joined)
+            or re.search(r"18446744073709551487\b", joined)
+        )
+    elif re.fullmatch(r"btr(?:b|w|l|q)?", mnemonic):
+        clears_pge = bool(re.search(r"(?:\$)?7\b", joined))
+
+    if not clears_pge or not operands:
+        return None
+    # AND and BTR modify their destination in both supported assembly dialects.
+    destination = operands[-1] if _att_syntax(operands) else operands[0]
+    if destination.startswith("$") or destination.lstrip("%").lower().startswith("cr"):
+        return None
+    return _register_name(destination)
 
 
 def validate_function_body(body: list[str]) -> tuple[bool, str]:
-    """Require PGE clear -> CR3 write -> PGE restore in optimized code."""
+    """Require a data-flow-consistent PGE clear -> CR3 write -> PGE restore sequence."""
     cr4_writes = [
         index for index, line in enumerate(body) if _writes_control_register(line, "cr4")
     ]
@@ -113,12 +153,25 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
     first_cr4_write = cr4_writes[0]
     last_cr4_write = cr4_writes[-1]
-    if not any(_clears_pge_bit(line) for line in body[:first_cr4_write]):
-        return False, "no instruction clearing CR4.PGE bit 7 before the first CR4 write"
+    disabled_value = _control_register_write_source(body[first_cr4_write], "cr4")
+    restored_value = _control_register_write_source(body[last_cr4_write], "cr4")
+
+    if disabled_value is None or not any(
+        _pge_clear_destination(line) == disabled_value for line in body[:first_cr4_write]
+    ):
+        return False, "PGE bit 7 is not cleared in the register written to CR4"
     if not any(first_cr4_write < index < last_cr4_write for index in cr3_writes):
         return False, "CR3 write is not ordered between the PGE disable and restore writes"
 
-    return True, "optimized activation assembly contains PGE clear -> CR3 write -> PGE restore"
+    if restored_value is None or restored_value == disabled_value:
+        return False, "PGE restore does not use a separate saved CR4 value"
+    if not any(
+        _control_register_read_destination(line, "cr4") == restored_value
+        for line in body[:first_cr4_write]
+    ):
+        return False, "PGE restore value is not loaded from the pre-switch CR4 value"
+
+    return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
 
 
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
@@ -129,7 +182,7 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
         flags=re.DOTALL,
     )
     if match is None:
-        return False, 'could not locate the CR3 asm block in address_space.rs'
+        return False, "could not locate the CR3 asm block in address_space.rs"
 
     body = match.group("body")
     if re.search(r"\bnomem\b", body):
