@@ -68,8 +68,8 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
 
     def test_user_frame_success_marker_rejects_trailing_text(self):
         log = valid_log().replace(
-            "ONE OS USER FRAME ZERO TEST PASS\\n",
-            "ONE OS USER FRAME ZERO TEST PASS unexpected\\n",
+            "ONE OS USER FRAME ZERO TEST PASS\n",
+            "ONE OS USER FRAME ZERO TEST PASS unexpected\n",
         )
         valid, message = validate_vm_transition_output(log, 33)
         self.assertFalse(valid)
@@ -77,9 +77,9 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
 
     def test_user_frame_failure_marker_is_rejected(self):
         log = valid_log().replace(
-            "ONE OS VM TEST: mapping-transitions\\n",
-            "ONE OS VM TEST: mapping-transitions\\n"
-            "ONE OS USER FRAME ZERO TEST FAILED\\n",
+            "ONE OS VM TEST: mapping-transitions\n",
+            "ONE OS VM TEST: mapping-transitions\n"
+            "ONE OS USER FRAME ZERO TEST FAILED\n",
         )
         valid, message = validate_vm_transition_output(log, 33)
         self.assertFalse(valid)
