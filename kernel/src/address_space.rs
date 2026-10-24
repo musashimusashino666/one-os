@@ -213,7 +213,7 @@ pub fn verify_root_initialization_smoke_test(
         } else {
             // The destination frame could not be safely accessed for zeroization.
             // Keep it allocated rather than recycle potentially stale contents.
-            core::mem::forget(root.into_frame());
+            let _unreleased_frame = root.into_frame();
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -292,7 +292,7 @@ fn clear_and_release_root(
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
-        core::mem::forget(root.into_frame());
+        let _unreleased_frame = root.into_frame();
         return Err(error);
     }
     release_frame(root.into_frame())
