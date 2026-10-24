@@ -912,7 +912,12 @@ fn verify_initialized_entries(
         // The processor sets the PML4 Accessed bit as it walks either root.
         // Treat only that hardware-maintained bit as mutable; continue requiring
         // every address and permission bit to match the expected entry.
-        if observed & !ACCESSED != expected & !ACCESSED {
+        let comparison_mask = if expected & PRESENT != 0 {
+            !ACCESSED
+        } else {
+            u64::MAX
+        };
+        if observed & comparison_mask != expected & comparison_mask {
             return Err(AddressSpaceError::RootVerificationFailed { index });
         }
     }
