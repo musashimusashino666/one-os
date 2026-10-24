@@ -825,14 +825,9 @@ mod tests {
         let extra_frame = allocator.allocate_frame().unwrap();
         let extra_physical = extra_frame.physical_address();
         let root_b_entry_before = editor.entry(root_b_physical, 0);
-        let (map_error, returned_extra) = map_user_data_page(
-            &root_b,
-            0x8000,
-            extra_frame,
-            &mut registry,
-            &mut editor,
-        )
-        .unwrap_err();
+        let (map_error, returned_extra) =
+            map_user_data_page(&root_b, 0x8000, extra_frame, &mut registry, &mut editor)
+                .unwrap_err();
         assert_eq!(
             map_error,
             UserPageMappingError::AddressSpaceRootMismatch {
@@ -885,5 +880,4 @@ mod tests {
         allocator.free_frame(root_b.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
-
 }
