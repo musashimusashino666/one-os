@@ -44,6 +44,22 @@ The first increment must not expand into a general-purpose scheduler, time slici
 
 Maskable interrupts may remain disabled and the legacy PIC masked during the initial proof of isolation, matching the current bootstrap assumptions. Do not imply that asynchronous preemption, scheduling under interrupts, or SMP safety exists until those execution models have separate designs and tests.
 
+## API prerequisites before live user mappings
+
+The inactive-root type must not be reused as an active-root handle. After a
+successful CR3 activation and readback, keep the root in the non-releasable
+`ActiveAddressSpaceRoot` type; do not expose its allocator token while hardware
+may still use it. A later teardown API must establish inactivity, remove child
+mappings, complete the required TLB invalidation, and only then make resources
+reusable.
+
+The safe user-data mapping helper accepts only `ZeroedFrame`, not a raw allocator
+`Frame`. A kernel-backed initializer must validate a writable supervisor-only
+alias, zero and verify the entire frame before constructing that token, and return
+ownership unchanged on failure. The current core abstraction and host tests do not
+mean this initializer is already connected to a live user process. Do not publish
+user mappings until the kernel implementation and QEMU acceptance path exist.
+
 ## Security invariants
 
 ### 1. Address-space ownership and construction
