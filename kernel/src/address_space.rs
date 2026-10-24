@@ -409,6 +409,10 @@ pub fn activate_supervisor_kernel_root(
         }
     };
 
+    // select_root_recursive_index searches only upper-half PML4 slots
+    // (256..512), so this conversion preserves the private recursive index.
+    let active_recursive_index = root_recursive_index as u16;
+
     let initialization = root.initialize_from_kernel_root(
         kernel_root_physical,
         usize::from(recursive_index),
@@ -479,7 +483,7 @@ pub fn activate_supervisor_kernel_root(
     // SAFETY: CR3 readback above matched root_physical. This is the architecture
     // layer's successful activation boundary; it retains the root token rather
     // than exposing it for allocator reuse.
-    Ok(unsafe { ActiveAddressSpaceRoot::from_activated(root) })
+    Ok(unsafe { ActiveAddressSpaceRoot::from_activated(root, active_recursive_index) })
 }
 
 fn is_kernel_half_address(address: u64, kernel_half_start: u64) -> bool {

@@ -181,7 +181,7 @@ impl AddressSpaceRoot {
 /// use oneos_core::{ActiveAddressSpaceRoot, AddressSpaceRoot};
 ///
 /// fn fabricate_active_root(root: AddressSpaceRoot) {
-///     let _active = ActiveAddressSpaceRoot::from_activated(root);
+///     let _active = ActiveAddressSpaceRoot::from_activated(root, 511);
 /// }
 /// ```
 ///
@@ -196,27 +196,37 @@ impl AddressSpaceRoot {
 #[derive(Debug)]
 pub struct ActiveAddressSpaceRoot {
     root: AddressSpaceRoot,
+    recursive_index: u16,
 }
 
 impl ActiveAddressSpaceRoot {
-    /// Records that a root has already been activated by the architecture layer.
+    /// Records an already-activated root and its private recursive PML4 index.
     ///
-    /// Calling this does not switch CR3 or verify the hardware state. The
-    /// constructor is unsafe so ordinary safe code cannot forge the active state.
+    /// Calling this does not switch CR3 or verify hardware state. The constructor
+    /// is unsafe so ordinary safe code cannot forge the active state.
     ///
     /// # Safety
     ///
-    /// The caller must have switched CR3 to `root.physical_address()` and verified
-    /// the resulting CR3 value. The caller must also preserve the address-space
-    /// lifetime and follow the architecture's synchronization contract.
+    /// The caller must have switched CR3 to `root.physical_address()`, verified
+    /// the resulting CR3 value, and verified that `recursive_index` is the
+    /// supervisor-writable self-reference in that active root. The caller must
+    /// also preserve the address-space lifetime and synchronization contract.
     #[allow(unsafe_code)]
-    pub unsafe fn from_activated(root: AddressSpaceRoot) -> Self {
-        Self { root }
+    pub unsafe fn from_activated(root: AddressSpaceRoot, recursive_index: u16) -> Self {
+        Self {
+            root,
+            recursive_index,
+        }
     }
 
     /// Returns the active root's physical base address without exposing its token.
     pub const fn physical_address(&self) -> u64 {
         self.root.physical_address()
+    }
+
+    /// Returns the recursive PML4 index associated with the active root.
+    pub const fn recursive_index(&self) -> u16 {
+        self.recursive_index
     }
 
     /// Returns the physical-address width used to validate this root.

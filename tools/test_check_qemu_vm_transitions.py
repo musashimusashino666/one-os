@@ -17,6 +17,9 @@ def valid_log() -> str:
         "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000101000\n"
         "ONE OS VM MAPPING SMOKE TEST READY\n"
         "ONE OS VM TEST: mapping-transitions\n"
+        "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n"
+        "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000\n"
+        "ONE OS USER FRAME ZERO TEST PASS\n"
         f"ONE OS VM TRANSITION TARGET: {target}\n"
         "ONE OS VM TRANSITION FIRST FRAME: 0x0000000000100000\n"
         "ONE OS VM TRANSITION SECOND FRAME: 0x0000000000101000\n"
@@ -44,6 +47,63 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
     def test_valid_two_fault_transition_passes(self):
         valid, message = validate_vm_transition_output(valid_log(), 33)
         self.assertTrue(valid, message)
+
+    def test_user_frame_zeroing_requires_same_nonzero_physical_frame(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000",
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000103000",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("exact dirty physical frame", message)
+
+    def test_user_frame_zeroing_marker_is_required(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST PASS\n",
+            "",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("kernel user-frame zeroing marker", message)
+
+    def test_user_frame_success_marker_rejects_trailing_text(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST PASS\n",
+            "ONE OS USER FRAME ZERO TEST PASS unexpected\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("exact kernel user-frame zeroing marker", message)
+
+    def test_user_frame_failure_marker_is_rejected(self):
+        log = valid_log().replace(
+            "ONE OS VM TEST: mapping-transitions\n",
+            "ONE OS VM TEST: mapping-transitions\n"
+            "ONE OS USER FRAME ZERO TEST FAILED\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("failure marker found", message.lower())
+
+    def test_user_frame_dirty_marker_rejects_malformed_duplicate(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n",
+            "ONE OS USER FRAME ZERO TEST DIRTY: malformed\n"
+            "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly one", message)
+
+    def test_user_frame_zeroed_marker_rejects_malformed_line_with_valid_line(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000\n",
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000\n"
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000 trailing-data\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly one", message)
 
     def test_every_allocated_table_frame_requires_its_zero_verification(self):
         log = valid_log().replace(

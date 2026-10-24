@@ -294,8 +294,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_write(b"ONE OS ADDRESS SPACE ROOT INITIALIZATION READY\n");
 
     #[cfg(feature = "test-vm-transitions")]
+    serial_write(b"ONE OS VM TEST: mapping-transitions\n");
+
+    // Dedicated acceptance images remain on the bootloader root. They must
+    // exercise this path before their test-specific control flow; normal boot
+    // repeats it after activating the private kernel root.
+    #[cfg(any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault",
+        feature = "test-double-fault",
+        feature = "test-ist",
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection",
+        feature = "test-vm-transitions"
+    ))]
     {
-        serial_write(b"ONE OS VM TEST: mapping-transitions\n");
+        if let Err(error) = paging::verify_user_frame_zeroing_test(boot_info) {
+            serial_write(b"ONE OS USER FRAME ZERO TEST FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    }
+
+    #[cfg(feature = "test-vm-transitions")]
+    {
         let mut transition = match paging::prepare_mapping_transition_test(boot_info) {
             Ok(test) => test,
             Err(error) => {
@@ -606,6 +629,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         };
         serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATED\n");
+
+        // The active handle carries the private recursive index installed in
+        // the new root. Exercise the exact initializer path after CR3 changes.
+        #[cfg(not(any(
+            feature = "test-exception",
+            feature = "test-general-protection",
+            feature = "test-page-fault",
+            feature = "test-double-fault",
+            feature = "test-ist",
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection",
+            feature = "test-vm-transitions"
+        )))]
+        {
+            if let Err(error) = paging::verify_user_frame_zeroing_test_with_recursive_index(
+                boot_info,
+                _active_root.recursive_index(),
+            ) {
+                serial_write(b"ONE OS USER FRAME ZERO TEST FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        }
 
         serial_write(b"Architecture: x86_64\n");
         serial_write(b"Milestone: serial bootstrap\n");

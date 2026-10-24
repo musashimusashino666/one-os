@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -21,6 +22,11 @@ ADDRESS_SPACE_READY_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION READY"
 ADDRESS_SPACE_FAILED_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED"
 ACTIVATION_READY_MARKER = "ONE OS KERNEL ADDRESS SPACE ACTIVATED"
 ACTIVATION_FAILED_MARKER = "ONE OS KERNEL ADDRESS SPACE ACTIVATION FAILED"
+USER_FRAME_ROOT_INDEX_LABEL = "ONE OS USER FRAME ZERO TEST RECURSIVE INDEX"
+USER_FRAME_DIRTY_LABEL = "ONE OS USER FRAME ZERO TEST DIRTY"
+USER_FRAME_VERIFIED_LABEL = "ONE OS USER FRAME ZERO TEST VERIFIED"
+USER_FRAME_PASS_MARKER = "ONE OS USER FRAME ZERO TEST PASS"
+USER_FRAME_FAILED_MARKER = "ONE OS USER FRAME ZERO TEST FAILED"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 EXCEPTION_MARKER = "ONE OS EXCEPTION"
@@ -40,6 +46,8 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Address-space root initialization failure marker found: {ADDRESS_SPACE_FAILED_MARKER}"
     if ACTIVATION_FAILED_MARKER in log:
         return False, f"Kernel address-space activation failure marker found: {ACTIVATION_FAILED_MARKER}"
+    if USER_FRAME_FAILED_MARKER in log:
+        return False, f"Kernel user-frame zeroing failure marker found: {USER_FRAME_FAILED_MARKER}"
     if INVALID_MAP_MARKER in log:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
@@ -88,7 +96,49 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     # forever, so timeout(1)'s 124 is the expected result of a healthy run.
     if exit_status != 124:
         return False, f"Unexpected QEMU/timeout exit status {exit_status}; expected 124"
-    return True, "QEMU reached bootstrap completion without a panic"
+
+    def single_hex_field(label: str) -> tuple[str | None, str | None]:
+        marker_lines = [line for line in log.splitlines() if line.startswith(label)]
+        if len(marker_lines) != 1:
+            return None, f"expected exactly one '{label}' field, found {len(marker_lines)}"
+        match = re.fullmatch(rf"{re.escape(label)}: (0x[0-9a-fA-F]{{16}})", marker_lines[0])
+        if match is None:
+            return None, f"malformed '{label}' diagnostic field"
+        return match.group(1).lower(), None
+
+    recursive_index, error = single_hex_field(USER_FRAME_ROOT_INDEX_LABEL)
+    if error:
+        return False, error
+    if not 256 <= int(recursive_index, 16) < 512:
+        return False, "post-activation user-frame test requires an upper-half recursive index"
+
+    dirty_frame, error = single_hex_field(USER_FRAME_DIRTY_LABEL)
+    if error:
+        return False, error
+    zeroed_frame, error = single_hex_field(USER_FRAME_VERIFIED_LABEL)
+    if error:
+        return False, error
+    dirty_value = int(dirty_frame, 16)
+    if dirty_value == 0 or dirty_value % 4096:
+        return False, "user-frame test requires a nonzero, 4 KiB-aligned physical frame"
+    if dirty_frame != zeroed_frame:
+        return False, "the initialized ZeroedFrame token must identify the exact dirty physical frame"
+
+    pass_lines = [line for line in log.splitlines() if line.startswith(USER_FRAME_PASS_MARKER)]
+    if len(pass_lines) != 1 or pass_lines[0] != USER_FRAME_PASS_MARKER:
+        return False, f"expected exactly one exact user-frame success marker: {USER_FRAME_PASS_MARKER}"
+
+    recursive_position = log.find(USER_FRAME_ROOT_INDEX_LABEL + ":")
+    dirty_position = log.find(USER_FRAME_DIRTY_LABEL + ":")
+    verified_position = log.find(USER_FRAME_VERIFIED_LABEL + ":")
+    pass_position = log.find(USER_FRAME_PASS_MARKER)
+    if not (
+        activation_index < recursive_position < dirty_position
+        < verified_position < pass_position < complete_index
+    ):
+        return False, "active-root recursive index and user-frame zeroing verification must follow CR3 activation in order"
+
+    return True, "QEMU reached bootstrap completion; private-root user-frame zeroing passed without a panic"
 
 
 def main() -> int:

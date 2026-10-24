@@ -62,9 +62,14 @@ The safe `oneos-core` user-data mapping helper now accepts only `ZeroedFrame`.
 `initialize_user_frame` produces that token only after the supplied initializer
 reports that the complete frame has been zeroed; on failure, the original frame
 token is returned. The host-side tests exercise a dirty frame payload and the
-failure path. A production kernel-backed initializer and its integration with the
-user-address-space editor are still outstanding, so this is not evidence that live
-user-process pages are currently being exposed safely.
+failure path. The kernel now has a `KernelUserFrameInitializer` candidate that
+validates the active root's recursive self-map and exact supervisor-writable,
+NX physical-memory-offset alias, then clears and reads back the full frame. The
+VM-transition QEMU acceptance image exercises this kernel implementation with a
+dirty allocated frame and verifies that the returned token identifies the same
+physical frame. This remains a pre-publication check: user-frame mappings are not
+yet wired into live user processes, and the candidate must pass the exact-head CI
+suite before the roadmap prerequisite can be considered complete.
 
 The unmap API now returns a raw Frame rather than a ZeroedFrame, since user mode
 may write to the page before it is unmapped. Reassignment to any address space must

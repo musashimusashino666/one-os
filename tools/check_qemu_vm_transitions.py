@@ -14,6 +14,7 @@ FAILURE_MARKERS = (
     "ONE OS EXCEPTION",
     "ONE OS EXCEPTION HALTED",
     "ONE OS PAGING MUTATION FAILED",
+    "ONE OS USER FRAME ZERO TEST FAILED",
     "ONE OS BOOTSTRAP COMPLETE",
 )
 MATCHED_MARKERS = (
@@ -30,6 +31,9 @@ TABLE_ZERO_PREFIX = "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: "
 FIRST_MAPPING_MARKER = "ONE OS VM TRANSITION FIRST MAPPING VERIFIED"
 SECOND_MAPPING_MARKER = "ONE OS VM TRANSITION REMAP SECOND FRAME VERIFIED"
 PASS_MARKER = "ONE OS VM TEST PASS: mapping-transitions"
+USER_FRAME_DIRTY_LABEL = "ONE OS USER FRAME ZERO TEST DIRTY"
+USER_FRAME_ZEROED_LABEL = "ONE OS USER FRAME ZERO TEST VERIFIED"
+USER_FRAME_PASS_MARKER = "ONE OS USER FRAME ZERO TEST PASS"
 
 
 def _hex_fields(log: str, label: str) -> tuple[list[str], str | None]:
@@ -41,12 +45,16 @@ def _hex_fields(log: str, label: str) -> tuple[list[str], str | None]:
 
 
 def _single_hex_field(log: str, label: str) -> tuple[str | None, str | None]:
-    values, error = _hex_fields(log, label)
-    if error:
-        return None, error
-    if len(values) != 1:
-        return None, f"expected exactly one '{label}' field, found {len(values)}"
-    return values[0], None
+    # Count every line that starts with the marker label before validating its
+    # syntax. Parsing only regex matches would ignore malformed duplicates when
+    # a separate well-formed line exists.
+    marker_lines = [line for line in log.splitlines() if line.startswith(label)]
+    if len(marker_lines) != 1:
+        return None, f"expected exactly one '{label}' field, found {len(marker_lines)}"
+    match = re.fullmatch(rf"{re.escape(label)}: (0x[0-9a-fA-F]{{16}})", marker_lines[0])
+    if match is None:
+        return None, f"malformed '{label}' diagnostic field"
+    return match.group(1).lower(), None
 
 
 def _physical_frame_markers(
@@ -75,6 +83,30 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         return False, f"expected exactly one start marker: {START_MARKER}"
     if log.count(PASS_MARKER) != 1:
         return False, f"expected exactly one success marker: {PASS_MARKER}"
+    pass_lines = [
+        line for line in log.splitlines() if line.startswith(USER_FRAME_PASS_MARKER)
+    ]
+    if len(pass_lines) != 1 or pass_lines[0] != USER_FRAME_PASS_MARKER:
+        return False, (
+            "expected exactly one exact kernel user-frame zeroing marker: "
+            f"{USER_FRAME_PASS_MARKER}"
+        )
+    dirty_frame, error = _single_hex_field(log, USER_FRAME_DIRTY_LABEL)
+    if error:
+        return False, error
+    zeroed_frame, error = _single_hex_field(log, USER_FRAME_ZEROED_LABEL)
+    if error:
+        return False, error
+    dirty_value = int(dirty_frame, 16)
+    if dirty_value == 0 or dirty_value % 4096:
+        return False, "user-frame test requires a nonzero, 4 KiB-aligned physical frame"
+    if dirty_frame != zeroed_frame:
+        return False, "the initialized ZeroedFrame token must identify the exact dirty physical frame"
+    dirty_position = log.find(USER_FRAME_DIRTY_LABEL + ":")
+    zeroed_position = log.find(USER_FRAME_ZEROED_LABEL + ":")
+    zero_pass_position = log.find(USER_FRAME_PASS_MARKER)
+    if not (0 <= dirty_position < zeroed_position < zero_pass_position):
+        return False, "user-frame zeroing markers are missing or out of order"
     if log.count("ONE OS VM TRANSITION EXPECTED PAGE FAULT") != 2:
         return False, "expected exactly two controlled transition page faults"
 
