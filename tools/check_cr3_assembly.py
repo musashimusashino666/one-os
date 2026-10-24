@@ -241,7 +241,11 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "no actual CR3 write instruction found in activation routine"
     if pge_restore_index is None:
         return False, "original pre-switch CR4 value was not restored"
-    if not (pge_disable_index < min(cr3_write_indices) < pge_restore_index):
+    # The optimizer can lay out the PGE-disabled path after a fast path that
+    # writes CR3 directly when PGE is already clear. Require a CR3 write on the
+    # disable/restore path, rather than incorrectly requiring the first textual
+    # CR3 instruction in the function to be on that path.
+    if not any(pge_disable_index < index < pge_restore_index for index in cr3_write_indices):
         return False, "required order is PGE disable -> CR3 write -> PGE restore"
 
     return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
