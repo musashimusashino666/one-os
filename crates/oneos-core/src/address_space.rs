@@ -401,9 +401,11 @@ fn validate_root_frame_address(
 mod tests {
     use super::{
         validate_root_frame_address, validate_user_virtual_range, AddressSpaceRoot,
-        AddressSpaceRootError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+        AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
+        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT,
+        USER_ACCESSIBLE, USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
     };
-    use crate::{FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
+    use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
     fn make_allocator<'a>(
         regions: &[(u64, u64, bool)],
