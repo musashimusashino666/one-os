@@ -175,6 +175,10 @@ The dedicated `image-test-ist` executes software `INT 2` and `INT 18` from CPL 0
 
 The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagnostic marker, even if the bootstrap-completion marker was already printed.
 
+### CR3 switch assembly validation
+
+The optimized assembly check is an all-path invariant, not an existential pattern match: every reachable `mov cr3, ...` must be preceded on that path by a verified write of the CR4 value with PGE cleared, and every path that performs the switch must restore the original CR4 before exiting. The kernel deliberately emits the same CR4-disable / CR3-write / CR4-restore sequence even when PGE was already clear, so the verifier does not have to infer CR4 bit state from conditional branch flags. Regression tests include a function with one valid branch and one unsafe CR3-write branch; that function must be rejected.
+
 ## Contribution rules
 
 - Keep pull requests narrowly scoped and describe observable behavior.
