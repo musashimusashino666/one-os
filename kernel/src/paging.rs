@@ -774,7 +774,7 @@ impl<'a> KernelPageTableEditor<'a> {
     }
 
     fn entry_pointer(
-        &self,
+        &mut self,
         table_physical: u64,
         index: usize,
         level: u8,
