@@ -207,6 +207,19 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
    gate unless the repository's required-check policy explicitly says so. Retain logs
    and the result summary.
 
+## Current executable-mapping restriction
+
+The generic host-testable mutation engine supports executable mappings only when its
+editor explicitly confirms that frame-wide W^X can be maintained. The concrete kernel
+editor currently denies new executable mappings: allocator-owned Usable frames retain
+a writable physical-memory-offset alias, and the kernel does not yet have complete
+reverse-alias tracking or a safe API for downgrading every alias before execution.
+This is intentional fail-closed behavior. Do not enable executable user mappings until
+all writable aliases, including large-page overlaps and aliases in every address space,
+can be accounted for and the required TLB invalidations are completed. The existing
+kernel text and boot mappings are outside the guarantees of this new mapping gate and
+must not be treated as proof of system-wide frame-wide W^X.
+
 ## Acceptance tests
 
 ### Host tests
