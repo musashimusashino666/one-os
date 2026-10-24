@@ -76,6 +76,9 @@ jobs:
       - name: Check bare-metal kernel
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
+      - name: Test CR3 assembly validator
+        run: python3 -m unittest discover -s tools -p 'test_check_cr3_assembly.py'
+
       - name: Inspect optimized CR3 switch assembly
         shell: bash
         run: |
