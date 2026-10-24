@@ -117,6 +117,7 @@ pub enum PageTableMutationError {
     WritableExecutable,
     ExecutableAliasConflict,
     UserAddressOutsideUserHalf,
+    UserMappingRequiresZeroedFrame,
     TableUnavailable { level: u8 },
     NotMapped { level: u8 },
     MalformedEntry { level: u8 },
@@ -350,6 +351,31 @@ pub(crate) fn map_4k<E: PageTableEditor>(
     Ok(())
 }
 
+/// Installs a 4 KiB supervisor-only mapping using the public mapping API.
+///
+/// Unlike the crate-private `map_4k` primitive, this entry point rejects
+/// `user_accessible = true`. User-visible mappings must use the `ZeroedFrame`
+/// ownership API so that an arbitrary physical address cannot bypass frame
+/// initialization.
+pub fn map_supervisor_4k<E: PageTableEditor>(
+    root_table_physical: u64,
+    virtual_address: u64,
+    physical_address: u64,
+    permissions: PagePermissions,
+    editor: &mut E,
+) -> Result<(), PageTableMutationError> {
+    if permissions.user_accessible {
+        return Err(PageTableMutationError::UserMappingRequiresZeroedFrame);
+    }
+    map_4k(
+        root_table_physical,
+        virtual_address,
+        physical_address,
+        permissions,
+        editor,
+    )
+}
+
 /// Removes one 4 KiB leaf mapping.
 ///
 /// This clears the leaf entry but deliberately leaves now-empty intermediate
@@ -498,7 +524,8 @@ fn indices(virtual_address: u64) -> [usize; 4] {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+        map_4k, map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor,
+        PageTableMutationError, UnmappedPage,
         LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, PROTECTION_KEY_FIELD_MASK,
         USER_ACCESSIBLE, WRITABLE,
     };
@@ -728,6 +755,26 @@ mod tests {
         virtual_address: u64,
     ) -> Result<UnmappedPage, PageTableMutationError> {
         unmap_4k(root, virtual_address, tables)
+    }
+
+    #[test]
+    fn public_supervisor_mapper_rejects_user_permissions_before_mutation() {
+        let root = 0x1000;
+        let virtual_address = 0x4000;
+        let mut tables = TestTables::new(root);
+
+        assert_eq!(
+            map_supervisor_4k(
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(true, true, false),
+                &mut tables,
+            ),
+            Err(PageTableMutationError::UserMappingRequiresZeroedFrame)
+        );
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.read_any(root, 0), Some(0));
     }
 
     #[test]
