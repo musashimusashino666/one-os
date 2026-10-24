@@ -19,8 +19,7 @@ use oneos_core::{
     validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities,
     initialize_user_frame, Frame, FrameRegistryError, PagePermissions, PageTableEditor,
     PageTableError, PageTableFrameRegistry, PageTableMutationError, PageTranslation,
-    PagingPreconditionError, UserFrameInitializationError, UserFrameInitializer, ZeroedFrame,
-    PAGE_SIZE,
+    PagingPreconditionError, UserFrameInitializationError, UserFrameInitializer, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
