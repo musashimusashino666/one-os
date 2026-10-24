@@ -114,7 +114,7 @@ This document is the baseline for implementation PRs. Changes to any invariant r
 
 Add host-testable primitives for constructing, inspecting, switching, and tearing down address spaces as practical for the abstraction. Reuse the existing page-table code instead of duplicating the walk or permission algorithms. Provide tests for invalid roots, non-canonical and unaligned addresses, malformed entries, ancestor-permission conflicts, duplicate mappings, reserved-frame rejection, allocation exhaustion, rollback, and ownership retention.
 
-The first implementation slice adds an ownership-carrying root-frame handle and lower-half virtual-range validation. These are groundwork only: they do not initialize page tables, publish shared kernel mappings, switch CR3, reclaim child tables, or complete I1. Do not mark I1 complete until the construction, permission, switch, teardown, rollback, and TLB contracts above are implemented and tested.
+The first implementation slice adds an ownership-carrying root-frame handle, lower-half virtual-range validation, and a host-testable initializer for an inactive PML4 root. The initializer preflights the source root and every upper-half entry before writing, clears all lower-half entries, copies only supervisor-only kernel-half entries, and rewrites the recursive slot to a supervisor-writable, non-executable self-reference. It does not map user leaf pages, switch CR3, invalidate TLB entries, tear down child tables, or provide the active-kernel access backend. Do not mark I1 complete until kernel integration and the construction, permission, switch, teardown, rollback, and TLB contracts above are implemented and tested.
 
 ### I2 — Controlled ring 3 transition
 
