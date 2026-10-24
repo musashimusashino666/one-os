@@ -44,12 +44,16 @@ def _hex_fields(log: str, label: str) -> tuple[list[str], str | None]:
 
 
 def _single_hex_field(log: str, label: str) -> tuple[str | None, str | None]:
-    values, error = _hex_fields(log, label)
-    if error:
-        return None, error
-    if len(values) != 1:
-        return None, f"expected exactly one '{label}' field, found {len(values)}"
-    return values[0], None
+    # Count every line that starts with the marker label before validating its
+    # syntax. Parsing only regex matches would ignore malformed duplicates when
+    # a separate well-formed line exists.
+    marker_lines = [line for line in log.splitlines() if line.startswith(label)]
+    if len(marker_lines) != 1:
+        return None, f"expected exactly one '{label}' field, found {len(marker_lines)}"
+    match = re.fullmatch(rf"{re.escape(label)}: (0x[0-9a-fA-F]{{16}})", marker_lines[0])
+    if match is None:
+        return None, f"malformed '{label}' diagnostic field"
+    return match.group(1).lower(), None
 
 
 def _physical_frame_markers(
