@@ -1027,9 +1027,11 @@ unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
 }
 
 /// Exercise the kernel-backed user-frame initializer on an allocated, dirty
-/// frame. This runs in the existing VM-transition QEMU image before any user
-/// frame before kernel-root activation on every boot. This validates the
-/// initialization/token gate, not live Ring-3 publication or process isolation.
+/// frame using the bootloader-provided recursive mapping. Dedicated acceptance
+/// images call this before any CR3 switch; normal boot uses
+/// `verify_user_frame_zeroing_test_with_recursive_index` after activation.
+/// This validates the initialization/token gate, not live Ring-3 publication
+/// or process isolation.
 #[cfg(any(
     feature = "test-exception",
     feature = "test-general-protection",
