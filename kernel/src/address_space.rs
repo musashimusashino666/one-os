@@ -47,6 +47,9 @@ pub enum AddressSpaceError {
     NoUnusedRecursiveIndex,
     RootVerificationFailed { index: usize },
     RootZeroizationFailed { index: usize },
+    KernelMappingNotInUpperHalf,
+    UnsupportedPcid,
+    RootActivationFailed,
 }
 
 impl AddressSpaceError {
@@ -134,6 +137,15 @@ impl AddressSpaceError {
             }
             Self::RootVerificationFailed { .. } => {
                 b"Address-space root contents did not match the initialization contract\n"
+            }
+            Self::KernelMappingNotInUpperHalf => {
+                b"Kernel code, stack, boot metadata, and physical-memory alias must use upper-half mappings before activation\n"
+            }
+            Self::UnsupportedPcid => {
+                b"Address-space activation does not yet support CR4.PCIDE\n"
+            }
+            Self::RootActivationFailed => {
+                b"CR3 did not report the newly activated address-space root\n"
             }
             Self::RootZeroizationFailed { .. } => {
                 b"Address-space root could not be zeroed before frame release\n"
@@ -251,6 +263,210 @@ pub fn verify_root_initialization_smoke_test(
     initialization.map_err(AddressSpaceError::RootInitialization)?;
     verification?;
     Ok(())
+}
+
+/// Constructs and activates a root that retains only validated supervisor-only
+/// kernel-half mappings. The returned handle owns the active root frame and must
+/// remain live for as long as this address space is active.
+///
+/// The bootloader must place the kernel image, stack, BootInfo, physical-memory
+/// alias, and all boot-time dynamic mappings in the upper canonical half. The
+/// checks below fail closed before changing CR3 if any required execution state
+/// remains in the lower half. This routine is single-CPU and requires interrupts
+/// to remain disabled, as established by kernel_main.
+pub fn activate_supervisor_kernel_root(
+    boot_info: &BootInfo,
+) -> Result<AddressSpaceRoot, AddressSpaceError> {
+    const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
+    const CR4_PGE: u64 = 1 << 7;
+    const CR4_PCIDE: u64 = 1 << 17;
+
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(AddressSpaceError::InvalidRecursiveIndex),
+        Optional::None => return Err(AddressSpaceError::RecursiveMappingUnavailable),
+    };
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(AddressSpaceError::PhysicalMemoryOffsetUnavailable),
+    };
+
+    let cr4: u64;
+    let stack_pointer: u64;
+    // SAFETY: CR4 and RSP are readable in the privileged x86_64 kernel.
+    unsafe {
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
+    }
+    if cr4 & CR4_PCIDE != 0 {
+        return Err(AddressSpaceError::UnsupportedPcid);
+    }
+
+    let code_address = activate_supervisor_kernel_root as *const () as usize as u64;
+    let boot_info_address = boot_info as *const BootInfo as usize as u64;
+    let memory_regions_address = boot_info.memory_regions.as_ptr() as usize as u64;
+    let kernel_stack_end = boot_info
+        .kernel_stack_bottom
+        .checked_add(boot_info.kernel_stack_len)
+        .filter(|_| boot_info.kernel_stack_len != 0)
+        .ok_or(AddressSpaceError::KernelMappingNotInUpperHalf)?;
+    let kernel_stack_last = kernel_stack_end
+        .checked_sub(1)
+        .ok_or(AddressSpaceError::KernelMappingNotInUpperHalf)?;
+
+    // A new root clears every lower-half PML4 entry. Verify every pointer needed
+    // after CR3 changes before preparing or publishing that root.
+    if !is_kernel_half_address(code_address, KERNEL_HALF_START)
+        || !is_kernel_half_address(stack_pointer, KERNEL_HALF_START)
+        || !is_kernel_half_address(boot_info_address, KERNEL_HALF_START)
+        || !is_kernel_half_address(memory_regions_address, KERNEL_HALF_START)
+        || !is_kernel_half_address(boot_info.kernel_image_offset, KERNEL_HALF_START)
+        || !is_kernel_half_address(boot_info.kernel_stack_bottom, KERNEL_HALF_START)
+        || !is_kernel_half_address(kernel_stack_last, KERNEL_HALF_START)
+        || !is_kernel_half_address(physical_memory_offset, KERNEL_HALF_START)
+        || stack_pointer < boot_info.kernel_stack_bottom
+        || stack_pointer >= kernel_stack_end
+    {
+        return Err(AddressSpaceError::KernelMappingNotInUpperHalf);
+    }
+
+    let maximum_extended_leaf = __cpuid(CPUID_MAX_EXTENDED_LEAF).eax;
+    if maximum_extended_leaf < CPUID_PHYSICAL_ADDRESS_WIDTH {
+        return Err(AddressSpaceError::InvalidPhysicalAddressWidth { bits: 0 });
+    }
+    let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
+    if !(32..=52).contains(&physical_address_bits) {
+        return Err(AddressSpaceError::InvalidPhysicalAddressWidth {
+            bits: physical_address_bits,
+        });
+    }
+
+    let kernel_root_physical = active_root_table_physical();
+    if !is_physical_page(kernel_root_physical, physical_address_bits)
+        || !is_region_page(
+            &boot_info.memory_regions,
+            kernel_root_physical,
+            MemoryRegionKind::Bootloader,
+        )
+    {
+        return Err(AddressSpaceError::InvalidKernelRoot);
+    }
+
+    let frame =
+        super::memory::allocate_frame().map_err(|_| AddressSpaceError::FrameAllocationFailed)?;
+    let mut root = match AddressSpaceRoot::try_from_frame(frame, physical_address_bits) {
+        Ok(root) => root,
+        Err((error, frame)) => {
+            release_frame(frame)?;
+            return Err(AddressSpaceError::InvalidOwnedRoot(error));
+        }
+    };
+
+    let root_physical = root.physical_address();
+    let mut editor = KernelAddressSpaceRootEditor {
+        regions: &boot_info.memory_regions,
+        physical_memory_offset,
+        kernel_root_physical,
+        root_physical,
+        recursive_index,
+        physical_address_bits,
+        kernel_root_pointer: None,
+        destination_root_pointer: None,
+    };
+
+    let kernel_root_readable = editor.table_is_readable(kernel_root_physical);
+    let destination_root_writable = editor.table_is_read_write_accessible(root_physical);
+    if !kernel_root_readable || !destination_root_writable {
+        if destination_root_writable {
+            clear_and_release_root(root, &mut editor, root_physical)?;
+        } else {
+            // Keep an inaccessible allocation reserved rather than recycling
+            // memory whose contents could not be safely zeroed.
+            let _unreleased_frame = root.into_frame();
+        }
+        return Err(AddressSpaceError::RootTableUnavailable);
+    }
+
+    let root_recursive_index = match editor.select_root_recursive_index() {
+        Ok(index) => index,
+        Err(error) => {
+            clear_and_release_root(root, &mut editor, root_physical)?;
+            return Err(error);
+        }
+    };
+
+    let initialization = root.initialize_from_kernel_root(
+        kernel_root_physical,
+        usize::from(recursive_index),
+        root_recursive_index,
+        &mut editor,
+    );
+    if let Err(error) = initialization {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootInitialization(error));
+    }
+    if let Err(error) = verify_initialized_entries(
+        &mut editor,
+        root_physical,
+        kernel_root_physical,
+        usize::from(recursive_index),
+        root_recursive_index,
+    ) {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(error);
+    }
+
+    // Flush global translations explicitly if PGE was active. A CR3 write then
+    // flushes non-global translations for the old root. PCID is rejected above
+    // because its tagged-TLB behavior is outside this bootstrap contract.
+    if cr4 & CR4_PGE != 0 {
+        let cr4_without_pge = cr4 & !CR4_PGE;
+        // SAFETY: PGE may be toggled by the privileged kernel; disabling it
+        // flushes global translations before the root switch.
+        unsafe {
+            asm!(
+                "mov cr4, {}",
+                in(reg) cr4_without_pge,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    }
+    // This asm intentionally omits `nomem`: changing CR3 is a compiler
+    // memory-ordering boundary. Keep page-table initialization and all memory
+    // accesses that depend on the active address space ordered around the switch.
+    // SAFETY: root initialization and complete required mapping checks have
+    // succeeded; all execution-critical mappings are in the copied upper half.
+    unsafe {
+        asm!(
+            "mov cr3, {}",
+            in(reg) root_physical,
+            options(nostack, preserves_flags)
+        );
+    }
+    if cr4 & CR4_PGE != 0 {
+        // SAFETY: restore the original paging-feature configuration after CR3
+        // has switched and all old global translations have been flushed.
+        unsafe {
+            asm!(
+                "mov cr4, {}",
+                in(reg) cr4,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    }
+
+    if active_root_table_physical() != root_physical {
+        // The root may already be active. Never recycle its frame after a
+        // switch attempt whose observed result is uncertain.
+        let _unreleased_frame = root.into_frame();
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    Ok(root)
+}
+
+fn is_kernel_half_address(address: u64, kernel_half_start: u64) -> bool {
+    is_canonical_4level(address) && address >= kernel_half_start
 }
 
 fn verify_initialized_entries(

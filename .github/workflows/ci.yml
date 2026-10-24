@@ -76,6 +76,20 @@ jobs:
       - name: Check bare-metal kernel
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
+      - name: Inspect optimized CR3 switch assembly
+        shell: bash
+        run: |
+          # Keep release optimization enabled; disable only LTO for readable pre-link assembly.
+          asm_target_dir="$RUNNER_TEMP/one-os-assembly-target"
+          rm -rf "$asm_target_dir"
+          CARGO_TARGET_DIR="$asm_target_dir" cargo rustc --locked --release -p one-os-kernel \
+            --target x86_64-unknown-none -- -C lto=no --emit=asm
+
+          # Check the actual optimized activation function and retain the CR3 memory barrier.
+          python3 tools/check_cr3_assembly.py \
+            --assembly-dir "$asm_target_dir" \
+            --source kernel/src/address_space.rs
+
       - name: Build BIOS image
         run: cargo run --locked -p oneos-xtask -- image
 

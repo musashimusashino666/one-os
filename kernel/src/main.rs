@@ -80,8 +80,18 @@ mod paging;
 
 const COM1: u16 = 0x3F8;
 
+const KERNEL_VIRTUAL_BASE: u64 = 0xffff_8000_0000_0000;
+const DYNAMIC_KERNEL_MAPPING_START: u64 = 0xffff_9000_0000_0000;
+const DYNAMIC_KERNEL_MAPPING_END: u64 = 0xffff_ffff_ffff_f000;
+
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
+    // Place the kernel and every bootloader-created dynamic mapping in the
+    // upper canonical half, where future process roots can share them with
+    // supervisor-only PML4 ancestors.
+    config.mappings.kernel_base = Mapping::FixedAddress(KERNEL_VIRTUAL_BASE);
+    config.mappings.dynamic_range_start = Some(DYNAMIC_KERNEL_MAPPING_START);
+    config.mappings.dynamic_range_end = Some(DYNAMIC_KERNEL_MAPPING_END);
     config.mappings.page_table_recursive = Some(Mapping::Dynamic);
     config.mappings.physical_memory = Some(Mapping::Dynamic);
     config
@@ -528,6 +538,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         feature = "test-double-fault"
     )))]
     {
+        // Only the normal boot path activates a second root. All existing
+        // mutation/protection acceptance images retain the bootloader root so
+        // their diagnostics continue to exercise the same source mapping.
+        let _active_root = match address_space::activate_supervisor_kernel_root(boot_info) {
+            Ok(root) => root,
+            Err(error) => {
+                serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATION FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATED\n");
+
         serial_write(b"Architecture: x86_64\n");
         serial_write(b"Milestone: serial bootstrap\n");
         serial_write(b"Memory map: structurally validated\n");
