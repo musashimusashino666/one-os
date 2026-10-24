@@ -1030,6 +1030,16 @@ unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
 /// frame. This runs in the existing VM-transition QEMU image before any user
 /// frame before kernel-root activation on every boot. This validates the
 /// initialization/token gate, not live Ring-3 publication or process isolation.
+#[cfg(any(
+    feature = "test-exception",
+    feature = "test-general-protection",
+    feature = "test-page-fault",
+    feature = "test-double-fault",
+    feature = "test-ist",
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection",
+    feature = "test-vm-transitions"
+))]
 pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
