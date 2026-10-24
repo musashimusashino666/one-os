@@ -743,7 +743,8 @@ mod tests {
             if self.fail_zeroing {
                 return Err(UserFrameInitializationError::InitializationFailed);
             }
-            let index = self.ensure_frame_memory(frame.physical_address())
+            let index = self
+                .ensure_frame_memory(frame.physical_address())
                 .ok_or(UserFrameInitializationError::InitializationFailed)?;
             self.frame_memory[index].contents.fill(0);
             Ok(())
@@ -911,6 +912,7 @@ mod tests {
         allocator.free_frame(root_b.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
+
     #[test]
     fn maps_nx_user_data_and_returns_ownership_only_after_unmap_invalidation() {
         let mut slots = [FrameSegment::EMPTY; 1];
