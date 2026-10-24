@@ -666,7 +666,11 @@ impl<'a> KernelPageTableEditor<'a> {
             self.regions,
         )
         .ok()?;
-        if translation.physical_address != physical_address || !translation.writable {
+        if translation.physical_address != physical_address
+            || !translation.writable
+            || translation.user_accessible
+            || translation.executable
+        {
             return None;
         }
         let pointer = usize::try_from(address).ok()? as *mut u8;
@@ -778,6 +782,10 @@ impl<'a> KernelPageTableEditor<'a> {
 impl PageTableEditor for KernelPageTableEditor<'_> {
     fn physical_address_bits(&self) -> u8 {
         self.physical_address_bits
+    }
+
+    fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
+        self.is_table_frame(physical_address)
     }
 
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
@@ -1078,7 +1086,9 @@ pub fn install_supervisor_write_protection_test(
 ) -> Result<ProtectionTestMapping, PagingError> {
     prepare_protection_test_mapping(
         boot_info,
-        PagePermissions::new(false, false, true),
+        // The sentinel is data: keep its leaf NX so the persistent writable
+        // physical-memory alias cannot create a frame-wide W+X combination.
+        PagePermissions::new(false, false, false),
         ProtectionTestPayload::Sentinel,
     )
 }
