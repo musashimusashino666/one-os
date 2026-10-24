@@ -73,6 +73,7 @@ use oneos_core::{validate_memory_map, MemoryMapError};
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
 
+mod address_space;
 mod interrupts;
 mod memory;
 mod paging;
@@ -260,6 +261,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt_forever()
     }
     serial_write(b"ONE OS VM MAPPING SMOKE TEST READY\n");
+
+    if let Err(error) = address_space::verify_root_initialization_smoke_test(boot_info) {
+        serial_write(b"\nONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+    serial_write(b"ONE OS ADDRESS SPACE ROOT INITIALIZATION READY\n");
 
     #[cfg(feature = "test-vm-transitions")]
     {
