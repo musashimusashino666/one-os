@@ -47,25 +47,25 @@ impl PagingPreconditionError {
     pub const fn message(self) -> &'static [u8] {
         match self {
             Self::ExtendedLeafUnavailable { .. } => {
-                b"Required extended CPUID leaf is unavailable\\n"
+                b"Required extended CPUID leaf is unavailable\n"
             }
-            Self::NxUnsupported => b"CPU does not advertise NX support\\n",
+            Self::NxUnsupported => b"CPU does not advertise NX support\n",
             Self::InvalidPhysicalAddressWidth { .. } => {
-                b"CPU reported an unsupported physical-address width\\n"
+                b"CPU reported an unsupported physical-address width\n"
             }
             Self::SupervisorWriteProtectionDisabled => {
-                b"CR0.WP is disabled; supervisor writes may bypass read-only entries\\n"
+                b"CR0.WP is disabled; supervisor writes may bypass read-only entries\n"
             }
-            Self::NxEnableDisabled => b"EFER.NXE is disabled\\n",
+            Self::NxEnableDisabled => b"EFER.NXE is disabled\n",
             Self::MaskableInterruptsEnabled => {
-                b"Maskable interrupts must remain disabled during the root switch\\n"
+                b"Maskable interrupts must remain disabled during the root switch\n"
             }
-            Self::PagingDisabled => b"CR0.PG is disabled; paging is not active\\n",
+            Self::PagingDisabled => b"CR0.PG is disabled; paging is not active\n",
             Self::FiveLevelPagingUnsupported => {
-                b"CR4.LA57 is enabled; five-level paging is not supported\\n"
+                b"CR4.LA57 is enabled; five-level paging is not supported\n"
             }
             Self::PcidUnsupported => {
-                b"CR4.PCIDE is enabled; PCID-tagged CR3 switching is not supported\\n"
+                b"CR4.PCIDE is enabled; PCID-tagged CR3 switching is not supported\n"
             }
         }
     }
