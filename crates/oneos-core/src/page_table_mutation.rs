@@ -177,7 +177,9 @@ pub fn map_4k<E: PageTableEditor>(
     if !valid_physical_page(physical_address, physical_address_bits) {
         return Err(PageTableMutationError::InvalidPhysicalAddress);
     }
-    if editor.is_page_table_or_reserved_frame(physical_address) {
+    if physical_address == root_table_physical
+        || editor.is_page_table_or_reserved_frame(physical_address)
+    {
         return Err(PageTableMutationError::MappedFrameIsReserved);
     }
     if permissions.writable && permissions.executable {
