@@ -182,13 +182,11 @@ pub struct ActiveAddressSpaceRoot {
 impl ActiveAddressSpaceRoot {
     /// Records that a root has already been activated by the architecture layer.
     ///
-    /// # Safety
-    ///
-    /// The caller must have switched CR3 to `root.physical_address()`, verified
-    /// the resulting CR3 value, and must not release or recycle this root while
-    /// it can be active. The caller must also preserve the documented CPU and
-    /// TLB synchronization preconditions.
-    pub unsafe fn from_activated(root: AddressSpaceRoot) -> Self {
+    /// Call this only after the architecture layer has switched CR3 to
+    /// `root.physical_address()` and verified the resulting CR3 value. Calling
+    /// it prematurely only makes the frame unreleasable through this handle;
+    /// it does not activate the root or establish CPU/TLB synchronization.
+    pub fn from_activated(root: AddressSpaceRoot) -> Self {
         Self { root }
     }
 
