@@ -35,6 +35,81 @@ pub trait UserAddressSpaceEditor: PageTableEditor {
     fn invalidate_translation(&mut self, root_table_physical: u64, virtual_address: u64);
 }
 
+/// Error returned when the kernel cannot establish a zero-filled user frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserFrameInitializationError {
+    /// The frame could not be safely accessed or completely zeroed.
+    InitializationFailed,
+}
+
+/// Architecture-provided operation for clearing a complete physical frame.
+///
+/// # Safety
+///
+/// Implementations must only report success after every byte in the specified
+/// exclusively owned frame is zero. The frame must be accessed through a
+/// validated writable supervisor-only alias, and an error must never produce a
+/// `ZeroedFrame`. Implementations must preserve frame ownership on all paths.
+pub unsafe trait UserFrameInitializer {
+    /// Clears the complete 4 KiB frame, failing closed if it cannot be verified.
+    fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError>;
+}
+
+/// A frame whose complete contents were zeroed before it can be mapped to user mode.
+///
+/// The token is non-Copy and consumed by the user mapping API. It does not prove
+/// system-wide W^X or prevent unrelated kernel code from writing through another
+/// alias; callers must preserve ownership and the single-CPU mutation contract.
+#[must_use = "a zeroed frame token must be retained or explicitly returned to its allocator"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct ZeroedFrame {
+    frame: Frame,
+}
+
+impl ZeroedFrame {
+    /// Converts an owned frame token after a zeroing implementation reports success.
+    ///
+    /// # Safety
+    ///
+    /// Every byte in the complete frame must already be zero, the caller must own
+    /// it, and no concurrent or uncontrolled writable alias may mutate it before
+    /// publication to the intended user mapping.
+    pub unsafe fn from_zeroed_frame(frame: Frame) -> Self {
+        Self { frame }
+    }
+
+    /// Returns the physical base address without exposing the ownership token.
+    pub const fn physical_address(&self) -> u64 {
+        self.frame.physical_address()
+    }
+
+    /// Returns the underlying ownership token to a kernel allocator.
+    pub fn into_frame(self) -> Frame {
+        self.frame
+    }
+}
+
+impl FrameToken for ZeroedFrame {
+    fn frame_address(&self) -> u64 {
+        self.frame.physical_address()
+    }
+}
+
+/// Clears a frame before granting it the `ZeroedFrame` type.
+///
+/// On failure, the original frame token is returned to the caller.
+pub fn initialize_user_frame<I: UserFrameInitializer>(
+    frame: Frame,
+    initializer: &mut I,
+) -> Result<ZeroedFrame, (UserFrameInitializationError, Frame)> {
+    if let Err(error) = initializer.zero_frame(&frame) {
+        return Err((error, frame));
+    }
+    // SAFETY: the initializer's unsafe trait contract guarantees that every byte
+    // is zero after Ok and that the frame remains exclusively owned.
+    Ok(unsafe { ZeroedFrame::from_zeroed_frame(frame) })
+}
+
 /// Errors returned by user data-page mapping operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserPageMappingError {
@@ -83,7 +158,7 @@ enum MappingSlot<T: FrameToken> {
 
 /// Fixed-capacity registry retaining data-frame ownership for one address space.
 ///
-/// Each live mapping has one non-Copy frame token. A slot is reserved before
+/// Each live mapping has one non-Copy zeroed-frame token. A slot is reserved before
 /// page-table mutation begins, so registry exhaustion cannot occur after a
 /// mapping has been published. This registry is address-space-local; it does
 /// not replace the future global reverse-alias accounting needed for frame-wide
@@ -255,25 +330,28 @@ fn validate_user_page_address(virtual_address: u64) -> Result<(), UserPageMappin
         .map_err(UserPageMappingError::InvalidUserVirtualRange)
 }
 
-/// Maps one owned frame as writable, user-accessible, non-executable data.
+/// Maps one previously zeroed frame as writable, user-accessible, non-executable data.
 ///
-/// The frame token is moved into the registry only after map_4k succeeds. The
+/// The zeroed-frame token is moved into the registry only after map_4k succeeds. The
 /// registry reserves its slot first, so metadata exhaustion fails before any
 /// page-table mutation. On every error, the original frame token is returned.
 /// This operation calls the editor's translation invalidation hook after
 /// publishing the mapping, including to invalidate a previously cached
 /// non-present translation.
 ///
+/// This API requires `ZeroedFrame`, so a raw allocator token cannot be mapped
+/// through the safe interface. The type is only valid when produced by
+/// `initialize_user_frame` or an explicitly justified unsafe conversion.
 /// Executable mappings are deliberately not supported by this helper. The
 /// caller must enable EFER.NXE and use an editor whose allocation/ownership
 /// checks meet PageTableEditor’s contract.
 pub fn map_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     root: &AddressSpaceRoot,
     virtual_address: u64,
-    frame: Frame,
-    registry: &mut UserPageMappingRegistry<Frame, CAPACITY>,
+    frame: ZeroedFrame,
+    registry: &mut UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
     editor: &mut E,
-) -> Result<(), (UserPageMappingError, Frame)> {
+) -> Result<(), (UserPageMappingError, ZeroedFrame)> {
     if let Err(error) = registry.validate_root(root) {
         return Err((error, frame));
     }
@@ -318,9 +396,9 @@ pub fn map_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
 pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     root: &AddressSpaceRoot,
     virtual_address: u64,
-    registry: &mut UserPageMappingRegistry<Frame, CAPACITY>,
+    registry: &mut UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
     editor: &mut E,
-) -> Result<(UnmappedPage, Frame), UserPageMappingError> {
+) -> Result<(UnmappedPage, ZeroedFrame), UserPageMappingError> {
     registry.validate_root(root)?;
     if !root.is_initialized() {
         return Err(UserPageMappingError::AddressSpaceNotInitialized);
@@ -367,12 +445,13 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
-        UserPageMappingRegistry,
+        initialize_user_frame, map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor,
+        UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
+        UserPageMappingRegistry, ZeroedFrame,
     };
     use crate::{
         map_4k, unmap_4k, AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator,
-        FrameSegment, PagePermissions, PageTableEditor, PageTableMutationError,
+        FrameSegment, PagePermissions, PageTableEditor, PageTableMutationError, PAGE_SIZE,
     };
 
     const PRESENT: u64 = 1;
@@ -402,6 +481,8 @@ mod tests {
         successful_allocations: usize,
         invalidations: usize,
         last_invalidation: Option<(u64, u64)>,
+        frame_contents: [u8; PAGE_SIZE as usize],
+        fail_zeroing: bool,
     }
 
     impl TestEditor {
@@ -424,6 +505,8 @@ mod tests {
                 successful_allocations: 0,
                 invalidations: 0,
                 last_invalidation: None,
+                frame_contents: [0xa5; PAGE_SIZE as usize],
+                fail_zeroing: false,
             };
             editor.set_entry(0x1000, 511, 0x1000 | PRESENT | WRITABLE);
             editor
@@ -567,6 +650,19 @@ mod tests {
         }
     }
 
+    unsafe impl UserFrameInitializer for TestEditor {
+        fn zero_frame(
+            &mut self,
+            frame: &Frame,
+        ) -> Result<(), UserFrameInitializationError> {
+            if self.fail_zeroing || frame.physical_address() != self.data_frame {
+                return Err(UserFrameInitializationError::InitializationFailed);
+            }
+            self.frame_contents.fill(0);
+            Ok(())
+        }
+    }
+
     impl UserAddressSpaceEditor for TestEditor {
         fn invalidate_translation(&mut self, root_table_physical: u64, virtual_address: u64) {
             self.invalidations += 1;
@@ -609,15 +705,54 @@ mod tests {
     }
 
     #[test]
+    fn initialize_user_frame_zeroes_old_contents_before_returning_zeroed_token() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+
+        assert!(editor.frame_contents.iter().any(|byte| *byte != 0));
+        let zeroed = initialize_user_frame(frame, &mut editor).unwrap();
+
+        assert_eq!(zeroed.physical_address(), physical);
+        assert!(editor.frame_contents.iter().all(|byte| *byte == 0));
+
+        allocator.free_frame(zeroed.into_frame()).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn failed_zeroing_returns_the_original_frame_token() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+        editor.fail_zeroing = true;
+
+        let (error, returned) = initialize_user_frame(frame, &mut editor).unwrap_err();
+
+        assert_eq!(error, UserFrameInitializationError::InitializationFailed);
+        assert_eq!(returned.physical_address(), physical);
+        allocator.free_frame(returned).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
     fn maps_nx_user_data_and_returns_ownership_only_after_unmap_invalidation() {
         let mut slots = [FrameSegment::EMPTY; 1];
         let mut bitmap = [0u64; 1];
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
 
-        map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor).unwrap();
+        map_user_data_page(&root, virtual_address, unsafe { ZeroedFrame::from_zeroed_frame(frame) }, &mut registry, &mut editor).unwrap();
 
         assert!(registry.is_mapped(virtual_address));
         assert_eq!(registry.available_slots(), 1);
@@ -639,7 +774,7 @@ mod tests {
         assert_eq!(registry.available_slots(), 2);
         assert_eq!(editor.invalidations, 2);
 
-        allocator.free_frame(returned_frame).unwrap();
+        allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
         allocator.free_frame(root.into_frame()).unwrap();
@@ -654,11 +789,11 @@ mod tests {
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
         let root_entry_before = editor.entry(root.physical_address(), 0);
-        let mut registry = UserPageMappingRegistry::<Frame, 1>::new(&root);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 1>::new(&root);
         editor.fail_allocation = true;
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor)
+            map_user_data_page(&root, virtual_address, unsafe { ZeroedFrame::from_zeroed_frame(frame) }, &mut registry, &mut editor)
                 .unwrap_err();
 
         assert_eq!(
@@ -671,7 +806,7 @@ mod tests {
         assert!(!registry.is_mapped(virtual_address));
         assert_eq!(registry.available_slots(), 1);
 
-        allocator.free_frame(returned_frame).unwrap();
+        allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
         allocator.free_frame(root.into_frame()).unwrap();
@@ -684,8 +819,8 @@ mod tests {
         let mut bitmap = [0u64; 1];
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let virtual_address = 0x4000;
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
-        map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor).unwrap();
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
+        map_user_data_page(&root, virtual_address, unsafe { ZeroedFrame::from_zeroed_frame(frame) }, &mut registry, &mut editor).unwrap();
 
         let second_frame = allocator.allocate_frame().unwrap();
         let second_physical = second_frame.physical_address();
@@ -703,7 +838,7 @@ mod tests {
         assert_eq!(editor.invalidations, 1);
         assert_eq!(registry.available_slots(), 1);
 
-        allocator.free_frame(error.1).unwrap();
+        allocator.free_frame(error.1.into_frame()).unwrap();
         let (_, first_frame) =
             unmap_user_data_page(&root, virtual_address, &mut registry, &mut editor).unwrap();
         allocator.free_frame(first_frame).unwrap();
@@ -721,12 +856,12 @@ mod tests {
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
         let root_entry_before = editor.entry(root.physical_address(), 0);
-        let mut registry = UserPageMappingRegistry::<Frame, 1>::new(&root);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 1>::new(&root);
         // Allocate two of the three missing intermediate tables, then fail.
         editor.fail_after_successful_allocations = Some(2);
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor)
+            map_user_data_page(&root, virtual_address, unsafe { ZeroedFrame::from_zeroed_frame(frame) }, &mut registry, &mut editor)
                 .unwrap_err();
 
         assert_eq!(
@@ -742,7 +877,7 @@ mod tests {
         assert!(!registry.is_mapped(virtual_address));
         assert_eq!(registry.available_slots(), 1);
 
-        allocator.free_frame(returned_frame).unwrap();
+        allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
         allocator.free_frame(root.into_frame()).unwrap();
@@ -757,10 +892,10 @@ mod tests {
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
         let root_entry_before = editor.entry(root.physical_address(), 0);
-        let mut registry = UserPageMappingRegistry::<Frame, 0>::new(&root);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 0>::new(&root);
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor)
+            map_user_data_page(&root, virtual_address, unsafe { ZeroedFrame::from_zeroed_frame(frame) }, &mut registry, &mut editor)
                 .unwrap_err();
 
         assert_eq!(error, UserPageMappingError::RegistryFull);
@@ -770,7 +905,7 @@ mod tests {
         assert_eq!(editor.invalidations, 0);
         assert!(!registry.is_mapped(virtual_address));
 
-        allocator.free_frame(returned_frame).unwrap();
+        allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
         allocator.free_frame(root.into_frame()).unwrap();
@@ -783,7 +918,7 @@ mod tests {
         let mut bitmap = [0u64; 1];
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let physical = frame.physical_address();
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
 
         let first = registry.reserve_mapping(0x4000, physical).unwrap();
         assert_eq!(
@@ -807,7 +942,7 @@ mod tests {
         let (mut allocator, root_a, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root_a);
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root_a);
         map_user_data_page(&root_a, virtual_address, frame, &mut registry, &mut editor).unwrap();
 
         // Prepare a separate root B, then deliberately create the same
@@ -826,7 +961,7 @@ mod tests {
         let extra_physical = extra_frame.physical_address();
         let root_b_entry_before = editor.entry(root_b_physical, 0);
         let (map_error, returned_extra) =
-            map_user_data_page(&root_b, 0x8000, extra_frame, &mut registry, &mut editor)
+            map_user_data_page(&root_b, 0x8000, unsafe { ZeroedFrame::from_zeroed_frame(extra_frame) }, &mut registry, &mut editor)
                 .unwrap_err();
         assert_eq!(
             map_error,
@@ -871,7 +1006,7 @@ mod tests {
         assert_eq!(unmapped_a.physical_address, physical);
         assert_eq!(returned_frame.physical_address(), physical);
         assert!(!registry.is_mapped(virtual_address));
-        allocator.free_frame(returned_frame).unwrap();
+        allocator.free_frame(returned_frame.into_frame()).unwrap();
 
         disconnect_test_address_space(&root_a, &mut editor);
         disconnect_test_address_space(&root_b, &mut editor);
