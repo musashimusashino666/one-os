@@ -74,6 +74,7 @@ class ActivationAssemblyTests(unittest.TestCase):
     def test_accepts_intel_syntax(self):
         valid, message = validate_function_body(
             [
+                "mov rbx, cr4",
                 "and rax, -129",
                 "mov cr4, rax",
                 "mov cr3, r12",
@@ -81,6 +82,32 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertTrue(valid, message)
+
+
+    def test_rejects_pge_mask_on_unrelated_register(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "andq $-129, %r10",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("not cleared in the register written to CR4", message)
+
+    def test_rejects_restore_without_saved_cr4_source(self):
+        valid, message = validate_function_body(
+            [
+                "andq $-129, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("pre-switch CR4 value", message)
 
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
