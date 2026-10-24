@@ -43,6 +43,24 @@ The initial frame allocator treats only bootloader memory-map entries marked Usa
 
 The allocator tracks physical-frame ownership. The kernel now uses a guarded page-table editor for limited active-kernel map/unmap operations and the associated acceptance tests, but it does not yet provide a general-purpose data-page mapping service or independent user-process address spaces. The kernel requests the bootloader's recursive page-table mapping and the read-only inspector reads existing paging entries through that mapping. It does not use `physical_memory_offset` to dereference Bootloader-owned frames, because bootloader_api documents that only `Usable` frames are safe to access through the physical-memory alias. The inspector checks that one sampled kernel-code virtual address lies within BootInfo's virtual kernel-image range and that its translated physical address falls within the in-memory ELF backing interval reported by BootInfo. This interval check does not establish segment-specific virtual-to-physical correspondence. The inspector checks page-offset preservation and expected page-table-derived U/S, R/W, and NX permissions for the sampled kernel-code address, active stack pointer, and BootInfo pointer; it separately requires CR0.WP to be set before treating R/W=0 as supervisor-write protection. These leaf-mapping checks do not validate stack or BootInfo physical-memory-region ownership. The Bootloader-owned-region check applies to each page-table page before a volatile read, including the CR3 root. Before walking other entries, the kernel also reads the recursive PML4 entry through the reported recursive mapping and checks that it is present, not a large-page entry, and points to the CR3 frame. That first read relies on the bootloader_api contract that the reported recursive index maps the active PML4 frame to itself; it cannot independently prove the recursive virtual address safe before performing the read; it does not assert that stack or BootInfo leaf mappings point into Bootloader-owned memory. The inspector does not parse ELF PT_LOAD headers or compare p_offset, p_vaddr, p_filesz, and p_memsz against observed translations, and it does not inspect every mapping. These checks are bootstrap diagnostics, not a proof of exact mapping correctness, mapping completeness, or system-wide memory protection. The read-only inspector does not write page-table entries or change mapping permissions; the separate guarded editor performs limited kernel mapping mutations under its documented single-CPU/interrupt-disabled preconditions. A returned physical address must not be dereferenced as allocated data until a valid mapping and initialization policy has been established for that use. The global API is serialized by a non-blocking lock; Busy means the caller must retry from a context where retry is safe. This bootstrap allocator is not yet a process-isolation boundary and does not establish production-grade memory safety.
 
+## Page-table mutation and physical-frame permissions
+
+The host-testable `map_4k` primitive rejects leaf targets that the editor identifies
+as page-table or reserved frames, and separately rejects the supplied root frame.
+The kernel editor is stricter: ordinary leaf targets must belong to allocator-eligible
+`Usable` memory and must not be registered as page tables. These checks protect the
+mapping engine itself rather than assuming every caller obeys the allocator contract.
+
+The physical-memory-offset alias used to initialize a frame is validated against the
+expected physical address and must be writable, supervisor-only, and non-executable.
+The supervisor-write-protection sentinel is data and is mapped NX. New executable
+mappings through the kernel editor currently fail closed because the persistent
+writable physical-memory alias cannot yet be removed or downgraded with complete
+reverse-alias accounting. This does **not** establish frame-wide W^X for all existing
+boot mappings; executable user pages remain unsupported until every writable alias
+(including kernel/direct-map and large-page aliases) can be accounted for and
+permission transitions are synchronized with TLB invalidation.
+
 ## Capability reference model
 
 The crates/oneos-core crate currently models an object ID, a set of rights, a generation-stamped capability, and revocation by generation change. Unit tests verify basic authorization decisions.
