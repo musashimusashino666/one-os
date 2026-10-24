@@ -13,7 +13,8 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
+    recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, AddressSpaceRoot,
     AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError, PAGE_SIZE,
 };
@@ -147,7 +148,7 @@ pub fn verify_root_initialization_smoke_test(
     boot_info: &BootInfo,
 ) -> Result<(), AddressSpaceError> {
     let recursive_index = match boot_info.recursive_index {
-        Optional::Some(index) if index < PML4_ENTRY_COUNT as u16 => index,
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => return Err(AddressSpaceError::InvalidRecursiveIndex),
         Optional::None => return Err(AddressSpaceError::RecursiveMappingUnavailable),
     };
@@ -475,7 +476,11 @@ fn entry_pointer_from_page(table_virtual_address: u64, index: usize) -> Option<*
         .checked_mul(size_of::<u64>() as u64)?;
     let address = table_virtual_address.checked_add(offset)?;
     let end = address.checked_add(size_of::<u64>() as u64 - 1)?;
-    if !is_canonical_4level(address) || !is_canonical_4level(end) || address & 7 != 0 {
+    if address == 0
+        || !is_canonical_4level(address)
+        || !is_canonical_4level(end)
+        || address & 7 != 0
+    {
         return None;
     }
     Some(usize::try_from(address).ok()? as *mut u64)
