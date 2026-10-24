@@ -289,6 +289,45 @@ impl<'a> FrameAllocator<'a> {
         Ok(())
     }
 
+    /// Returns whether an exact, aligned non-zero physical frame is currently allocated.
+    ///
+    /// Addresses outside managed usable segments, free frames, reserved regions,
+    /// and unaligned addresses all return false. This query does not prove that
+    /// the caller owns the allocation token; synchronization with mapping/freeing
+    /// remains the caller's responsibility.
+    pub fn is_frame_allocated(&self, physical_address: u64) -> bool {
+        if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+            return false;
+        }
+
+        for segment in &self.segments[..self.segment_count] {
+            let Some(segment_bytes) = u64::try_from(segment.frame_count)
+                .ok()
+                .and_then(|count| count.checked_mul(PAGE_SIZE))
+            else {
+                return false;
+            };
+            let Some(segment_end) = segment.physical_start.checked_add(segment_bytes) else {
+                return false;
+            };
+            if physical_address < segment.physical_start || physical_address >= segment_end {
+                continue;
+            }
+
+            let Ok(frame_offset) =
+                usize::try_from((physical_address - segment.physical_start) / PAGE_SIZE)
+            else {
+                return false;
+            };
+            let Some(index) = segment.bitmap_start.checked_add(frame_offset) else {
+                return false;
+            };
+            return index < self.total_frames && self.is_allocated(index);
+        }
+
+        false
+    }
+
     /// Returns the current number of usable and allocated frames.
     pub fn stats(&self) -> FrameAllocatorStats {
         FrameAllocatorStats {
@@ -422,6 +461,25 @@ mod tests {
             allocator.allocate_frame().err(),
             Some(FrameAllocatorError::Exhausted)
         );
+    }
+
+    #[test]
+    fn allocation_state_query_fails_closed_for_free_reserved_and_unaligned_frames() {
+        let regions = [(0x1000, 0x5000, true), (0x5000, 0x9000, false)];
+        let mut slots = [SLOT; 2];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        assert!(!allocator.is_frame_allocated(0x1000));
+        assert!(!allocator.is_frame_allocated(0x5000));
+        assert!(!allocator.is_frame_allocated(0x1001));
+        assert!(!allocator.is_frame_allocated(0));
+
+        let frame = allocator.allocate_frame().unwrap();
+        let address = frame.physical_address();
+        assert!(allocator.is_frame_allocated(address));
+        allocator.free_frame(frame).unwrap();
+        assert!(!allocator.is_frame_allocated(address));
     }
 
     #[test]
