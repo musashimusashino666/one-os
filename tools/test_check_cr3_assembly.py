@@ -138,6 +138,76 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("no instruction clearing CR4.PGE bit 7", message)
 
+    def test_accepts_mask_that_only_clears_pge_la57_and_pcide(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-135297, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertTrue(valid, message)
+
+    def test_rejects_zero_mask_that_destroys_all_cr4_bits(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $0, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_mask_that_clears_unrelated_cr4_bit(self):
+        # -385 clears PGE bit 7 and unrelated CR4 bit 8.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-385, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_32_bit_and_that_zero_extends_cr4_value(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %eax",
+                "andl $-129, %eax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_btr_mask_that_targets_an_unrelated_bit(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "btrq $8, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
     def test_rejects_missing_cr3_write(self):
         valid, message = validate_function_body(
             [
