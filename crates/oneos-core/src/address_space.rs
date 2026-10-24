@@ -855,7 +855,8 @@ mod tests {
         let root_address = root.physical_address();
         let active = unsafe { ActiveAddressSpaceRoot::from_activated(root, 510) };
 
-        let (active, error) = unsafe { active.into_inactive_after_switch(root_address) }.unwrap_err();
+        let (active, error) =
+            unsafe { active.into_inactive_after_switch(root_address) }.unwrap_err();
 
         assert_eq!(error, AddressSpaceRootDeactivationError::RootStillActive);
         assert_eq!(active.physical_address(), root_address);
@@ -886,7 +887,10 @@ mod tests {
 
         let (active, error) = unsafe { active.into_inactive_after_switch(0x7000) }.unwrap_err();
 
-        assert_eq!(error, AddressSpaceRootDeactivationError::RecursiveIndexMismatch);
+        assert_eq!(
+            error,
+            AddressSpaceRootDeactivationError::RecursiveIndexMismatch
+        );
         assert_eq!(active.physical_address(), root_address);
         assert_eq!(active.recursive_index(), 509);
         assert_eq!(active.root.recursive_index(), Some(510));
