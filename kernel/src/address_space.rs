@@ -14,7 +14,8 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
-    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
+    recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level,
     validate_kernel_root_activation_state, ActiveAddressSpaceRoot, AddressSpaceRoot,
     AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
     PagingPreconditionError, PAGE_SIZE,
@@ -1007,11 +1008,17 @@ impl KernelAddressSpaceRootEditor<'_> {
                 usize::from(self.recursive_index),
             )?)
         };
-        if !recursive_entry_matches_root(recursive_entry, self.kernel_root_physical)
-            || recursive_entry & WRITABLE == 0
-            || recursive_entry & USER_ACCESSIBLE != 0
-            || recursive_entry & PROTECTION_KEY_FIELD_MASK != 0
-        {
+        let valid_recursive_entry = if self.kernel_root_is_owned {
+            recursive_entry_is_valid_kernel_root(recursive_entry, self.kernel_root_physical)
+        } else {
+            // The bootloader-owned source root is allowed to use its original
+            // recursive-entry flags; the owned active kernel root must also set NX.
+            recursive_entry_matches_root(recursive_entry, self.kernel_root_physical)
+                && recursive_entry & WRITABLE != 0
+                && recursive_entry & USER_ACCESSIBLE == 0
+                && recursive_entry & PROTECTION_KEY_FIELD_MASK == 0
+        };
+        if !valid_recursive_entry {
             return None;
         }
         Some(pointer)
