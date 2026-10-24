@@ -15,8 +15,7 @@ use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, AddressSpaceRoot,
-    AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
-    PAGE_SIZE,
+    AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError, PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
@@ -110,8 +109,7 @@ pub fn verify_root_initialization_smoke_test(
     if maximum_extended_leaf < CPUID_PHYSICAL_ADDRESS_WIDTH {
         return Err(AddressSpaceError::InvalidPhysicalAddressWidth { bits: 0 });
     }
-    let physical_address_bits =
-        (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
+    let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
     if !(32..=52).contains(&physical_address_bits) {
         return Err(AddressSpaceError::InvalidPhysicalAddressWidth {
             bits: physical_address_bits,
@@ -129,8 +127,8 @@ pub fn verify_root_initialization_smoke_test(
         return Err(AddressSpaceError::InvalidKernelRoot);
     }
 
-    let frame = super::memory::allocate_frame()
-        .map_err(|_| AddressSpaceError::FrameAllocationFailed)?;
+    let frame =
+        super::memory::allocate_frame().map_err(|_| AddressSpaceError::FrameAllocationFailed)?;
     let mut root = match AddressSpaceRoot::try_from_frame(frame, physical_address_bits) {
         Ok(root) => root,
         Err((error, frame)) => {
@@ -230,18 +228,18 @@ impl KernelAddressSpaceRootEditor<'_> {
             return None;
         }
 
-        let alias = recursive_table_page_virtual_address(
-            self.recursive_index,
-            ROOT_ALIAS_TARGET,
-            4,
-        )?;
+        let alias =
+            recursive_table_page_virtual_address(self.recursive_index, ROOT_ALIAS_TARGET, 4)?;
         let pointer = entry_pointer_from_page(alias, 0)?;
         // SAFETY: the bootloader API promises that the reported recursive slot
         // maps the active PML4 to itself. The entry is checked immediately after
         // this read; as with the existing inspector, the first access relies on
         // that documented mapping contract.
         let recursive_entry = unsafe {
-            ptr::read_volatile(entry_pointer_from_page(alias, usize::from(self.recursive_index))?)
+            ptr::read_volatile(entry_pointer_from_page(
+                alias,
+                usize::from(self.recursive_index),
+            )?)
         };
         if !recursive_entry_matches_root(recursive_entry, self.kernel_root_physical)
             || recursive_entry & WRITABLE == 0
@@ -258,11 +256,7 @@ impl KernelAddressSpaceRootEditor<'_> {
         // alias, matching the precondition established by boot mapping inspection.
         let _validated_kernel_root = self.kernel_root_pointer()?;
         if !is_physical_page(self.root_physical, self.physical_address_bits)
-            || !is_region_page(
-                self.regions,
-                self.root_physical,
-                MemoryRegionKind::Usable,
-            )
+            || !is_region_page(self.regions, self.root_physical, MemoryRegionKind::Usable)
         {
             return None;
         }
@@ -369,11 +363,8 @@ fn translate_active_alias(
             return None;
         }
 
-        let table_virtual = recursive_table_page_virtual_address(
-            recursive_index,
-            virtual_address,
-            current_level,
-        )?;
+        let table_virtual =
+            recursive_table_page_virtual_address(recursive_index, virtual_address, current_level)?;
         let pointer = entry_pointer_from_page(table_virtual, index)?;
         // SAFETY: the current table frame has been verified as Bootloader-owned,
         // and the address is derived from the validated recursive mapping.
@@ -391,7 +382,9 @@ fn entry_pointer_from_page(table_virtual_address: u64, index: usize) -> Option<*
     {
         return None;
     }
-    let offset = u64::try_from(index).ok()?.checked_mul(size_of::<u64>() as u64)?;
+    let offset = u64::try_from(index)
+        .ok()?
+        .checked_mul(size_of::<u64>() as u64)?;
     let address = table_virtual_address.checked_add(offset)?;
     let end = address.checked_add(size_of::<u64>() as u64 - 1)?;
     if !is_canonical_4level(address) || !is_canonical_4level(end) || address & 7 != 0 {
