@@ -40,8 +40,9 @@ pub use page_table::{
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
     PageTableError, PageTranslation,
 };
+pub(crate) use page_table_mutation::map_4k;
 pub use page_table_mutation::{
-    map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+    unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
 };
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
