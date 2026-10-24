@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 
+ENTRY_STACKS_READY_MARKER = "CPU privilege-entry and emergency stacks configured"
 START_MARKER = "ONE OS kernel booted"
 COMPLETE_MARKER = "ONE OS BOOTSTRAP COMPLETE"
 ALLOCATOR_READY_MARKER = "ONE OS FRAME ALLOCATOR READY"
@@ -48,6 +49,11 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     start_index = log.find(START_MARKER)
     if start_index < 0:
         return False, f"Kernel startup marker missing: {START_MARKER}"
+    entry_stacks_index = log.find(ENTRY_STACKS_READY_MARKER)
+    if entry_stacks_index < 0:
+        return False, f"CPU privilege-entry stack marker missing: {ENTRY_STACKS_READY_MARKER}"
+    if entry_stacks_index > start_index:
+        return False, "CPU privilege-entry stacks were configured after kernel startup"
     complete_index = log.find(COMPLETE_MARKER)
     if complete_index < 0:
         return False, f"Bootstrap completion marker missing: {COMPLETE_MARKER}"
