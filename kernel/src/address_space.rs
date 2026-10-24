@@ -15,8 +15,9 @@ use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
-    AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
-    AddressSpaceRootInitializationError, PAGE_SIZE,
+    validate_kernel_root_activation_state, AddressSpaceRoot, AddressSpaceRootEditor,
+    AddressSpaceRootError, AddressSpaceRootInitializationError, PagingPreconditionError,
+    PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
@@ -30,6 +31,7 @@ const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const ROOT_ALIAS_TARGET: u64 = 0xffff_8000_0000_0000;
 const CPUID_MAX_EXTENDED_LEAF: u32 = 0x8000_0000;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
+const EFER_MSR: u32 = 0xc000_0080;
 
 /// A failure while constructing and checking an inactive address-space root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,7 +50,7 @@ pub enum AddressSpaceError {
     RootVerificationFailed { index: usize },
     RootZeroizationFailed { index: usize },
     KernelMappingNotInUpperHalf,
-    UnsupportedPcid,
+    PagingPrecondition(PagingPreconditionError),
     RootActivationFailed,
 }
 
@@ -141,9 +143,7 @@ impl AddressSpaceError {
             Self::KernelMappingNotInUpperHalf => {
                 b"Kernel code, stack, boot metadata, and physical-memory alias must use upper-half mappings before activation\n"
             }
-            Self::UnsupportedPcid => {
-                b"Address-space activation does not yet support CR4.PCIDE\n"
-            }
+            Self::PagingPrecondition(error) => error.message(),
             Self::RootActivationFailed => {
                 b"CR3 did not report the newly activated address-space root\n"
             }
@@ -279,7 +279,6 @@ pub fn activate_supervisor_kernel_root(
 ) -> Result<AddressSpaceRoot, AddressSpaceError> {
     const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
     const CR4_PGE: u64 = 1 << 7;
-    const CR4_PCIDE: u64 = 1 << 17;
 
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
@@ -291,16 +290,31 @@ pub fn activate_supervisor_kernel_root(
         Optional::None => return Err(AddressSpaceError::PhysicalMemoryOffsetUnavailable),
     };
 
+    let cr0: u64;
     let cr4: u64;
+    let efer_low: u32;
+    let efer_high: u32;
+    let rflags: u64;
     let stack_pointer: u64;
-    // SAFETY: CR4 and RSP are readable in the privileged x86_64 kernel.
+    // SAFETY: paging controls, EFER, RFLAGS, and RSP are readable in the
+    // privileged x86_64 kernel. These are re-read at the actual CR3-switch
+    // boundary rather than assumed from earlier initialization.
     unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
         asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
+        asm!("pushfq", "pop {}", out(reg) rflags, options(preserves_flags));
+        asm!(
+            "rdmsr",
+            in("ecx") EFER_MSR,
+            out("eax") efer_low,
+            out("edx") efer_high,
+            options(nomem, nostack, preserves_flags)
+        );
     }
-    if cr4 & CR4_PCIDE != 0 {
-        return Err(AddressSpaceError::UnsupportedPcid);
-    }
+    let efer = (u64::from(efer_high) << 32) | u64::from(efer_low);
+    validate_kernel_root_activation_state(cr0, cr4, efer, rflags)
+        .map_err(AddressSpaceError::PagingPrecondition)?;
 
     let code_address = activate_supervisor_kernel_root as *const () as usize as u64;
     let boot_info_address = boot_info as *const BootInfo as usize as u64;
