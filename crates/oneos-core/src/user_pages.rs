@@ -799,11 +799,17 @@ mod tests {
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let physical = frame.physical_address();
 
-        assert!(editor.frame_contents(physical).iter().any(|byte| *byte != 0));
+        assert!(editor
+            .frame_contents(physical)
+            .iter()
+            .any(|byte| *byte != 0));
         let zeroed = initialize_user_frame(frame, &mut editor).unwrap();
 
         assert_eq!(zeroed.physical_address(), physical);
-        assert!(editor.frame_contents(physical).iter().all(|byte| *byte == 0));
+        assert!(editor
+            .frame_contents(physical)
+            .iter()
+            .all(|byte| *byte == 0));
 
         allocator.free_frame(zeroed.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
@@ -824,7 +830,10 @@ mod tests {
 
         assert_eq!(error, UserFrameInitializationError::InitializationFailed);
         assert_eq!(returned.physical_address(), physical);
-        assert!(editor.frame_contents(physical).iter().any(|byte| *byte != 0));
+        assert!(editor
+            .frame_contents(physical)
+            .iter()
+            .any(|byte| *byte != 0));
         allocator.free_frame(returned).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
@@ -868,12 +877,18 @@ mod tests {
 
         // Model process A having written secret bytes to the user-writable frame.
         editor.fill_frame_contents(physical, 0x5a);
-        assert!(editor.frame_contents(physical).iter().all(|byte| *byte == 0x5a));
+        assert!(editor
+            .frame_contents(physical)
+            .iter()
+            .all(|byte| *byte == 0x5a));
 
         // Unmap returns only Frame; a new ZeroedFrame requires explicit reinitialization.
         let zeroed_for_b = initialize_user_frame(returned_frame, &mut editor).unwrap();
         assert_eq!(zeroed_for_b.physical_address(), physical);
-        assert!(editor.frame_contents(physical).iter().all(|byte| *byte == 0));
+        assert!(editor
+            .frame_contents(physical)
+            .iter()
+            .all(|byte| *byte == 0));
 
         map_user_data_page(
             &root_b,
@@ -885,16 +900,13 @@ mod tests {
         .unwrap();
         assert!(registry_b.is_mapped(virtual_b));
         let mut next_level = 4u8;
-        let mapped_frame = crate::translate_4level(
-            virtual_b,
-            root_b.physical_address(),
-            |table, index| {
+        let mapped_frame =
+            crate::translate_4level(virtual_b, root_b.physical_address(), |table, index| {
                 let level = next_level;
                 next_level = next_level.saturating_sub(1);
                 PageTableEditor::read_entry(&mut editor, table, index, level)
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(mapped_frame.physical_address, physical);
         assert!(editor
             .frame_contents(mapped_frame.physical_address)
