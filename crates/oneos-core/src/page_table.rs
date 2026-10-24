@@ -135,10 +135,7 @@ pub const fn recursive_entry_matches_root(entry: u64, root_table_physical: u64) 
 ///
 /// In addition to referencing the root frame, the entry must be writable,
 /// supervisor-only, non-executable, and must not carry a protection key.
-pub const fn recursive_entry_is_valid_kernel_root(
-    entry: u64,
-    root_table_physical: u64,
-) -> bool {
+pub const fn recursive_entry_is_valid_kernel_root(entry: u64, root_table_physical: u64) -> bool {
     recursive_entry_matches_root(entry, root_table_physical)
         && entry & WRITABLE != 0
         && entry & USER_ACCESSIBLE == 0
@@ -294,8 +291,7 @@ mod tests {
     use super::{
         is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
         recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
-        recursive_table_page_virtual_address, translate_4level,
-        PageTableError, PageTranslation,
+        recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
 
@@ -437,10 +433,22 @@ mod tests {
         let root = 0x1234_5000;
         let valid_entry = root | 1 | (1 << 1) | (1 << 63);
         assert!(recursive_entry_is_valid_kernel_root(valid_entry, root));
-        assert!(!recursive_entry_is_valid_kernel_root(valid_entry & !(1 << 63), root));
-        assert!(!recursive_entry_is_valid_kernel_root(valid_entry | (1 << 2), root));
-        assert!(!recursive_entry_is_valid_kernel_root(valid_entry & !(1 << 1), root));
-        assert!(!recursive_entry_is_valid_kernel_root(valid_entry | (1 << 59), root));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry & !(1 << 63),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry | (1 << 2),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry & !(1 << 1),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry | (1 << 59),
+            root
+        ));
     }
 
     #[test]
