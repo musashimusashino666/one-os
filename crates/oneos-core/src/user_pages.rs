@@ -520,6 +520,7 @@ mod tests {
             contents: [0; PAGE_SIZE as usize],
         };
     }
+
     struct TestEditor {
         tables: [TestTable; 9],
         data_frame: u64,
@@ -555,7 +556,9 @@ mod tests {
                 frame_memory: [TestFrameMemory::EMPTY; TEST_FRAME_MEMORY_SLOTS],
                 fail_zeroing: false,
             };
-            editor.ensure_frame_memory(data_frame).expect("test data frame must fit the memory model");
+            editor
+                .ensure_frame_memory(data_frame)
+                .expect("test data frame must fit the memory model");
             editor.set_entry(0x1000, 511, 0x1000 | PRESENT | WRITABLE);
             editor
         }
@@ -564,27 +567,38 @@ mod tests {
             if physical_address == 0 {
                 return None;
             }
-            if let Some(index) = self.frame_memory.iter().position(|frame| frame.physical_address == physical_address) {
+            if let Some(index) = self
+                .frame_memory
+                .iter()
+                .position(|frame| frame.physical_address == physical_address)
+            {
                 return Some(index);
             }
-            let index = self.frame_memory.iter().position(|frame| frame.physical_address == 0)?;
+            let index = self
+                .frame_memory
+                .iter()
+                .position(|frame| frame.physical_address == 0)?;
             self.frame_memory[index].physical_address = physical_address;
             self.frame_memory[index].contents.fill(0xa5);
             Some(index)
         }
 
         fn frame_contents(&self, physical_address: u64) -> &[u8; PAGE_SIZE as usize] {
-            &self.frame_memory.iter()
+            &self
+                .frame_memory
+                .iter()
                 .find(|frame| frame.physical_address == physical_address)
                 .expect("the physical frame must exist in the test memory model")
                 .contents
         }
 
         fn fill_frame_contents(&mut self, physical_address: u64, value: u8) {
-            let index = self.ensure_frame_memory(physical_address)
+            let index = self
+                .ensure_frame_memory(physical_address)
                 .expect("test memory model capacity must cover the allocated frames");
             self.frame_memory[index].contents.fill(value);
         }
+
         fn set_entry(&mut self, table: u64, index: usize, value: u64) {
             self.tables
                 .iter_mut()
@@ -870,13 +884,21 @@ mod tests {
         .unwrap();
         assert!(registry_b.is_mapped(virtual_b));
         let mut next_level = 4u8;
-        let mapped_frame = crate::translate_4level(virtual_b, root_b.physical_address(), |table, index| {
-            let level = next_level;
-            next_level = next_level.saturating_sub(1);
-            PageTableEditor::read_entry(&mut editor, table, index, level)
-        }).unwrap();
+        let mapped_frame = crate::translate_4level(
+            virtual_b,
+            root_b.physical_address(),
+            |table, index| {
+                let level = next_level;
+                next_level = next_level.saturating_sub(1);
+                PageTableEditor::read_entry(&mut editor, table, index, level)
+            },
+        )
+        .unwrap();
         assert_eq!(mapped_frame.physical_address, physical);
-        assert!(editor.frame_contents(mapped_frame.physical_address).iter().all(|byte| *byte == 0));
+        assert!(editor
+            .frame_contents(mapped_frame.physical_address)
+            .iter()
+            .all(|byte| *byte == 0));
 
         let (_, returned_frame) =
             unmap_user_data_page(&root_b, virtual_b, &mut registry_b, &mut editor).unwrap();
