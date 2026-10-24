@@ -101,7 +101,7 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         marker_lines = [line for line in log.splitlines() if line.startswith(label)]
         if len(marker_lines) != 1:
             return None, f"expected exactly one '{label}' field, found {len(marker_lines)}"
-        match = re.fullmatch(rf"{re.escape(label)}: (0x[0-9a-fA-F]{16})", marker_lines[0])
+        match = re.fullmatch(rf"{re.escape(label)}: (0x[0-9a-fA-F]{{16}})", marker_lines[0])
         if match is None:
             return None, f"malformed '{label}' diagnostic field"
         return match.group(1).lower(), None
