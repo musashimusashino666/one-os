@@ -177,9 +177,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_init();
     }
 
-    // SAFETY: bootstrap is single-core, interrupts remain disabled, and the
-    // IDT/TSS/GDT setup is performed exactly once before entering the kernel loop.
-    unsafe { interrupts::init() };
+    // SAFETY: bootstrap is single-core; init verifies that maskable interrupts
+    // are disabled, validates the current RSP against BootInfo's stack interval,
+    // and fails closed if the one-time IDT/TSS/GDT setup is repeated.
+    unsafe {
+        interrupts::init(boot_info.kernel_stack_bottom, boot_info.kernel_stack_len)
+    };
 
     // Validate physical memory ranges before reporting a successful boot.
     let region_count = boot_info.memory_regions.len();
