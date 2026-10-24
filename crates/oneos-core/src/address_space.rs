@@ -593,10 +593,10 @@ fn validate_root_frame_address(
 mod tests {
     use super::{
         validate_deactivation_root, validate_root_frame_address, validate_user_virtual_range,
-        AddressSpaceRoot, AddressSpaceRootDeactivationError, AddressSpaceRootEditor,
-        AddressSpaceRootError, AddressSpaceRootInitializationError, UserVirtualRangeError,
-        LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE, USER_VIRTUAL_ADDRESS_LIMIT,
-        WRITABLE,
+        ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootDeactivationError,
+        AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
+        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
+        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
@@ -830,6 +830,95 @@ mod tests {
         let kernel_address = kernel_frame.physical_address();
         let root = AddressSpaceRoot::try_from_frame(root_frame, 32).unwrap();
         (root, kernel_address, kernel_frame)
+    }
+
+    fn initialized_test_root(allocator: &mut FrameAllocator<'_>) -> (AddressSpaceRoot, Frame) {
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 511, kernel_address | PRESENT | WRITABLE);
+        root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor)
+            .unwrap();
+        (root, kernel_frame)
+    }
+
+    // These host tests exercise the ownership API's defensive result paths only.
+    // They do not execute privileged instructions or claim to verify a hardware CR3 switch.
+    #[allow(unsafe_code)]
+    #[test]
+    fn into_inactive_after_switch_rejects_same_root_and_preserves_active_handle() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (root, kernel_frame) = initialized_test_root(&mut allocator);
+        let root_address = root.physical_address();
+        let active = unsafe { ActiveAddressSpaceRoot::from_activated(root, 510) };
+
+        let (active, error) = unsafe { active.into_inactive_after_switch(root_address) }.unwrap_err();
+
+        assert_eq!(error, AddressSpaceRootDeactivationError::RootStillActive);
+        assert_eq!(active.physical_address(), root_address);
+        assert_eq!(active.recursive_index(), 510);
+        assert_eq!(allocator.stats().allocated_frames, 2);
+
+        let ActiveAddressSpaceRoot { root, .. } = active;
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    // Construct an inconsistent internal handle to exercise the API's mismatch guard.
+    // Such a handle cannot be created through a valid production activation path.
+    #[allow(unsafe_code)]
+    #[test]
+    fn into_inactive_after_switch_rejects_recursive_index_mismatch_and_preserves_handle() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (root, kernel_frame) = initialized_test_root(&mut allocator);
+        let root_address = root.physical_address();
+        let active = ActiveAddressSpaceRoot {
+            root,
+            recursive_index: 509,
+        };
+
+        let (active, error) = unsafe { active.into_inactive_after_switch(0x7000) }.unwrap_err();
+
+        assert_eq!(error, AddressSpaceRootDeactivationError::RecursiveIndexMismatch);
+        assert_eq!(active.physical_address(), root_address);
+        assert_eq!(active.recursive_index(), 509);
+        assert_eq!(active.root.recursive_index(), Some(510));
+        assert_eq!(allocator.stats().allocated_frames, 2);
+
+        let ActiveAddressSpaceRoot { root, .. } = active;
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[allow(unsafe_code)]
+    #[test]
+    fn into_inactive_after_switch_returns_original_root_on_success() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (root, kernel_frame) = initialized_test_root(&mut allocator);
+        let root_address = root.physical_address();
+        let active = unsafe { ActiveAddressSpaceRoot::from_activated(root, 510) };
+
+        let inactive = unsafe { active.into_inactive_after_switch(0x7000) }.unwrap();
+
+        assert_eq!(inactive.physical_address(), root_address);
+        assert_eq!(inactive.recursive_index(), Some(510));
+        assert!(inactive.is_initialized());
+        assert_eq!(allocator.stats().allocated_frames, 2);
+
+        allocator.free_frame(inactive.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
     #[test]
