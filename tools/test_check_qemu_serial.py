@@ -17,6 +17,8 @@ MUTATION_FAILED = "ONE OS PAGING MUTATION FAILED"
 ADDRESS_SPACE_READY = "ONE OS ADDRESS SPACE ROOT INITIALIZATION READY"
 ADDRESS_SPACE_FAILED = "ONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED"
 ACTIVATION_READY = "ONE OS KERNEL ADDRESS SPACE ACTIVATED"
+SWITCH_READY = "ONE OS ADDRESS SPACE SWITCH PASS"
+SWITCH_FAILED = "ONE OS ADDRESS SPACE SWITCH FAILED"
 USER_FRAME_TEST_LOG = (
     "ONE OS USER FRAME ZERO TEST RECURSIVE INDEX: 0x00000000000001fe\n"
     "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n"
@@ -30,17 +32,47 @@ EXCEPTION = "ONE OS EXCEPTION"
 
 class ValidateSerialOutputTests(unittest.TestCase):
     def test_healthy_boot_marker_and_expected_timeout_pass(self):
-        valid, _ = validate_serial_output(f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n", 124)
+        valid, _ = validate_serial_output(f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n", 124)
         self.assertTrue(valid)
 
+    def test_missing_runtime_address_space_switch_marker_fails(self):
+        log = (
+            f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n"
+            f"{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n"
+            f"{USER_FRAME_TEST_LOG}{COMPLETE}\n"
+        )
+        valid, reason = validate_serial_output(log, 124)
+        self.assertFalse(valid)
+        self.assertIn("runtime address-space switch success marker", reason.lower())
+
+    def test_duplicate_runtime_address_space_switch_marker_fails(self):
+        log = (
+            f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n"
+            f"{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n"
+            f"{SWITCH_READY}\n{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
+        )
+        valid, reason = validate_serial_output(log, 124)
+        self.assertFalse(valid)
+        self.assertIn("exactly one exact runtime address-space switch", reason.lower())
+
+    def test_runtime_address_space_switch_failure_marker_fails(self):
+        log = (
+            f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n"
+            f"{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n"
+            f"{SWITCH_READY}\n{SWITCH_FAILED}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
+        )
+        valid, reason = validate_serial_output(log, 124)
+        self.assertFalse(valid)
+        self.assertIn("runtime address-space switch failure marker", reason.lower())
+
     def test_missing_post_activation_user_frame_zeroing_fails(self):
-        log = f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n"
+        log = f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{COMPLETE}\n"
         valid, reason = validate_serial_output(log, 124)
         self.assertFalse(valid)
         self.assertIn("user frame zero test recursive index", reason.lower())
 
     def test_post_activation_recursive_index_must_be_upper_half(self):
-        log = f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
+        log = f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
         log = log.replace(
             "ONE OS USER FRAME ZERO TEST RECURSIVE INDEX: 0x00000000000001fe",
             "ONE OS USER FRAME ZERO TEST RECURSIVE INDEX: 0x0000000000000008",
@@ -50,7 +82,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
         self.assertIn("upper-half recursive index", reason)
 
     def test_post_activation_user_frame_test_must_follow_cr3_switch(self):
-        log = f"{ENTRY_STACKS_READY}\n{START}\n{USER_FRAME_TEST_LOG}{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n"
+        log = f"{ENTRY_STACKS_READY}\n{START}\n{USER_FRAME_TEST_LOG}{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{COMPLETE}\n"
         valid, reason = validate_serial_output(log, 124)
         self.assertFalse(valid)
         self.assertIn("follow CR3 activation", reason)
@@ -91,7 +123,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
 
     def test_missing_entry_stack_marker_fails(self):
-        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n", 124)
+        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{COMPLETE}\n", 124)
         self.assertFalse(valid)
         self.assertIn("privilege-entry stack marker missing", reason.lower())
 
@@ -109,7 +141,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
         self.assertIn("allocator failure marker", reason.lower())
 
     def test_clean_exit_is_not_accepted_as_expected_halt(self):
-        valid, reason = validate_serial_output(f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n", 0)
+        valid, reason = validate_serial_output(f"{ENTRY_STACKS_READY}\n{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n", 0)
         self.assertFalse(valid)
         self.assertIn("expected 124", reason.lower())
 
@@ -159,7 +191,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_kernel_address_space_activation_failure_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{ENTRY_STACKS_READY}\n{START}\n{ACTIVATION_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n",
+            f"{ENTRY_STACKS_READY}\n{START}\n{ACTIVATION_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{COMPLETE}\n",
             124,
         )
         self.assertFalse(valid)
@@ -167,7 +199,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_address_space_root_failure_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{ENTRY_STACKS_READY}\n{START}\n{ADDRESS_SPACE_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n",
+            f"{ENTRY_STACKS_READY}\n{START}\n{ADDRESS_SPACE_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n{COMPLETE}\n",
             124,
         )
         self.assertFalse(valid)
