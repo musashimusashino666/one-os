@@ -63,7 +63,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
 
     def test_missing_entry_stack_marker_fails(self):
-        valid, reason = validate_serial_output(f"{START}\\n{ALLOCATOR_READY}\\n{PAGING_READY}\\n{MUTATION_READY}\\n{ADDRESS_SPACE_READY}\\n{ACTIVATION_READY}\\n{COMPLETE}\\n", 124)
+        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n", 124)
         self.assertFalse(valid)
         self.assertIn("privilege-entry stack marker missing", reason.lower())
 
