@@ -429,20 +429,21 @@ pub fn activate_supervisor_kernel_root(
         return Err(error);
     }
 
-    // Flush global translations explicitly if PGE was active. A CR3 write then
-    // flushes non-global translations for the old root. PCID is rejected above
-    // because its tagged-TLB behavior is outside this bootstrap contract.
-    if cr4 & CR4_PGE != 0 {
-        let cr4_without_pge = cr4 & !CR4_PGE;
-        // SAFETY: PGE may be toggled by the privileged kernel; disabling it
-        // flushes global translations before the root switch.
-        unsafe {
-            asm!(
-                "mov cr4, {}",
-                in(reg) cr4_without_pge,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
+    // Always make the PGE-disabled state explicit before writing CR3.
+    // This keeps the switch contract uniform even when PGE was already clear:
+    // CR4.PGE is cleared, CR3 is written, and the original CR4 is restored on
+    // every successful switch path. PCID is rejected above because its tagged
+    // TLB behavior is outside this bootstrap contract.
+    let cr4_without_pge = cr4 & !CR4_PGE;
+    // SAFETY: PGE may be toggled by the privileged kernel; disabling it
+    // flushes global translations before the root switch. Writing the same
+    // value when PGE was already clear is harmless and simplifies verification.
+    unsafe {
+        asm!(
+            "mov cr4, {}",
+            in(reg) cr4_without_pge,
+            options(nomem, nostack, preserves_flags)
+        );
     }
     // This asm intentionally omits `nomem`: changing CR3 is a compiler
     // memory-ordering boundary. Keep page-table initialization and all memory
@@ -456,16 +457,15 @@ pub fn activate_supervisor_kernel_root(
             options(nostack, preserves_flags)
         );
     }
-    if cr4 & CR4_PGE != 0 {
-        // SAFETY: restore the original paging-feature configuration after CR3
-        // has switched and all old global translations have been flushed.
-        unsafe {
-            asm!(
-                "mov cr4, {}",
-                in(reg) cr4,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
+    // SAFETY: restore the original paging-feature configuration after CR3
+    // has switched and all old global translations have been flushed. This is
+    // unconditional so every successful CR3 write has a matching restoration.
+    unsafe {
+        asm!(
+            "mov cr4, {}",
+            in(reg) cr4,
+            options(nomem, nostack, preserves_flags)
+        );
     }
 
     if active_root_table_physical() != root_physical {
