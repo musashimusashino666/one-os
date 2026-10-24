@@ -159,6 +159,10 @@ pub struct UnmappedPage {
 /// one walk are rejected to prevent recursive/cyclic references from being
 /// mistaken for ordinary levels.
 ///
+/// The leaf target may not be the root, a reserved frame, or a known page-table
+/// frame. Executable mappings additionally require the editor to prove that
+/// frame-wide W^X can be preserved; unknown writable-alias state fails closed.
+///
 /// The caller must enable CR0.WP on every CPU that uses these tables if
 /// read-only mappings are expected to block supervisor-mode writes. EFER.NXE
 /// must be enabled before using non-executable mappings. This function does not
@@ -969,6 +973,39 @@ mod tests {
             Err(PageTableMutationError::UserAddressOutsideUserHalf)
         );
         assert_eq!(tables.pages.len(), 1);
+    }
+
+    #[test]
+    fn rejects_a_registered_unpublished_frame_as_a_leaf_target() {
+        let root = 0x1000;
+        let mut tables = RegistryTestTables::<4>::new(root);
+        let slot = tables.registry.reserve_slot().unwrap();
+        tables
+            .registry
+            .install_reserved(
+                slot,
+                RegistryTestFrame {
+                    physical_address: 0x9000,
+                    token_id: 99,
+                },
+            )
+            .unwrap();
+
+        assert!(!tables.pages.contains_key(&0x9000));
+        assert!(tables.registry.contains_unpublished(0x9000));
+        assert_eq!(
+            map_4k(
+                root,
+                0x4000,
+                0x9000,
+                PagePermissions::new(true, false, false),
+                &mut tables,
+            ),
+            Err(PageTableMutationError::MappedFrameIsReserved)
+        );
+        assert_eq!(tables.pages.len(), 1);
+        assert!(tables.registry.contains_unpublished(0x9000));
+        assert_eq!(tables.allocation_attempts, 0);
     }
 
     #[test]
