@@ -3,7 +3,7 @@
 //! This smoke test connects the host-testable AddressSpaceRoot initializer to
 //! the bootloader's recursive mapping and the checked physical-memory offset.
 //! It never switches CR3 and never publishes the new root to a running context.
-//! The new root is released only after the complete root frame has been verified.
+//! The new root is verified and zeroed before its frame can return to the allocator.
 
 use core::arch::asm;
 use core::arch::x86_64::__cpuid;
@@ -46,6 +46,7 @@ pub enum AddressSpaceError {
     RootTableUnavailable,
     NoUnusedRecursiveIndex,
     RootVerificationFailed { index: usize },
+    RootZeroizationFailed { index: usize },
 }
 
 impl AddressSpaceError {
@@ -134,6 +135,9 @@ impl AddressSpaceError {
             Self::RootVerificationFailed { .. } => {
                 b"Address-space root contents did not match the initialization contract\n"
             }
+            Self::RootZeroizationFailed { .. } => {
+                b"Address-space root could not be zeroed before frame release\n"
+            }
         }
     }
 }
@@ -201,16 +205,22 @@ pub fn verify_root_initialization_smoke_test(
         destination_root_pointer: None,
     };
 
-    if !editor.table_is_readable(kernel_root_physical)
-        || !editor.table_is_read_write_accessible(root_physical)
-    {
-        release_frame(root.into_frame())?;
+    let kernel_root_readable = editor.table_is_readable(kernel_root_physical);
+    let destination_root_writable = editor.table_is_read_write_accessible(root_physical);
+    if !kernel_root_readable || !destination_root_writable {
+        if destination_root_writable {
+            clear_and_release_root(root, &mut editor, root_physical)?;
+        } else {
+            // The destination frame could not be safely accessed for zeroization.
+            // Keep it allocated rather than recycle potentially stale contents.
+            core::mem::forget(root.into_frame());
+        }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
     let root_recursive_index = match editor.select_root_recursive_index() {
         Ok(index) => index,
         Err(error) => {
-            release_frame(root.into_frame())?;
+            clear_and_release_root(root, &mut editor, root_physical)?;
             return Err(error);
         }
     };
@@ -234,9 +244,10 @@ pub fn verify_root_initialization_smoke_test(
         Ok(())
     };
 
-    // The root has never been active and no child tables were allocated. It
-    // can therefore be returned to the allocator after all checks complete.
-    release_frame(root.into_frame())?;
+    // The root has never been active and no child tables were allocated. Clear
+    // every entry (including on initialization/verification errors) before the
+    // frame is made available to another caller of the allocator.
+    clear_and_release_root(root, &mut editor, root_physical)?;
     initialization.map_err(AddressSpaceError::RootInitialization)?;
     verification?;
     Ok(())
@@ -270,6 +281,35 @@ fn verify_initialized_entries(
         }
     }
 
+    Ok(())
+}
+
+/// Clears and verifies the entire PML4 frame before releasing its ownership token.
+/// If zeroization fails, the frame is deliberately leaked rather than recycled.
+fn clear_and_release_root(
+    root: AddressSpaceRoot,
+    editor: &mut KernelAddressSpaceRootEditor<'_>,
+    root_physical: u64,
+) -> Result<(), AddressSpaceError> {
+    if let Err(error) = clear_root_entries(editor, root_physical) {
+        core::mem::forget(root.into_frame());
+        return Err(error);
+    }
+    release_frame(root.into_frame())
+}
+
+fn clear_root_entries(
+    editor: &mut KernelAddressSpaceRootEditor<'_>,
+    root_physical: u64,
+) -> Result<(), AddressSpaceError> {
+    for index in 0..PML4_ENTRY_COUNT {
+        editor.write_entry(root_physical, index, 4, 0);
+    }
+    for index in 0..PML4_ENTRY_COUNT {
+        if editor.read_entry(root_physical, index, 4) != Some(0) {
+            return Err(AddressSpaceError::RootZeroizationFailed { index });
+        }
+    }
     Ok(())
 }
 
