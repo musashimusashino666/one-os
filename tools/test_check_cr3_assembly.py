@@ -27,6 +27,7 @@ class ActivationAssemblyTests(unittest.TestCase):
     def test_finds_activation_function_in_optimized_assembly(self):
         source = assembly_with(
             "    movq %cr4, %rbx\n"
+            "    movq %rbx, %rax\n"
             "    andq $-131201, %rax\n"
             "    movq %rax, %r11\n"
             "    movq %r11, %cr4\n"
@@ -70,7 +71,8 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_function_body(
             [
                 "movq %cr4, %rbx",
-                "andq $-129, %rax",
+                "movq %rbx, %rax",
+                "andq $-131201, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr4",
                 "movq %r12, %cr3",
@@ -83,6 +85,7 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_function_body(
             [
                 "movq %cr4, %rbx",
+                "movq %rbx, %rax",
                 "andq $-1, %rax",
                 "movq %rax, %cr4",
                 "movq %r12, %cr3",
@@ -90,11 +93,13 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("PGE-cleared value did not reach a CR4 write", message)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
 
     def test_rejects_missing_cr3_write(self):
         valid, message = validate_function_body(
             [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
                 "andq $-129, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr4",
@@ -107,6 +112,7 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_function_body(
             [
                 "mov rbx, cr4",
+                "mov rax, rbx",
                 "and rax, -129",
                 "mov cr4, rax",
                 "mov cr3, r12",
@@ -132,6 +138,8 @@ class ActivationAssemblyTests(unittest.TestCase):
     def test_rejects_restore_from_masked_value(self):
         valid, message = validate_function_body(
             [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
                 "andq $-129, %rax",
                 "movq %rax, %cr4",
                 "movq %r12, %cr3",
