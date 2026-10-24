@@ -22,6 +22,7 @@ use oneos_core::{
 
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
+const ACCESSED: u64 = 1 << 5;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -905,7 +906,13 @@ fn verify_initialized_entries(
                 .read_entry(kernel_root_physical, index, 4)
                 .ok_or(AddressSpaceError::RootTableUnavailable)?
         };
-        if editor.read_entry(root_physical, index, 4) != Some(expected) {
+        let observed = editor
+            .read_entry(root_physical, index, 4)
+            .ok_or(AddressSpaceError::RootTableUnavailable)?;
+        // The processor sets the PML4 Accessed bit as it walks either root.
+        // Treat only that hardware-maintained bit as mutable; continue requiring
+        // every address and permission bit to match the expected entry.
+        if observed & !ACCESSED != expected & !ACCESSED {
             return Err(AddressSpaceError::RootVerificationFailed { index });
         }
     }
