@@ -13,13 +13,12 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index,
-    map_supervisor_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k,
-    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
-    validate_paging_cpu_capabilities, Frame, FrameRegistryError, PagePermissions,
-    PageTableEditor, PageTableError, PageTableFrameRegistry, PageTableMutationError,
-    PageTranslation, PagingPreconditionError, UserFrameInitializationError,
+    initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
+    physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
+    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
+    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, UserFrameInitializationError,
     UserFrameInitializer, PAGE_SIZE,
 };
 
@@ -706,8 +705,7 @@ impl<'a> KernelPageTableEditor<'a> {
         // Prove that the physical-memory offset actually maps this complete
         // Usable frame to the expected physical page and permits supervisor
         // writes before zeroing an unpublished page-table frame.
-        let translation =
-            translate_with_editor(self, self.root_table_physical, address).ok()?;
+        let translation = translate_with_editor(self, self.root_table_physical, address).ok()?;
         if translation.physical_address != physical_address
             || !translation.writable
             || translation.user_accessible
