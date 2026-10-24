@@ -54,11 +54,19 @@ mappings, complete the required TLB invalidation, and only then make resources
 reusable.
 
 The safe user-data mapping helper accepts only `ZeroedFrame`, not a raw allocator
-`Frame`. A kernel-backed initializer must validate a writable supervisor-only
-alias, zero and verify the entire frame before constructing that token, and return
-ownership unchanged on failure. The current core abstraction and host tests do not
-mean this initializer is already connected to a live user process. Do not publish
-user mappings until the kernel implementation and QEMU acceptance path exist.
+`Frame`. The kernel-backed `KernelUserFrameInitializer` validates the active CR3
+root's recursive self-map, frame allocation/ownership state, and the complete
+physical-memory-offset translation; the alias must be writable, supervisor-only,
+and NX. It clears and reads back all 4096 bytes before `initialize_user_frame`
+can produce the token, and initialization errors preserve the caller's frame token.
+The existing VM-transition QEMU image now exercises this adapter with a dirty
+allocated frame and requires the dirty address and returned `ZeroedFrame` address
+to match.
+
+This bootstrap integration test does not expose a page to Ring 3 and does not
+prove cross-process isolation. Keep live user-page publication disabled until
+address-space construction, the real user mapping API integration, map/unmap/reuse
+tests, and adversarial isolation tests pass on the exact reviewed commit.
 
 ## Security invariants
 
