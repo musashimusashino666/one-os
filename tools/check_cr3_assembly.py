@@ -112,34 +112,36 @@ def _control_register_write_source(raw_line: str, register: str) -> str | None:
 
 
 def _pge_clear_destination(raw_line: str) -> str | None:
-    """Return the GPR modified by an instruction that clears CR4.PGE bit 7."""
+    """Return the GPR modified by an AND/BTR that clears CR4.PGE bit 7."""
     parsed = _instruction(raw_line)
     if parsed is None:
         return None
     mnemonic, operands = parsed
-    joined = ", ".join(operands).lower()
 
     clears_pge = False
     if re.fullmatch(r"and(?:b|w|l|q)?", mnemonic):
-        clears_pge = bool(
-            re.search(r"(?<![\w])(?:\$)?-129(?!\d)", joined)
-            or re.search(r"0x0*ffffffffffffff7f\b", joined)
-            or re.search(r"18446744073709551487\b", joined)
-        )
+        # Compilers may combine adjacent facts. In this routine, PCIDE was
+        # already proven clear, so LLVM can combine !CR4_PGE and !CR4_PCIDE
+        # into a single immediate such as -131201. Accept any parsed AND
+        # immediate whose bit 7 is zero, not only the literal -129.
+        for operand in operands:
+            token = operand.strip().lstrip("$")
+            try:
+                mask = int(token, 0)
+            except ValueError:
+                continue
+            if mask & (1 << 7) == 0:
+                clears_pge = True
+                break
     elif re.fullmatch(r"btr(?:b|w|l|q)?", mnemonic):
-        clears_pge = bool(re.search(r"(?:\$)?7\b", joined))
+        clears_pge = bool(re.search(r"(?:\$)?7\b", ", ".join(operands)))
 
     if not clears_pge:
         return None
     destination = _destination(operands)
     if destination is None:
         return None
-    register = _operand_register(destination)
-    return register
-
-
-def _is_control_register(operand: str, register: str) -> bool:
-    return _register_name(operand) == register
+    return _operand_register(destination)
 
 
 def _clobbered_gpr(raw_line: str) -> str | None:
@@ -274,6 +276,8 @@ def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
         return False, "expected separate CR4 asm blocks for PGE disable and restore"
     if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", blocks[0]):
         return False, "first CR4 write must use the PGE-cleared cr4_without_pge value"
+    if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
+        return False, "cr4_without_pge must be derived from cr4 with CR4_PGE cleared"
     if not re.search(r"\bin\(reg\)\s+cr4\b", blocks[1]):
         return False, "second CR4 write must restore the original cr4 value"
     return True, "source CR4 writes disable PGE and restore the original CR4 value"
@@ -305,6 +309,9 @@ def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
             errors.append(f"{path}: {symbol}: {message}\n--- activation function body ---\n" + "\n".join(body) + "\n--- end activation function body ---")
         else:
             print(f"PASS: {path}: {symbol}: {message}")
+            for index, line in enumerate(body):
+                if re.search(r"\bcr[34]\b", line) or _pge_clear_destination(line) is not None:
+                    print(f"ASM[{index:04d}]: {line.strip()}")
 
     return not errors, errors
 
