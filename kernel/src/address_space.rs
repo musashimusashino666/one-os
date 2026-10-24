@@ -15,8 +15,9 @@ use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
-    validate_kernel_root_activation_state, AddressSpaceRoot, AddressSpaceRootEditor,
-    AddressSpaceRootError, AddressSpaceRootInitializationError, PagingPreconditionError, PAGE_SIZE,
+    validate_kernel_root_activation_state, ActiveAddressSpaceRoot, AddressSpaceRoot,
+    AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
+    PagingPreconditionError, PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
@@ -275,7 +276,7 @@ pub fn verify_root_initialization_smoke_test(
 /// to remain disabled, as established by kernel_main.
 pub fn activate_supervisor_kernel_root(
     boot_info: &BootInfo,
-) -> Result<AddressSpaceRoot, AddressSpaceError> {
+) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
     const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
     const CR4_PGE: u64 = 1 << 7;
 
@@ -475,7 +476,10 @@ pub fn activate_supervisor_kernel_root(
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    Ok(root)
+    // SAFETY: CR3 readback above matched root_physical. This is the architecture
+    // layer's successful activation boundary; it retains the root token rather
+    // than exposing it for allocator reuse.
+    Ok(unsafe { ActiveAddressSpaceRoot::from_activated(root) })
 }
 
 fn is_kernel_half_address(address: u64, kernel_half_start: u64) -> bool {

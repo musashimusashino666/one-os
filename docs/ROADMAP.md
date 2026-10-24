@@ -33,6 +33,9 @@ Exit criteria: allocator, ownership-registry, registry-backed mutation rollback,
 
 ## M2 — Isolation and IPC
 
+- [x] Prevent the normal CR3 activation path from returning an active root through the releasable inactive-root type; retain it as `ActiveAddressSpaceRoot`.
+- [x] Require a `ZeroedFrame` token for the safe host-testable user-data mapping API and test zeroing/failure ownership contracts.
+- [ ] Implement and QEMU-test a kernel-backed zeroing adapter using a validated supervisor-only writable alias before wiring user-data mappings into a live user address space.
 - [x] Define the implementation contract and adversarial acceptance plan in [ISOLATION_PLAN.md](ISOLATION_PLAN.md). This document specifies the required invariants and test criteria; it does not mean the isolation features are implemented.
 - [ ] Add host-testable address-space construction, validation, switching, and teardown primitives that preserve frame ownership and fail-closed rollback.
 - [ ] Implement a kernel-controlled ring 3 entry/return path with validated registers, selectors, user stack, and a kernel entry stack.

@@ -150,13 +150,78 @@ impl AddressSpaceRoot {
         Ok(())
     }
 
-    /// Consumes the handle and returns its allocator ownership token.
+    /// Consumes an inactive root and returns its allocator ownership token.
     ///
-    /// The caller is responsible for proving that the address space is no
-    /// longer active and that all child tables and TLB references have been
-    /// handled before releasing the returned token.
+    /// This operation is available only for the inactive-root type. A root
+    /// returned by the kernel's CR3 activation path is represented by
+    /// `ActiveAddressSpaceRoot`, which intentionally exposes no release API.
+    /// The caller must still prove that child tables and TLB references have
+    /// been handled before returning the token to the allocator.
     pub fn into_frame(self) -> Frame {
         self.frame
+    }
+}
+
+/// A root that the kernel has activated in CR3.
+///
+/// Unlike `AddressSpaceRoot`, this type does not expose the root frame token
+/// and has no conversion back to an inactive root. Dropping this handle leaks
+/// the frame token by design; the allocator therefore continues to regard the
+/// active root frame as allocated rather than recycling memory still used by
+/// hardware.
+///
+/// This wrapper records a kernel-established state transition. It is not a
+/// substitute for synchronizing a CR3 switch with other CPUs; the initial
+/// implementation remains single-CPU.
+///
+/// The active handle deliberately has no `into_frame` method and cannot be
+/// constructed through a safe call:
+///
+/// ```compile_fail
+/// use oneos_core::{ActiveAddressSpaceRoot, AddressSpaceRoot};
+///
+/// fn fabricate_active_root(root: AddressSpaceRoot) {
+///     let _active = ActiveAddressSpaceRoot::from_activated(root);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use oneos_core::ActiveAddressSpaceRoot;
+///
+/// fn release_active_root(root: ActiveAddressSpaceRoot) {
+///     let _frame = root.into_frame();
+/// }
+/// ```
+#[must_use = "keep the active address-space root alive for its active lifetime"]
+#[derive(Debug)]
+pub struct ActiveAddressSpaceRoot {
+    root: AddressSpaceRoot,
+}
+
+impl ActiveAddressSpaceRoot {
+    /// Records that a root has already been activated by the architecture layer.
+    ///
+    /// Calling this does not switch CR3 or verify the hardware state. The
+    /// constructor is unsafe so ordinary safe code cannot forge the active state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have switched CR3 to `root.physical_address()` and verified
+    /// the resulting CR3 value. The caller must also preserve the address-space
+    /// lifetime and follow the architecture's synchronization contract.
+    #[allow(unsafe_code)]
+    pub unsafe fn from_activated(root: AddressSpaceRoot) -> Self {
+        Self { root }
+    }
+
+    /// Returns the active root's physical base address without exposing its token.
+    pub const fn physical_address(&self) -> u64 {
+        self.root.physical_address()
+    }
+
+    /// Returns the physical-address width used to validate this root.
+    pub const fn physical_address_bits(&self) -> u8 {
+        self.root.physical_address_bits()
     }
 }
 

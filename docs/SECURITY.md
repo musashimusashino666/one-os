@@ -43,6 +43,43 @@ The initial frame allocator treats only bootloader memory-map entries marked Usa
 
 The allocator tracks physical-frame ownership. The kernel now uses a guarded page-table editor for limited active-kernel map/unmap operations and the associated acceptance tests, but it does not yet provide a general-purpose data-page mapping service or independent user-process address spaces. The kernel requests the bootloader's recursive page-table mapping and the read-only inspector reads existing paging entries through that mapping. It does not use `physical_memory_offset` to dereference Bootloader-owned frames, because bootloader_api documents that only `Usable` frames are safe to access through the physical-memory alias. The inspector checks that one sampled kernel-code virtual address lies within BootInfo's virtual kernel-image range and that its translated physical address falls within the in-memory ELF backing interval reported by BootInfo. This interval check does not establish segment-specific virtual-to-physical correspondence. The inspector checks page-offset preservation and expected page-table-derived U/S, R/W, and NX permissions for the sampled kernel-code address, active stack pointer, and BootInfo pointer; it separately requires CR0.WP to be set before treating R/W=0 as supervisor-write protection. These leaf-mapping checks do not validate stack or BootInfo physical-memory-region ownership. The Bootloader-owned-region check applies to each page-table page before a volatile read, including the CR3 root. Before walking other entries, the kernel also reads the recursive PML4 entry through the reported recursive mapping and checks that it is present, not a large-page entry, and points to the CR3 frame. That first read relies on the bootloader_api contract that the reported recursive index maps the active PML4 frame to itself; it cannot independently prove the recursive virtual address safe before performing the read; it does not assert that stack or BootInfo leaf mappings point into Bootloader-owned memory. The inspector does not parse ELF PT_LOAD headers or compare p_offset, p_vaddr, p_filesz, and p_memsz against observed translations, and it does not inspect every mapping. These checks are bootstrap diagnostics, not a proof of exact mapping correctness, mapping completeness, or system-wide memory protection. The read-only inspector does not write page-table entries or change mapping permissions; the separate guarded editor performs limited kernel mapping mutations under its documented single-CPU/interrupt-disabled preconditions. A returned physical address must not be dereferenced as allocated data until a valid mapping and initialization policy has been established for that use. The global API is serialized by a non-blocking lock; Busy means the caller must retry from a context where retry is safe. This bootstrap allocator is not yet a process-isolation boundary and does not establish production-grade memory safety.
 
+## Review follow-up: root lifetime and user-frame initialization
+
+The kernel's successful supervisor-root activation path returns an
+`ActiveAddressSpaceRoot` handle. Unlike the inactive-root handle, it does not
+expose the physical-frame ownership token or a conversion back to the releasable
+inactive type. Dropping the active handle leaks the frame allocation rather than
+making an active page-table frame available for reuse. This is API-level protection,
+not a full address-space lifecycle: callers must still retain the active handle, and
+teardown/switching has not been implemented.
+
+The raw `map_4k` primitive is crate-private and is not exported from `oneos-core`;
+external callers cannot request user-accessible leaf mappings by supplying arbitrary
+physical addresses and permission flags. Public user-data mappings go through the
+`ZeroedFrame` API.
+
+The safe `oneos-core` user-data mapping helper now accepts only `ZeroedFrame`.
+`initialize_user_frame` produces that token only after the supplied initializer
+reports that the complete frame has been zeroed; on failure, the original frame
+token is returned. The host-side tests exercise a dirty frame payload and the
+failure path. A production kernel-backed initializer and its integration with the
+user-address-space editor are still outstanding, so this is not evidence that live
+user-process pages are currently being exposed safely.
+
+The unmap API now returns a raw Frame rather than a ZeroedFrame, since user mode
+may write to the page before it is unmapped. Reassignment to any address space must
+run initialize_user_frame again. UserFrameInitializer is an unsafe trait, making
+correct zeroing an explicit obligation of reviewed trusted code; a safe implementer
+can no longer return success without acknowledging that contract. The active-root
+constructor is also unsafe so safe code cannot forge the hardware-active state.
+
+The remaining review findings are tracked in
+[`SECURITY_REVIEW_2026-10-24.md](SECURITY_REVIEW_2026-10-24.md). In particular,
+process isolation and kernel-enforced capabilities are not implemented; page-table
+mutation remains single-CPU with maskable interrupts disabled; remote TLB shootdowns
+and frame-wide W^X are not implemented; and boot-mapping checks remain sampled rather
+than a complete ELF-segment mapping proof.
+
 ## CR3 activation and exception-entry state
 
 The supervisor kernel-root activation path re-reads CPU state before preparing the switch and fails closed unless paging is enabled, CR0.WP and EFER.NXE are set, CR4.LA57 and CR4.PCIDE are clear, and maskable interrupts are disabled. These conditions are checked at the activation call rather than inferred solely from earlier initialization. The interrupt/TSS initialization path is one-shot, validates the active RSP against the bootloader's kernel-stack interval, sets TSS.RSP0 to that stack's aligned top, and routes double fault, NMI, and machine-check entries to separate IST stacks.

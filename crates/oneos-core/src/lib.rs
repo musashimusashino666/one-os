@@ -1,5 +1,5 @@
 #![no_std]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! Small, testable security primitives for ONE OS.
 //!
@@ -24,8 +24,9 @@ mod page_table_mutation;
 mod paging_preconditions;
 mod user_pages;
 pub use address_space::{
-    validate_user_virtual_range, AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
-    AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+    validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootEditor,
+    AddressSpaceRootError, AddressSpaceRootInitializationError, UserVirtualRangeError,
+    USER_VIRTUAL_ADDRESS_LIMIT,
 };
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
@@ -39,8 +40,10 @@ pub use page_table::{
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
     PageTableError, PageTranslation,
 };
+pub(crate) use page_table_mutation::map_4k;
 pub use page_table_mutation::{
-    map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+    map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError,
+    UnmappedPage,
 };
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
@@ -48,8 +51,9 @@ pub use paging_preconditions::{
     validate_paging_cpu_capabilities, PagingPreconditionError,
 };
 pub use user_pages::{
-    map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
-    UserPageMappingRegistry,
+    initialize_user_frame, map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor,
+    UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
+    UserPageMappingRegistry, ZeroedFrame,
 };
 
 /// Stable identifier for a resource managed by an authority.
