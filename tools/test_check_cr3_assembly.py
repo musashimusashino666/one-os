@@ -143,6 +143,7 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_source_restores_original_cr4_value(self):
         source = """
+            let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
             asm!("mov cr4, {}", in(reg) cr4,
@@ -153,6 +154,7 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_source_rejects_restoring_masked_cr4_value(self):
         source = """
+            let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
