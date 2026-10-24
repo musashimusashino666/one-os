@@ -146,7 +146,7 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("PGE disable -> CR3 write -> PGE restore", message)
+        self.assertIn("reachable CR3 write is not dominated", message)
 
     def test_rejects_mask_that_keeps_pge_bit_set(self):
         valid, message = validate_function_body(
