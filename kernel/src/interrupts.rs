@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 ))]
 use core::sync::atomic::AtomicU64;
 
-use oneos_core::{is_canonical_4level, validate_kernel_entry_stack};
+use oneos_core::validate_kernel_entry_stack;
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
