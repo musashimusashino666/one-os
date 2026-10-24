@@ -653,7 +653,7 @@ mod tests {
     impl UserFrameInitializer for TestEditor {
         fn zero_frame(
             &mut self,
-            frame: &Frame,
+            _frame: &Frame,
         ) -> Result<(), UserFrameInitializationError> {
             if self.fail_zeroing {
                 return Err(UserFrameInitializationError::InitializationFailed);
@@ -752,7 +752,14 @@ mod tests {
         let virtual_address = 0x4000;
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
 
-        map_user_data_page(&root, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor).unwrap();
+        map_user_data_page(
+            &root,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
 
         assert!(registry.is_mapped(virtual_address));
         assert_eq!(registry.available_slots(), 1);
@@ -793,8 +800,14 @@ mod tests {
         editor.fail_allocation = true;
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor)
-                .unwrap_err();
+            map_user_data_page(
+                &root,
+                virtual_address,
+                initialize_user_frame(frame, &mut editor).unwrap(),
+                &mut registry,
+                &mut editor,
+            )
+            .unwrap_err();
 
         assert_eq!(
             error,
@@ -820,7 +833,14 @@ mod tests {
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let virtual_address = 0x4000;
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
-        map_user_data_page(&root, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor).unwrap();
+        map_user_data_page(
+            &root,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
 
         let second_frame = allocator.allocate_frame().unwrap();
         let second_physical = second_frame.physical_address();
@@ -861,8 +881,14 @@ mod tests {
         editor.fail_after_successful_allocations = Some(2);
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor)
-                .unwrap_err();
+            map_user_data_page(
+                &root,
+                virtual_address,
+                initialize_user_frame(frame, &mut editor).unwrap(),
+                &mut registry,
+                &mut editor,
+            )
+            .unwrap_err();
 
         assert_eq!(
             error,
@@ -895,8 +921,14 @@ mod tests {
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 0>::new(&root);
 
         let (error, returned_frame) =
-            map_user_data_page(&root, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor)
-                .unwrap_err();
+            map_user_data_page(
+                &root,
+                virtual_address,
+                initialize_user_frame(frame, &mut editor).unwrap(),
+                &mut registry,
+                &mut editor,
+            )
+            .unwrap_err();
 
         assert_eq!(error, UserPageMappingError::RegistryFull);
         assert_eq!(returned_frame.physical_address(), physical);
@@ -943,7 +975,14 @@ mod tests {
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root_a);
-        map_user_data_page(&root_a, virtual_address, initialize_user_frame(frame, &mut editor).unwrap(), &mut registry, &mut editor).unwrap();
+        map_user_data_page(
+            &root_a,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
 
         // Prepare a separate root B, then deliberately create the same
         // virtual-address -> physical-frame alias through the lower-level API.
@@ -961,8 +1000,14 @@ mod tests {
         let extra_physical = extra_frame.physical_address();
         let root_b_entry_before = editor.entry(root_b_physical, 0);
         let (map_error, returned_extra) =
-            map_user_data_page(&root_b, 0x8000, initialize_user_frame(extra_frame, &mut editor).unwrap(), &mut registry, &mut editor)
-                .unwrap_err();
+            map_user_data_page(
+                &root_b,
+                0x8000,
+                initialize_user_frame(extra_frame, &mut editor).unwrap(),
+                &mut registry,
+                &mut editor,
+            )
+            .unwrap_err();
         assert_eq!(
             map_error,
             UserPageMappingError::AddressSpaceRootMismatch {
