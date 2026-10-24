@@ -163,6 +163,25 @@ pub fn allocate_frame() -> Result<Frame, MemoryError> {
     allocator.allocate_frame().map_err(MemoryError::Allocator)
 }
 
+/// Queries whether a frame is currently allocated by the global allocator.
+///
+/// The allocator lock protects the bitmap read. The current page-table mutation
+/// caller has interrupts disabled and runs under the single-CPU bootstrap contract,
+/// so a frame cannot be freed/reallocated between this check and map publication.
+/// This check is not a substitute for a retained ownership token or cross-CPU
+/// synchronization if the kernel becomes preemptive or SMP.
+pub fn is_frame_allocated(physical_address: u64) -> Result<bool, MemoryError> {
+    let _guard = GLOBAL.acquire()?;
+    if !GLOBAL.initialized.load(Ordering::Acquire) {
+        return Err(MemoryError::NotInitialized);
+    }
+
+    // SAFETY: the initialized flag was published after writing the allocator,
+    // and the lock provides exclusive access for the duration of this query.
+    let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
+    Ok(allocator.is_frame_allocated(physical_address))
+}
+
 /// Frees a frame token previously returned by this global allocator.
 ///
 /// On failure the original token is returned with the error, so transient lock
