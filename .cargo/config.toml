@@ -1,0 +1,4 @@
+[target.x86_64-unknown-none]
+# The bootloader maps the kernel at a configured high-half virtual base. Keep
+# all target code position-independent so the selected virtual base is valid.
+rustflags = ["-C", "relocation-model=pic"]
