@@ -1031,15 +1031,30 @@ unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
 /// frame before kernel-root activation on every boot. This validates the
 /// initialization/token gate, not live Ring-3 publication or process isolation.
 pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), PagingError> {
-    let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
-    let physical_address = frame.physical_address();
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
-        _ => {
-            let _ = release_data_frame(frame);
-            return Err(PagingError::InvalidRecursiveIndex);
-        }
+        _ => return Err(PagingError::InvalidRecursiveIndex),
     };
+    verify_user_frame_zeroing_test_with_recursive_index(boot_info, recursive_index)
+}
+
+/// Runs the user-frame zeroing acceptance test against the supplied active
+/// root's recursive self-map. The explicit index is used after CR3 activation,
+/// when the bootloader's original recursive index is no longer authoritative.
+pub fn verify_user_frame_zeroing_test_with_recursive_index(
+    boot_info: &BootInfo,
+    recursive_index: u16,
+) -> Result<(), PagingError> {
+    if !is_safe_recursive_mapping_index(recursive_index) {
+        return Err(PagingError::InvalidRecursiveIndex);
+    }
+    super::interrupts::write_hex(
+        b"ONE OS USER FRAME ZERO TEST RECURSIVE INDEX: ",
+        u64::from(recursive_index),
+    );
+
+    let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let physical_address = frame.physical_address();
     let physical_memory_offset = match boot_info.physical_memory_offset {
         Optional::Some(offset) => offset,
         _ => {
@@ -1084,8 +1099,8 @@ pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), Paging
     }
     super::interrupts::write_hex(b"ONE OS USER FRAME ZERO TEST DIRTY: ", physical_address);
 
-    // SAFETY: the bootloader recursive index was validated above, and this test
-    // runs before the normal boot path activates a different root.
+    // SAFETY: recursive_index was supplied by the active-root owner (or
+    // validated from BootInfo before the bootloader-root transition test).
     let mut initializer = unsafe { KernelUserFrameInitializer::new(boot_info, recursive_index) };
     match initialize_user_frame(frame, &mut initializer) {
         Ok(zeroed) => {
