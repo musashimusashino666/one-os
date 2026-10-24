@@ -477,7 +477,7 @@ pub fn activate_supervisor_kernel_root(
 
     // SAFETY: CR3 readback above matched root_physical after the switch; this
     // value must stay allocated for as long as it can be active.
-    Ok(unsafe { ActiveAddressSpaceRoot::from_activated(root) })
+    Ok(ActiveAddressSpaceRoot::from_activated(root))
 }
 
 fn is_kernel_half_address(address: u64, kernel_half_start: u64) -> bool {
