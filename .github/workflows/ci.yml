@@ -76,6 +76,26 @@ jobs:
       - name: Check bare-metal kernel
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
+      - name: Inspect optimized CR3 switch assembly
+        shell: bash
+        run: |
+          # Keep release optimization enabled while emitting pre-link assembly.
+          # LTO is disabled only for this assembly inspection so rustc can emit
+          # a readable .s file; opt-level=3 and the release codegen settings remain.
+          cargo rustc --locked --release -p one-os-kernel \
+            --target x86_64-unknown-none -- -C lto=no --emit=asm
+          asm_dir="$CARGO_TARGET_DIR/x86_64-unknown-none/release/deps"
+          asm_file="$(find "$asm_dir" -maxdepth 1 -type f -name 'one_os_kernel-*.s' -print -quit)"
+          if [[ -z "$asm_file" ]]; then
+            echo "Optimized kernel assembly was not emitted in $asm_dir" >&2
+            exit 1
+          fi
+          echo "Inspecting CR3-related instructions in $asm_file"
+          if ! grep -ni -B 80 -A 60 'cr3' "$asm_file"; then
+            echo "No CR3 references found in optimized kernel assembly" >&2
+            exit 1
+          fi
+
       - name: Build BIOS image
         run: cargo run --locked -p oneos-xtask -- image
 
