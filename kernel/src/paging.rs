@@ -57,6 +57,8 @@ pub enum PagingError {
     InvalidRecursiveIndex,
     InvalidRecursiveMapping,
     UnsupportedFiveLevelPaging,
+    PagingDisabled,
+    PcidUnsupported,
     SupervisorWriteProtectionDisabled,
     UnsupportedNx,
     ExtendedCpuidLeafUnavailable {
@@ -457,6 +459,12 @@ fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError 
         PagingPreconditionError::SupervisorWriteProtectionDisabled => {
             PagingError::SupervisorWriteProtectionDisabled
         }
+        PagingPreconditionError::MaskableInterruptsEnabled => PagingError::InterruptsEnabled,
+        PagingPreconditionError::PagingDisabled => PagingError::PagingDisabled,
+        PagingPreconditionError::FiveLevelPagingUnsupported => {
+            PagingError::UnsupportedFiveLevelPaging
+        }
+        PagingPreconditionError::PcidUnsupported => PagingError::PcidUnsupported,
     }
 }
 
