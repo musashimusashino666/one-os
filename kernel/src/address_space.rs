@@ -15,8 +15,9 @@ use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
-    validate_kernel_root_activation_state, ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootEditor,
-    AddressSpaceRootError, AddressSpaceRootInitializationError, PagingPreconditionError, PAGE_SIZE,
+    validate_kernel_root_activation_state, ActiveAddressSpaceRoot, AddressSpaceRoot,
+    AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
+    PagingPreconditionError, PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
