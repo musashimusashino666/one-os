@@ -106,10 +106,7 @@ impl AddressSpaceRoot {
 /// This function validates arithmetic and the user/kernel canonical-half
 /// boundary only. It does not check mappings, page permissions, frame
 /// ownership, guard regions, or whether address zero is intentionally unmapped.
-pub fn validate_user_virtual_range(
-    start: u64,
-    length: u64,
-) -> Result<(), UserVirtualRangeError> {
+pub fn validate_user_virtual_range(start: u64, length: u64) -> Result<(), UserVirtualRangeError> {
     if length == 0 {
         return Err(UserVirtualRangeError::EmptyRange);
     }
