@@ -10,6 +10,7 @@ const CR4_LA57: u64 = 1 << 12;
 const CR4_PCIDE: u64 = 1 << 17;
 const EFER_NXE: u64 = 1 << 11;
 const RFLAGS_IF: u64 = 1 << 9;
+const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
 
 /// A CPU capability or control-state precondition required by active page-table mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +121,33 @@ pub fn validate_efer_nx_enable(efer: u64) -> Result<(), PagingPreconditionError>
     Ok(())
 }
 
+/// Validates the bootloader-provided kernel stack range before using it as TSS.RSP0.
+///
+/// Returns the exclusive stack top when the interval is nonempty, canonical,
+/// wholly in the four-level kernel half, 16-byte aligned at its top, and contains
+/// the current stack pointer. An invalid interval is rejected without mutation.
+pub fn validate_kernel_entry_stack(
+    bottom: u64,
+    length: u64,
+    current_stack_pointer: u64,
+) -> Option<u64> {
+    if length == 0 || bottom < KERNEL_HALF_START || !crate::is_canonical_4level(bottom) {
+        return None;
+    }
+    let top = bottom.checked_add(length)?;
+    let last = top.checked_sub(1)?;
+    if top & 0xf != 0
+        || top < KERNEL_HALF_START
+        || !crate::is_canonical_4level(top)
+        || !crate::is_canonical_4level(last)
+        || current_stack_pointer < bottom
+        || current_stack_pointer >= top
+    {
+        return None;
+    }
+    Some(top)
+}
+
 /// Validates the CPU state immediately before activating a new kernel root.
 ///
 /// The current activation contract is a single CPU with maskable interrupts
@@ -199,6 +227,24 @@ mod tests {
         );
         assert_eq!(validate_cr0_write_protect(CR0_WP), Ok(()));
         assert_eq!(validate_efer_nx_enable(EFER_NXE), Ok(()));
+    }
+
+    #[test]
+    fn validates_kernel_entry_stack_top_and_rejects_invalid_intervals() {
+        let bottom = 0xffff_8000_1000_0000;
+        let length = 0x8000;
+        let top = bottom + length;
+        assert_eq!(super::validate_kernel_entry_stack(bottom, length, top - 8), Some(top));
+        assert_eq!(super::validate_kernel_entry_stack(bottom, 0, top - 8), None);
+        assert_eq!(super::validate_kernel_entry_stack(bottom, u64::MAX, top - 8), None);
+        assert_eq!(super::validate_kernel_entry_stack(bottom, length + 1, top - 8), None);
+        assert_eq!(super::validate_kernel_entry_stack(bottom, length, bottom - 1), None);
+        assert_eq!(super::validate_kernel_entry_stack(bottom, length, top), None);
+        assert_eq!(super::validate_kernel_entry_stack(0x1000, length, 0x2000), None);
+        assert_eq!(
+            super::validate_kernel_entry_stack(0xffff_7fff_ffff_f000, length, top - 8),
+            None
+        );
     }
 
     #[test]
