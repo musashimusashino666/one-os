@@ -174,7 +174,16 @@ impl AddressSpaceRoot {
 /// substitute for synchronizing a CR3 switch with other CPUs; the initial
 /// implementation remains single-CPU.
 ///
-/// The active handle deliberately has no `into_frame` method:
+/// The active handle deliberately has no `into_frame` method and cannot be
+/// constructed through a safe call:
+///
+/// ```compile_fail
+/// use oneos_core::{ActiveAddressSpaceRoot, AddressSpaceRoot};
+///
+/// fn fabricate_active_root(root: AddressSpaceRoot) {
+///     let _active = ActiveAddressSpaceRoot::from_activated(root);
+/// }
+/// ```
 ///
 /// ```compile_fail
 /// use oneos_core::ActiveAddressSpaceRoot;
@@ -192,11 +201,16 @@ pub struct ActiveAddressSpaceRoot {
 impl ActiveAddressSpaceRoot {
     /// Records that a root has already been activated by the architecture layer.
     ///
-    /// Call this only after the architecture layer has switched CR3 to
-    /// `root.physical_address()` and verified the resulting CR3 value. Calling
-    /// it prematurely only makes the frame unreleasable through this handle;
-    /// it does not activate the root or establish CPU/TLB synchronization.
-    pub fn from_activated(root: AddressSpaceRoot) -> Self {
+    /// Calling this does not switch CR3 or verify the hardware state. The
+    /// constructor is unsafe so ordinary safe code cannot forge the active state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have switched CR3 to `root.physical_address()` and verified
+    /// the resulting CR3 value. The caller must also preserve the address-space
+    /// lifetime and follow the architecture's synchronization contract.
+    #[allow(unsafe_code)]
+    pub unsafe fn from_activated(root: AddressSpaceRoot) -> Self {
         Self { root }
     }
 
