@@ -134,6 +134,22 @@ and bits 62:59 are accepted as leaf protection-key fields; neither range is
 mistaken for a physical address. The caller must still configure CPU paging
 features consistently with the entries being used.
 
+`PageTableEditor::is_page_table_or_reserved_frame` must identify frames that
+cannot be ordinary leaf targets. The kernel implementation permits leaf targets
+only from allocator-eligible `Usable` memory and rejects the active root,
+Bootloader-owned/reserved memory, and registered page-table frames. This check is
+in addition to alignment and physical-address-width validation; the editor must
+not rely only on callers passing allocator-issued data frames.
+
+`PageTableEditor::executable_mapping_allowed` must return true only when the
+implementation can account for every writable alias of the physical frame,
+including the physical-memory-offset alias, kernel mappings, shared address
+spaces, and large-page overlaps. The current kernel editor deliberately returns
+false for new executable mappings until it can remove or downgrade all writable
+aliases. This is a fail-closed restriction, not proof that all existing mappings
+satisfy frame-wide W^X. The physical-memory-offset editor also verifies that an
+alias resolves to the exact frame and is writable, supervisor-only, and NX.
+
 ## Exception diagnostics test
 
 The kernel disables maskable interrupts at entry and masks both 8259 PIC data ports before serial or IDT setup. This bootstrap never executes `sti`; external interrupt routing is not yet configured. `cli` does not mask NMI or machine-check events. The bootstrap installs a TSS with IST1 pointing to a dedicated double-fault stack; the double-fault IDT gate selects IST1. Other exception handlers continue to use the active stack. The dedicated `image-test-double-fault` image sets RSP to a non-canonical value before raising #UD, testing that exception delivery escalates to #DF and reaches the handler on IST1.
