@@ -1146,14 +1146,23 @@ impl Drop for ProtectionTestFrameGuard<'_> {
                 return;
             };
             match unmap_4k(root, virtual_address, &mut editor) {
-                Ok(unmapped) if unmapped.physical_address == frame.physical_address() => {
+                Ok(unmapped) => {
+                    // unmap_4k has cleared the leaf entry. Flush the stale
+                    // translation before checking identity or deciding whether
+                    // the frame can be returned to the allocator.
                     invalidate_local_tlb(virtual_address);
-                    if let Err((_error, _frame)) = super::memory::free_frame(frame) {
-                        // Keep the frame allocated on release failure; never panic
-                        // while cleaning up a failed test setup.
+                    if unmapped.physical_address == frame.physical_address() {
+                        if let Err((_error, _frame)) = super::memory::free_frame(frame) {
+                            // Keep the frame allocated on release failure; never panic
+                            // while cleaning up a failed test setup.
+                        }
+                    } else {
+                        // The mapping was removed, but the returned frame identity
+                        // is unexpected. Do not recycle the frame we still own.
+                        let _unreleased_frame = frame;
                     }
                 }
-                _ => {
+                Err(_) => {
                     // Do not recycle a frame while its mapping state is uncertain.
                     let _unreleased_frame = frame;
                 }
