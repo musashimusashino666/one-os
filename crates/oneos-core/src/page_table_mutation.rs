@@ -153,7 +153,12 @@ pub struct UnmappedPage {
     pub permissions: PagePermissions,
 }
 
-/// Installs one 4 KiB mapping into an existing four-level x86_64 page table.
+/// Internal primitive for installing one 4 KiB mapping into a four-level x86_64 page table.
+///
+/// This function is deliberately crate-private. Public callers must use the
+/// user-data API, which requires a `ZeroedFrame`, or kernel-owned mapping paths
+/// that do not grant user access. Exposing raw physical addresses and a user
+/// permission bit here would bypass the zero-initialization token boundary.
 ///
 /// The virtual and physical addresses must be page-aligned. Physical frame
 /// zero is intentionally rejected. All missing intermediate tables are
@@ -176,7 +181,7 @@ pub struct UnmappedPage {
 /// read-only mappings are expected to block supervisor-mode writes. EFER.NXE
 /// must be enabled before using non-executable mappings. This function does not
 /// verify either control bit, flush TLB entries, or provide synchronization.
-pub fn map_4k<E: PageTableEditor>(
+pub(crate) fn map_4k<E: PageTableEditor>
     root_table_physical: u64,
     virtual_address: u64,
     physical_address: u64,
