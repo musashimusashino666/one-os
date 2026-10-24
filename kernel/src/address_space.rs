@@ -476,9 +476,10 @@ pub fn activate_supervisor_kernel_root(
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    // CR3 readback above matched root_physical after the switch. Keep the
-    // allocation reserved for as long as this root can remain active.
-    Ok(ActiveAddressSpaceRoot::from_activated(root))
+    // SAFETY: CR3 readback above matched root_physical. This is the architecture
+    // layer's successful activation boundary; it retains the root token rather
+    // than exposing it for allocator reuse.
+    Ok(unsafe { ActiveAddressSpaceRoot::from_activated(root) })
 }
 
 fn is_kernel_half_address(address: u64, kernel_half_start: u64) -> bool {
