@@ -550,7 +550,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_write(b"ONE OS IST TEST: triggering vector 2 through software INT\n");
         // SAFETY: CPL0 may invoke this ring-0 IDT gate. The test handler returns
         // only after recording whether its live RSP is inside the TSS.IST2 stack.
-        unsafe { asm!("int 2"); }
+        unsafe {
+            asm!("int 2");
+        }
         if !interrupts::test_nmi_ist_passed() {
             serial_write(b"ONE OS IST TEST FAILED: vector 2 did not use the NMI IST stack\n");
             halt_forever()
@@ -560,9 +562,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_write(b"ONE OS IST TEST: triggering vector 18 through software INT\n");
         // SAFETY: CPL0 may invoke the ring-0 vector-18 IDT gate. This validates
         // IST3 selection only; it does not simulate a hardware machine-check event.
-        unsafe { asm!("int 18"); }
+        unsafe {
+            asm!("int 18");
+        }
         if !interrupts::test_machine_check_ist_passed() {
-            serial_write(b"ONE OS IST TEST FAILED: vector 18 did not use the machine-check IST stack\n");
+            serial_write(
+                b"ONE OS IST TEST FAILED: vector 18 did not use the machine-check IST stack\n",
+            );
             halt_forever()
         }
         serial_write(b"ONE OS IST TEST PASS: Machine Check IST3 stack selection verified\n");
