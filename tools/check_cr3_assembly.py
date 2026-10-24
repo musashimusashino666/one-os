@@ -95,6 +95,11 @@ def _destination(operands: list[str]) -> str | None:
     return operands[-1] if _att_syntax(operands) else operands[0]
 
 
+def _is_control_register(operand: str, register: str) -> bool:
+    """Return whether an operand names the specified x86 control register."""
+    return _register_name(operand) == register
+
+
 def _control_register_write_source(raw_line: str, register: str) -> str | None:
     parsed = _instruction(raw_line)
     if parsed is None:
@@ -183,8 +188,16 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
         clear_destination = _pge_clear_destination(line)
         if clear_destination is not None:
-            taint[clear_destination] = "pge_cleared"
+            # Only trust a PGE-clearing mask when its input value originated
+            # from the CR4 read (or from a previously validated cleared value).
+            # An arbitrary register ANDed with a mask must not be mistaken for
+            # the CR4 value that is about to be written to the control register.
+            input_taint = taint.get(clear_destination)
             saw_pge_clear = True
+            if input_taint in ("original_cr4", "pge_cleared"):
+                taint[clear_destination] = "pge_cleared"
+            else:
+                taint.pop(clear_destination, None)
             continue
 
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
