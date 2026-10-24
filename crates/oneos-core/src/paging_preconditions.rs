@@ -11,6 +11,8 @@ const CR4_PCIDE: u64 = 1 << 17;
 const EFER_NXE: u64 = 1 << 11;
 const RFLAGS_IF: u64 = 1 << 9;
 const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
+// Reserve at least one page below the live RSP for bootstrap call depth.
+const MIN_KERNEL_STACK_HEADROOM: u64 = 4096;
 
 /// A CPU capability or control-state precondition required by active page-table mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,7 +127,8 @@ pub fn validate_efer_nx_enable(efer: u64) -> Result<(), PagingPreconditionError>
 ///
 /// Returns the exclusive stack top when the interval is nonempty, canonical,
 /// wholly in the four-level kernel half, 16-byte aligned at its top, and contains
-/// the current stack pointer. An invalid interval is rejected without mutation.
+/// the current stack pointer with at least one page of stack space remaining
+/// below RSP for bootstrap call depth. An invalid interval is rejected without mutation.
 pub fn validate_kernel_entry_stack(
     bottom: u64,
     length: u64,
@@ -136,11 +139,12 @@ pub fn validate_kernel_entry_stack(
     }
     let top = bottom.checked_add(length)?;
     let last = top.checked_sub(1)?;
+    let minimum_safe_rsp = bottom.checked_add(MIN_KERNEL_STACK_HEADROOM)?;
     if top & 0xf != 0
         || top < KERNEL_HALF_START
         || !crate::is_canonical_4level(top)
         || !crate::is_canonical_4level(last)
-        || current_stack_pointer < bottom
+        || current_stack_pointer < minimum_safe_rsp
         || current_stack_pointer >= top
     {
         return None;
@@ -237,6 +241,29 @@ mod tests {
         assert_eq!(
             super::validate_kernel_entry_stack(bottom, length, top - 8),
             Some(top)
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, bottom),
+            None,
+            "RSP at the lower bound has no safe call headroom"
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(
+                bottom,
+                length,
+                bottom + super::MIN_KERNEL_STACK_HEADROOM - 1
+            ),
+            None,
+            "RSP below the required headroom must be rejected"
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(
+                bottom,
+                length,
+                bottom + super::MIN_KERNEL_STACK_HEADROOM
+            ),
+            Some(top),
+            "RSP with exactly one page of remaining stack is accepted"
         );
         assert_eq!(super::validate_kernel_entry_stack(bottom, 0, top - 8), None);
         assert_eq!(
