@@ -28,7 +28,7 @@ concurrency:
   # Separate event types so workflow_dispatch on a PR branch cannot cancel its
   # required PR-context run. Within the same event type, newer PR runs still replace
   # older ones for that head branch; repository qualification avoids fork collisions.
-  group: one-os-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: one-os-\${{ github.workflow }}-\${{ github.event_name }}-\${{ github.event.pull_request.head.repo.full_name || github.repository }}-\${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -79,20 +79,32 @@ jobs:
       - name: Inspect optimized CR3 switch assembly
         shell: bash
         run: |
-          # Keep release optimization enabled while emitting pre-link assembly.
-          # LTO is disabled only for this assembly inspection so rustc can emit
-          # a readable .s file; opt-level=3 and the release codegen settings remain.
-          cargo rustc --locked --release -p one-os-kernel \
+          # Use a dedicated, clean target directory: this avoids assumptions about
+          # whether Cargo places this target's .s file under deps/ or release/.
+          # Keep release optimization enabled; disable only LTO for readable pre-link assembly.
+          asm_target_dir="$RUNNER_TEMP/one-os-assembly-target"
+          rm -rf "$asm_target_dir"
+          CARGO_TARGET_DIR="$asm_target_dir" cargo rustc --locked --release -p one-os-kernel \
             --target x86_64-unknown-none -- -C lto=no --emit=asm
-          asm_dir="$CARGO_TARGET_DIR/x86_64-unknown-none/release/deps"
-          asm_file="$(find "$asm_dir" -maxdepth 1 -type f -name 'one_os_kernel-*.s' -print -quit)"
-          if [[ -z "$asm_file" ]]; then
-            echo "Optimized kernel assembly was not emitted in $asm_dir" >&2
+
+          # Cargo's assembly output location varies with target kind and Cargo version.
+          # Search the isolated target directory recursively rather than hard-coding deps/.
+          mapfile -t asm_files < <(find "$asm_target_dir" -type f -name '*.s' -print)
+          if [[ "\${#asm_files[@]}" -eq 0 ]]; then
+            echo "Optimized kernel assembly was not emitted under $asm_target_dir" >&2
             exit 1
           fi
-          echo "Inspecting CR3-related instructions in $asm_file"
-          if ! grep -ni -B 80 -A 60 'cr3' "$asm_file"; then
-            echo "No CR3 references found in optimized kernel assembly" >&2
+
+          found_cr3=0
+          for asm_file in "\${asm_files[@]}"; do
+            if grep -qi 'cr3' "$asm_file"; then
+              found_cr3=1
+              echo "Inspecting CR3-related instructions in $asm_file"
+              grep -ni -B 80 -A 60 'cr3' "$asm_file"
+            fi
+          done
+          if [[ "$found_cr3" -ne 1 ]]; then
+            echo "No CR3 references found in optimized kernel assembly under $asm_target_dir" >&2
             exit 1
           fi
 
@@ -106,8 +118,8 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            echo "QEMU boot attempt ${attempt}/3"
-            log="$CARGO_TARGET_DIR/qemu-serial-${attempt}.log"
+            echo "QEMU boot attempt \${attempt}/3"
+            log="$CARGO_TARGET_DIR/qemu-serial-\${attempt}.log"
             set +e
             timeout 10s qemu-system-x86_64 \
               -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
