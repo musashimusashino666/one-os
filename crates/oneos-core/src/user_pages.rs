@@ -915,15 +915,14 @@ mod tests {
         let root_entry_before = editor.entry(root.physical_address(), 0);
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 0>::new(&root);
 
-        let (error, returned_frame) =
-            map_user_data_page(
-                &root,
-                virtual_address,
-                initialize_user_frame(frame, &mut editor).unwrap(),
-                &mut registry,
-                &mut editor,
-            )
-            .unwrap_err();
+        let (error, returned_frame) = map_user_data_page(
+            &root,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap_err();
 
         assert_eq!(error, UserPageMappingError::RegistryFull);
         assert_eq!(returned_frame.physical_address(), physical);
