@@ -13,7 +13,8 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, map_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    is_canonical_4level, is_safe_recursive_mapping_index, map_4k,
+    physical_page_is_in_allowed_region, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
     validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
     FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
@@ -163,13 +164,13 @@ impl PagingError {
 /// memory offset, which bootloader_api documents as safely accessible only for
 /// Usable frames. This module never writes a page-table entry.
 pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection, PagingError> {
+    // Validate the index before deriving or dereferencing any recursive alias.
+    // Index 0 produces virtual address 0 for the PML4 self-map and must fail closed.
     let recursive_index = match boot_info.recursive_index {
-        Optional::Some(index) => index,
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
         Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
     };
-    if recursive_index >= 512 {
-        return Err(PagingError::InvalidRecursiveIndex);
-    }
 
     let cr0: u64;
     let cr4: u64;
@@ -571,7 +572,7 @@ impl<'a> KernelPageTableEditor<'a> {
         }
 
         let recursive_index = match boot_info.recursive_index {
-            Optional::Some(index) if index < 512 => index,
+            Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
             Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
             Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
         };
@@ -933,7 +934,11 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
         super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let data_physical = data_frame.physical_address();
     let recursive_index = match boot_info.recursive_index {
-        Optional::Some(index) => index,
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => {
+            let _ = release_data_frame(data_frame);
+            return Err(PagingError::InvalidRecursiveIndex);
+        }
         Optional::None => {
             let _ = release_data_frame(data_frame);
             return Err(PagingError::RecursiveMappingUnavailable);
@@ -1103,7 +1108,7 @@ fn prepare_protection_test_mapping(
     let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let physical_address = frame.physical_address();
     let recursive_index = match boot_info.recursive_index {
-        Optional::Some(index) if index < 512 => index,
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => {
             return Err(PagingError::InvalidRecursiveIndex);
         }
@@ -1352,7 +1357,7 @@ pub fn prepare_mapping_transition_test(
     }
 
     let recursive_index = match boot_info.recursive_index {
-        Optional::Some(index) if index < 512 => index,
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
         Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
     };
