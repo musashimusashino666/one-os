@@ -62,42 +62,66 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(valid, message)
 
-    def test_accepts_optimized_cr4_value_through_branch_and_epilogue(self):
-        # Mirrors the compiler shape from CI: the CR4-disabled route is a
-        # conditional block with a direct CR3 fast path and a later epilogue.
+    def test_accepts_branching_paths_when_all_cr3_writes_are_safe(self):
+        # Either branch may be taken, but both converge on the mandatory
+        # PGE-clear -> CR3-write -> original-CR4-restore sequence.
         valid, message = validate_function_body(
             [
                 "movq %cr4, %r13",
                 "testb %r13b, %r13b",
-                "js .Lswitch",
-                "movq %rbx, %cr3",
-                "jmp .Lverify",
+                "jne .Lprepare",
+                "jmp .Lswitch",
+                ".Lprepare:",
+                "movq %r13, %rax",
                 ".Lswitch:",
                 "movq %r13, %rax",
                 "andq $-135297, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr3",
                 "movq %r13, %cr4",
-                ".Lverify:",
-                "movq %cr3, %rax",
                 "retq",
             ]
         )
         self.assertTrue(valid, message)
 
-    def test_accepts_fast_path_cr3_before_pge_path(self):
+    def test_rejects_cr3_write_before_pge_disable(self):
         valid, message = validate_function_body(
             [
                 "movq %cr4, %r13",
-                "movq %rbx, %cr3",  # PGE is already clear: optimized fast path.
+                "movq %rbx, %cr3",  # Unsafe: no PGE-clear CR4 write dominates this CR3 write.
                 "movq %r13, %rax",
-                "andq $-131201, %rax",  # Clears PGE and the already-validated PCIDE bit.
+                "andq $-131201, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr3",
                 "movq %r13, %cr4",
+                "retq",
             ]
         )
-        self.assertTrue(valid, message)
+        self.assertFalse(valid)
+        self.assertIn("reachable CR3 write is not dominated", message)
+
+    def test_rejects_function_with_one_safe_and_one_unsafe_cr3_path(self):
+        # The safe branch must not hide the unsafe branch. The old checker
+        # returned success as soon as it found any completed safe path.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "testb %r13b, %r13b",
+                "jne .Lsafe",
+                "movq %rbx, %cr3",
+                "jmp .Ldone",
+                ".Lsafe:",
+                "movq %r13, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                ".Ldone:",
+                "retq",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("reachable CR3 write is not dominated", message)
 
     def test_rejects_missing_pge_clear(self):
         valid, message = validate_function_body(
