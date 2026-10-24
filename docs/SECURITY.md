@@ -53,6 +53,11 @@ making an active page-table frame available for reuse. This is API-level protect
 not a full address-space lifecycle: callers must still retain the active handle, and
 teardown/switching has not been implemented.
 
+The raw `map_4k` primitive is crate-private and is not exported from `oneos-core`;
+external callers cannot request user-accessible leaf mappings by supplying arbitrary
+physical addresses and permission flags. Public user-data mappings go through the
+`ZeroedFrame` API.
+
 The safe `oneos-core` user-data mapping helper now accepts only `ZeroedFrame`.
 `initialize_user_frame` produces that token only after the supplied initializer
 reports that the complete frame has been zeroed; on failure, the original frame
