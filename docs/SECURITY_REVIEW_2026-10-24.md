@@ -17,6 +17,26 @@ runtime tests. It is not a certification or a claim that ONE OS is production-re
 | P2 — SMP/preemption synchronization and remote TLB shootdowns are absent. | Not claimed as fixed. The documented single-CPU, maskable-interrupts-disabled mutation contract remains in force. | Do not enable preemption or SMP until mutation serialization, ownership transitions, address-space teardown, and remote TLB shootdowns have their own design and tests. |
 | P2 — Frame-wide W^X and complete boot-mapping validation are not established. | Not claimed as fixed. Executable mapping remains fail-closed in the concrete kernel editor where alias safety cannot be proved; boot inspection remains sampled. | Track direct-map/kernel/user aliases, large-page overlap and effective permissions; test permission transitions and improve the boot inspector's ELF `PT_LOAD` correspondence and coverage. |
 
+## PR #22 review follow-up
+
+The follow-up changes address three additional API-boundary concerns:
+
+- Successful unmap returns a raw Frame, never ZeroedFrame. Every reuse path, including
+  reuse in a different address space, must call initialize_user_frame again. A host
+  regression test dirties the returned frame with simulated process-A data, reinitializes
+  it, and maps it into address space B only after confirming the payload is zero.
+- UserFrameInitializer is an unsafe trait with an explicit Safety contract. Implementers
+  must use unsafe impl and are responsible for proving complete zeroing through a
+  writable supervisor-only alias. The core crate denies unsafe code by default and
+  annotates only these explicit contracts.
+- ActiveAddressSpaceRoot::from_activated is an unsafe constructor with a Safety contract;
+  the architecture layer uses it only after CR3 readback confirms the switched root.
+  A compile-fail doc example checks that safe code cannot forge this state.
+
+These are API-level mitigations only. The kernel-backed zeroing adapter and live user
+mapping integration remain outstanding, as do process isolation, SMP synchronization,
+remote TLB shootdowns and system-wide W^X.
+
 ## Validation gate
 
 The required CI suite must pass on the exact latest PR HEAD before merge. It includes
