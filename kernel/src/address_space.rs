@@ -73,8 +73,49 @@ impl AddressSpaceError {
             Self::InvalidOwnedRoot(_) => {
                 b"Address-space root setup rejected the allocated root frame\n"
             }
-            Self::RootInitialization(_) => {
-                b"Address-space root initialization failed before publication\n"
+            Self::RootInitialization(error) => match error {
+                AddressSpaceRootInitializationError::AlreadyInitialized => {
+                    b"Address-space root was already initialized\n"
+                }
+                AddressSpaceRootInitializationError::PhysicalAddressWidthMismatch { .. } => {
+                    b"Address-space root and editor physical-address widths differ\n"
+                }
+                AddressSpaceRootInitializationError::InvalidKernelRootFrame(_) => {
+                    b"Address-space initializer rejected the kernel root frame\n"
+                }
+                AddressSpaceRootInitializationError::InvalidRecursiveIndex { .. } => {
+                    b"Address-space initializer rejected the recursive index\n"
+                }
+                AddressSpaceRootInitializationError::RootAliasesKernelRoot => {
+                    b"Address-space root aliases the active kernel root\n"
+                }
+                AddressSpaceRootInitializationError::RootTableUnavailable => {
+                    b"Address-space destination root is not writable through the checked offset\n"
+                }
+                AddressSpaceRootInitializationError::KernelRootTableUnavailable => {
+                    b"Address-space source kernel root is not readable\n"
+                }
+                AddressSpaceRootInitializationError::KernelRootRecursiveEntryUnavailable => {
+                    b"Address-space source recursive entry is unreadable\n"
+                }
+                AddressSpaceRootInitializationError::InvalidKernelRootRecursiveEntry => {
+                    b"Address-space source recursive entry violates root permissions\n"
+                }
+                AddressSpaceRootInitializationError::KernelEntryUnavailable { .. } => {
+                    b"Address-space source kernel PML4 entry is unreadable\n"
+                }
+                AddressSpaceRootInitializationError::MalformedKernelEntry { .. } => {
+                    b"Address-space source kernel PML4 entry is malformed\n"
+                }
+                AddressSpaceRootInitializationError::UserAccessibleKernelEntry { .. } => {
+                    b"Address-space source kernel PML4 entry permits user access\n"
+                }
+                AddressSpaceRootInitializationError::KernelEntryAliasesKernelRoot { .. } => {
+                    b"Address-space source entry aliases the kernel root frame\n"
+                }
+                AddressSpaceRootInitializationError::KernelEntryAliasesOwnedRoot { .. } => {
+                    b"Address-space source entry aliases the owned destination root\n"
+                }
             }
             Self::RootTableUnavailable => {
                 b"Address-space root setup could not safely access a complete root frame\n"
