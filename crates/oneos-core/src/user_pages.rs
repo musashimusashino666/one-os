@@ -306,7 +306,7 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
 
     // translate_4level calls the reader in level order (4, 3, 2, 1). Keep
     // level tracking here because PageTableEditor validates access per level.
-    let mut next_level = 4;
+    let mut next_level: u8 = 4;
     let translation = translate_4level(virtual_address, root_physical, |table, index| {
         let current_level = next_level;
         next_level = next_level.saturating_sub(1);
