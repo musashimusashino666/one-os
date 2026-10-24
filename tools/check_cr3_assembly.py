@@ -133,37 +133,74 @@ def _control_register_write_source(raw_line: str, register: str) -> str | None:
 
 
 def _pge_clear_destination(raw_line: str) -> str | None:
-    """Return the GPR modified by an AND/BTR that clears CR4.PGE bit 7."""
+    """Return a register only for a CR4-derived AND/BTR that safely clears PGE."""
     parsed = _instruction(raw_line)
     if parsed is None:
         return None
     mnemonic, operands = parsed
-
-    clears_pge = False
-    if re.fullmatch(r"and(?:b|w|l|q)?", mnemonic):
-        # Compilers may combine adjacent facts. In this routine, PCIDE was
-        # already proven clear, so LLVM can combine !CR4_PGE and !CR4_PCIDE
-        # into a single immediate such as -131201. Accept any parsed AND
-        # immediate whose bit 7 is zero, not only the literal -129.
-        for operand in operands:
-            token = operand.strip().lstrip("$")
-            try:
-                mask = int(token, 0)
-            except ValueError:
-                continue
-            if mask & (1 << 7) == 0:
-                clears_pge = True
-                break
-    elif re.fullmatch(r"btr(?:b|w|l|q)?", mnemonic):
-        clears_pge = bool(re.search(r"(?:\$)?7\b", ", ".join(operands)))
-
-    if not clears_pge:
+    if len(operands) != 2:
         return None
+
     destination = _destination(operands)
     if destination is None:
         return None
-    return _operand_register(destination)
+    destination_register = _operand_register(destination)
+    if destination_register is None:
+        return None
 
+    # CR4 is read into a 64-bit GPR. A 32-bit AND would zero-extend its result,
+    # destroying bits 32..63; require a 64-bit destination operation instead.
+    raw_destination = destination.strip().lstrip("%").lower()
+    gpr64 = {
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+        *(f"r{i}" for i in range(8, 16)),
+    }
+    source_operand = operands[0] if _att_syntax(operands) else operands[1]
+
+    if re.fullmatch(r"and(?:q)?", mnemonic):
+        if raw_destination not in gpr64:
+            return None
+        token = source_operand.strip().lstrip("$")
+        try:
+            immediate = int(token, 0)
+        except ValueError:
+            return None
+
+        # x86-64 AND r/m64, imm32 sign-extends its immediate. Verify against
+        # the effective 64-bit mask. Only PGE (bit 7), LA57 (bit 12), and PCIDE
+        # (bit 17) may be cleared: the latter two are checked clear immediately
+        # before this path by validate_kernel_root_activation_state().
+        if not -(1 << 31) <= immediate < (1 << 31):
+            return None
+        mask64 = immediate & ((1 << 64) - 1)
+        cleared_bits = (~mask64) & ((1 << 64) - 1)
+        permitted_clears = (1 << 7) | (1 << 12) | (1 << 17)
+        if cleared_bits & (1 << 7) == 0:
+            return None
+        if cleared_bits & ~permitted_clears:
+            return None
+        return destination_register
+
+    if re.fullmatch(r"btr(?:q|w)?", mnemonic):
+        # BTR changes only the selected bit. BTR r32 is deliberately rejected
+        # because writing the 32-bit register clears the upper 32 GPR bits.
+        if mnemonic.endswith("w"):
+            word_destinations = {
+                "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
+            }
+            if raw_destination not in word_destinations and not re.fullmatch(r"r\d+w", raw_destination):
+                return None
+        elif raw_destination not in gpr64:
+            return None
+        try:
+            bit_index = int(source_operand.strip().lstrip("$"), 0)
+        except ValueError:
+            return None
+        if bit_index != 7:
+            return None
+        return destination_register
+
+    return None
 
 def _clobbered_gpr(raw_line: str) -> str | None:
     """Return a destination register for common compiler-emitted write instructions."""
