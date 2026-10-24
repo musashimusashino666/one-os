@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 ))]
 use core::sync::atomic::AtomicU64;
 
-use oneos_core::is_canonical_4level;
+use oneos_core::{is_canonical_4level, validate_kernel_entry_stack};
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
@@ -26,7 +26,6 @@ const MACHINE_CHECK_IST_INDEX: u8 = 3;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 const NON_MASKABLE_STACK_SIZE: usize = 16 * 1024;
 const MACHINE_CHECK_STACK_SIZE: usize = 16 * 1024;
-const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
 const RFLAGS_IF: u64 = 1 << 9;
 const MAX_GDT_ENTRIES: usize = 256;
 
@@ -1064,7 +1063,7 @@ pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: called more than once\\n");
+        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: called more than once\n");
         super::halt_forever();
     }
 
@@ -1076,7 +1075,7 @@ pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
         asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
     }
     if rflags & RFLAGS_IF != 0 {
-        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: interrupts enabled\\n");
+        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: interrupts enabled\n");
         super::halt_forever();
     }
 
@@ -1085,7 +1084,7 @@ pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
         kernel_stack_len,
         stack_pointer,
     ) else {
-        super::serial_write(b"ONE OS TSS INIT FAILED: invalid kernel entry stack interval\\n");
+        super::serial_write(b"ONE OS TSS INIT FAILED: invalid kernel entry stack interval\n");
         super::halt_forever();
     };
 
@@ -1183,28 +1182,8 @@ pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
     }
 
     super::serial_write(b"CPU exception IDT installed\n");
-}
-
-fn validate_kernel_entry_stack(
-    bottom: u64,
-    length: u64,
-    current_stack_pointer: u64,
-) -> Option<u64> {
-    if length == 0 || bottom < KERNEL_HALF_START || !is_canonical_4level(bottom) {
-        return None;
-    }
-    let top = bottom.checked_add(length)?;
-    let last = top.checked_sub(1)?;
-    if top & 0xf != 0
-        || top < KERNEL_HALF_START
-        || !is_canonical_4level(top)
-        || !is_canonical_4level(last)
-        || current_stack_pointer < bottom
-        || current_stack_pointer >= top
-    {
-        return None;
-    }
-    Some(top)
+    super::serial_write(b"CPU privilege-entry and emergency stacks configured\n");
+    write_hex(b"TSS.RSP0 kernel stack top: ", kernel_stack_top);
 }
 
 fn report_exception(
