@@ -643,7 +643,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         };
         serial_write(b"ONE OS ADDRESS SPACE SWITCH PASS\n");
 
-
         // The active handle carries the private recursive index installed in
         // the new root. Exercise the exact initializer path after CR3 changes.
         #[cfg(not(any(
