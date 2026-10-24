@@ -167,8 +167,11 @@ The fault-injection BIOS images are enabled only for dedicated tests, never for 
     cargo run --locked -p oneos-xtask -- image-test-general-protection
     cargo run --locked -p oneos-xtask -- image-test-page-fault
     cargo run --locked -p oneos-xtask -- image-test-double-fault
+    cargo run --locked -p oneos-xtask -- image-test-ist
 
-CI executes all four images in QEMU. It verifies that the invalid-opcode test reports vector 6, a direct assembly data load from a non-canonical address reports #GP (vector 13) with error code 0, and a direct assembly load from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each handler halts; stop local runs with Ctrl-C.
+CI executes the four fault-injection images and the IST image in QEMU. It verifies that the invalid-opcode test reports vector 6, a direct assembly data load from a non-canonical address reports #GP (vector 13) with error code 0, and a direct assembly load from an unmapped canonical address reports #PF (vector 14), an error code, and the expected CR2 address. Each case must halt after the exception, must not enter the Rust panic handler, and must not emit the bootstrap-completion marker. QEMU will remain running after each fail-stop handler halts; stop local runs with Ctrl-C.
+
+The dedicated `image-test-ist` executes software `INT 2` and `INT 18` from CPL 0. The test-only handlers read their live RSP and report success only when vector 2 entered within the configured IST2 allocation and vector 18 entered within IST3. This directly tests IDT-gate-to-IST stack selection and return, but it does not simulate hardware-originated NMI delivery or a genuine machine-check event. Those hardware-event paths remain unverified. The production handlers remain fail-stop.
 
 The normal serial-log validator separately rejects any `ONE OS EXCEPTION` diagnostic marker, even if the bootstrap-completion marker was already printed.
 
