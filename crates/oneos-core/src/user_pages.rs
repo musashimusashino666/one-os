@@ -145,9 +145,7 @@ impl<T: FrameToken, const CAPACITY: usize> UserPageMappingRegistry<T, CAPACITY> 
                 } if *reserved_physical == physical_address => {
                     return Err(UserPageMappingError::DuplicatePhysicalFrame);
                 }
-                MappingSlot::Mapped { token, .. }
-                    if token.frame_address() == physical_address =>
-                {
+                MappingSlot::Mapped { token, .. } if token.frame_address() == physical_address => {
                     return Err(UserPageMappingError::DuplicatePhysicalFrame);
                 }
                 _ => {}
@@ -191,10 +189,7 @@ impl<T: FrameToken, const CAPACITY: usize> UserPageMappingRegistry<T, CAPACITY> 
         }
     }
 
-    fn mapped_slot(
-        &self,
-        virtual_address: u64,
-    ) -> Result<(usize, u64), UserPageMappingError> {
+    fn mapped_slot(&self, virtual_address: u64) -> Result<(usize, u64), UserPageMappingError> {
         for (index, slot) in self.slots.iter().enumerate() {
             match slot {
                 MappingSlot::Mapped {
@@ -442,10 +437,9 @@ mod tests {
             if self.fail_allocation {
                 return None;
             }
-            let table = self
-                .tables
-                .iter_mut()
-                .find(|table| (0x2000..=0x4000).contains(&table.physical_address) && !table.in_use)?;
+            let table = self.tables.iter_mut().find(|table| {
+                (0x2000..=0x4000).contains(&table.physical_address) && !table.in_use
+            })?;
             table.entries.fill(0);
             table.in_use = true;
             Some(table.physical_address)
