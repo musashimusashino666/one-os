@@ -23,8 +23,8 @@ mod page_table;
 mod page_table_mutation;
 mod paging_preconditions;
 pub use address_space::{
-    validate_user_virtual_range, AddressSpaceRoot, AddressSpaceRootError, UserVirtualRangeError,
-    USER_VIRTUAL_ADDRESS_LIMIT,
+    validate_user_virtual_range, AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
+    AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
