@@ -139,13 +139,13 @@ impl AddressSpaceError {
                 b"Address-space root contents did not match the initialization contract\n"
             }
             Self::KernelMappingNotInUpperHalf => {
-                b"Kernel code, stack, boot metadata, and physical-memory alias must use upper-half mappings before activation\\n"
+                b"Kernel code, stack, boot metadata, and physical-memory alias must use upper-half mappings before activation\n"
             }
             Self::UnsupportedPcid => {
-                b"Address-space activation does not yet support CR4.PCIDE\\n"
+                b"Address-space activation does not yet support CR4.PCIDE\n"
             }
             Self::RootActivationFailed => {
-                b"CR3 did not report the newly activated address-space root\\n"
+                b"CR3 did not report the newly activated address-space root\n"
             }
             Self::RootZeroizationFailed { .. } => {
                 b"Address-space root could not be zeroed before frame release\n"
