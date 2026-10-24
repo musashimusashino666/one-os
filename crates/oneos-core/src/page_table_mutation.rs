@@ -61,7 +61,9 @@ impl PagePermissions {
 /// Operations required to read, modify, and allocate page-table pages.
 ///
 /// Implementations must not return a table frame that is already in use, and
-/// must ensure each allocated frame is zero-filled before returning it.
+/// must ensure each allocated frame is zero-filled before returning it. The
+/// reserved-frame query must identify every frame used as a page table and every
+/// frame whose ownership/region policy forbids mapping it as ordinary data.
 pub trait PageTableEditor {
     /// Returns the active CPU's MAXPHYADDR, typically CPUID.80000008H:EAX[7:0].
     ///
@@ -81,6 +83,11 @@ pub trait PageTableEditor {
     /// Allocates and zeroes a fresh physical frame for a page-table page.
     fn allocate_table(&mut self) -> Option<u64>;
 
+    /// Reports whether a frame is reserved for kernel/bootloader use or is
+    /// known to be used as a page table. `map_4k` rejects such frames as leaf
+    /// targets. Implementations must fail closed when frame role is unknown.
+    fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool;
+
     /// Releases a page-table frame allocated by allocate_table.
     fn free_table(&mut self, physical_address: u64);
 }
@@ -93,6 +100,7 @@ pub enum PageTableMutationError {
     InvalidRootTable,
     InvalidPhysicalAddressWidth { bits: u8 },
     InvalidPhysicalAddress,
+    MappedFrameIsReserved,
     WritableExecutable,
     UserAddressOutsideUserHalf,
     TableUnavailable { level: u8 },
@@ -169,6 +177,9 @@ pub fn map_4k<E: PageTableEditor>(
     if !valid_physical_page(physical_address, physical_address_bits) {
         return Err(PageTableMutationError::InvalidPhysicalAddress);
     }
+    if editor.is_page_table_or_reserved_frame(physical_address) {
+        return Err(PageTableMutationError::MappedFrameIsReserved);
+    }
     if permissions.writable && permissions.executable {
         return Err(PageTableMutationError::WritableExecutable);
     }
@@ -240,6 +251,7 @@ pub fn map_4k<E: PageTableEditor>(
         }
 
         let aliases_existing = physical == root_table_physical
+            || physical == physical_address
             || tables[..=missing_parent.expect("allocation requires a missing parent")]
                 .contains(&physical)
             || allocated[..allocation_index].contains(&physical);
@@ -496,6 +508,10 @@ mod tests {
             self.read_any(table, index)
         }
 
+        fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
+            self.pages.contains_key(&physical_address)
+        }
+
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
             if let Some(page) = self.pages.get_mut(&table) {
                 page[index] = value;
@@ -577,6 +593,10 @@ mod tests {
 
         fn read_entry(&mut self, table: u64, index: usize, _level: u8) -> Option<u64> {
             self.read_any(table, index)
+        }
+
+        fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
+            self.pages.contains_key(&physical_address) || self.registry.contains(physical_address)
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
@@ -927,6 +947,61 @@ mod tests {
             Err(PageTableMutationError::UserAddressOutsideUserHalf)
         );
         assert_eq!(tables.pages.len(), 1);
+    }
+
+    #[test]
+    fn rejects_mapping_root_table_as_leaf() {
+        let root = 0x1000;
+        let mut tables = TestTables::new(root);
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                0x4000,
+                root,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::MappedFrameIsReserved)
+        );
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.read_any(root, 0), Some(0));
+    }
+
+    #[test]
+    fn rejects_mapping_an_intermediate_page_table_as_leaf() {
+        let root = 0x1000;
+        let mut tables = TestTables::new(root);
+        let virtual_address = 0x4000;
+
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            0x8000,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        let pml4_index = ((virtual_address >> 39) & 0x1ff) as usize;
+        let intermediate = tables.read_any(root, pml4_index).unwrap()
+            & PHYSICAL_ADDRESS_FIELD_MASK;
+        assert!(tables.pages.contains_key(&intermediate));
+        let prior_table_count = tables.pages.len();
+        let prior_root_entry = tables.read_any(root, pml4_index);
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address + PAGE_SIZE,
+                intermediate,
+                PagePermissions::new(true, false, false),
+            ),
+            Err(PageTableMutationError::MappedFrameIsReserved)
+        );
+        assert_eq!(tables.pages.len(), prior_table_count);
+        assert_eq!(tables.read_any(root, pml4_index), prior_root_entry);
     }
 
     #[test]
