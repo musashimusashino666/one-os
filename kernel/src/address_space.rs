@@ -266,7 +266,6 @@ pub fn verify_root_initialization_smoke_test(
     Ok(())
 }
 
-
 /// Builds an inactive root from the currently active, owned kernel root.
 ///
 /// The destination retains only the validated supervisor-only upper-half
