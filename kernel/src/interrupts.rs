@@ -76,6 +76,10 @@ struct Gdtr {
 }
 
 static INTERRUPT_INIT_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-ist")]
+static NMI_IST_TEST_PASSED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-ist")]
+static MACHINE_CHECK_IST_TEST_PASSED: AtomicBool = AtomicBool::new(false);
 static mut GDT: [u64; MAX_GDT_ENTRIES] = [0; MAX_GDT_ENTRIES];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
@@ -167,7 +171,29 @@ extern "x86-interrupt" fn unexpected_interrupt_handler(frame: InterruptStackFram
 
 no_error_handler!(divide_error_handler, 0, "divide error");
 no_error_handler!(debug_handler, 1, "debug exception");
+#[cfg(not(feature = "test-ist"))]
 no_error_handler!(non_maskable_interrupt_handler, 2, "non-maskable interrupt");
+
+#[cfg(feature = "test-ist")]
+extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackFrame) {
+    let handler_rsp: u64;
+    // SAFETY: reading RSP is valid in this privileged x86_64 handler.
+    unsafe {
+        asm!(
+            "mov {}, rsp",
+            out(reg) handler_rsp,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    // The software INT 2 test reaches the same IDT vector and verifies that
+    // the CPU selected TSS.IST2 before entering this handler.
+    let stack_bottom = unsafe { ptr::addr_of!(NON_MASKABLE_INTERRUPT_STACK) as u64 };
+    let stack_top = stack_bottom + size_of::<NonMaskableInterruptStack>() as u64;
+    NMI_IST_TEST_PASSED.store(
+        handler_rsp >= stack_bottom && handler_rsp < stack_top,
+        Ordering::Release,
+    );
+}
 no_error_handler!(breakpoint_handler, 3, "breakpoint");
 no_error_handler!(overflow_handler, 4, "overflow");
 no_error_handler!(bound_range_handler, 5, "bound-range exceeded");
@@ -442,7 +468,29 @@ no_error_handler!(
     "x87 floating-point exception"
 );
 error_handler!(alignment_check_handler, 17, "alignment check");
+#[cfg(not(feature = "test-ist"))]
 no_error_handler!(machine_check_handler, 18, "machine check");
+
+#[cfg(feature = "test-ist")]
+extern "x86-interrupt" fn machine_check_handler(_frame: InterruptStackFrame) {
+    let handler_rsp: u64;
+    // SAFETY: reading RSP is valid in this privileged x86_64 handler.
+    unsafe {
+        asm!(
+            "mov {}, rsp",
+            out(reg) handler_rsp,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    // The software INT 18 test reaches the machine-check IDT vector to verify
+    // that TSS.IST3 supplied an RSP inside the dedicated stack allocation.
+    let stack_bottom = unsafe { ptr::addr_of!(MACHINE_CHECK_STACK) as u64 };
+    let stack_top = stack_bottom + size_of::<MachineCheckStack>() as u64;
+    MACHINE_CHECK_IST_TEST_PASSED.store(
+        handler_rsp >= stack_bottom && handler_rsp < stack_top,
+        Ordering::Release,
+    );
+}
 no_error_handler!(
     simd_floating_point_handler,
     19,
@@ -1058,6 +1106,16 @@ fn initialize_tss_and_gdt(kernel_stack_top: u64) {
 /// external interrupts. The function validates the active stack against the
 /// bootloader-provided kernel-stack interval, configures TSS.RSP0 and IST stacks,
 /// then replaces the active GDT/IDT and loads the task register.
+#[cfg(feature = "test-ist")]
+pub fn test_nmi_ist_passed() -> bool {
+    NMI_IST_TEST_PASSED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "test-ist")]
+pub fn test_machine_check_ist_passed() -> bool {
+    MACHINE_CHECK_IST_TEST_PASSED.load(Ordering::Acquire)
+}
+
 pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
     if INTERRUPT_INIT_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
