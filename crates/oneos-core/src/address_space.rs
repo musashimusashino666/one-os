@@ -154,7 +154,6 @@ impl AddressSpaceRoot {
     }
 }
 
-
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const PML4_ENTRIES: usize = 512;
 const PRESENT: u64 = 1;
@@ -224,12 +223,15 @@ pub enum AddressSpaceRootInitializationError {
 /// Access interface for preparing an inactive address-space root.
 ///
 /// Implementations must verify access to the entire physical frame. Once
-/// table_is_read_write_accessible returns true for a table, write_entry must be
-/// infallible for that frame and every valid PML4 index. This contract lets the
-/// initializer finish all fallible checks before mutating the destination.
+/// table_is_read_write_accessible returns true for the destination, write_entry
+/// must be infallible for that frame and every valid PML4 index. This contract
+/// lets the initializer finish all fallible checks before its first write.
 pub trait AddressSpaceRootEditor {
     /// Returns the active CPU's physical-address width (MAXPHYADDR).
     fn physical_address_bits(&self) -> u8;
+
+    /// Returns true only when the complete table frame is safely readable.
+    fn table_is_readable(&mut self, table_physical: u64) -> bool;
 
     /// Returns true only when the complete table frame is safely readable and writable.
     fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool;
@@ -262,7 +264,7 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
     if !editor.table_is_read_write_accessible(root_physical) {
         return Err(AddressSpaceRootInitializationError::RootTableUnavailable);
     }
-    if !editor.table_is_read_write_accessible(kernel_root_physical) {
+    if !editor.table_is_readable(kernel_root_physical) {
         return Err(AddressSpaceRootInitializationError::KernelRootTableUnavailable);
     }
 
@@ -526,6 +528,7 @@ mod tests {
             Err(UserVirtualRangeError::OutsideUserHalf)
         );
     }
+
     #[derive(Clone, Copy)]
     struct TestTable {
         physical_address: u64,
@@ -579,12 +582,16 @@ mod tests {
             32
         }
 
-        fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool {
+        fn table_is_readable(&mut self, table_physical: u64) -> bool {
             self.blocked_table != Some(table_physical)
                 && self
                     .tables
                     .iter()
                     .any(|table| table.physical_address == table_physical)
+        }
+
+        fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool {
+            self.table_is_readable(table_physical)
         }
 
         fn read_entry(
