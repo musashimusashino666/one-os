@@ -388,7 +388,7 @@ fn switch_address_space(
         regions: &boot_info.memory_regions,
         physical_memory_offset,
         kernel_root_physical: current_physical,
-        root_physical: root_physical,
+        root_physical,
         recursive_index: current_recursive_index,
         physical_address_bits,
         kernel_root_is_owned: true,
