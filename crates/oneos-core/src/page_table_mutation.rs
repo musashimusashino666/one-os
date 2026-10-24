@@ -181,7 +181,7 @@ pub struct UnmappedPage {
 /// read-only mappings are expected to block supervisor-mode writes. EFER.NXE
 /// must be enabled before using non-executable mappings. This function does not
 /// verify either control bit, flush TLB entries, or provide synchronization.
-pub(crate) fn map_4k<E: PageTableEditor>
+pub(crate) fn map_4k<E: PageTableEditor>(
     root_table_physical: u64,
     virtual_address: u64,
     physical_address: u64,
