@@ -319,14 +319,9 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         _pge_clear_destination(raw_line) is not None
         for raw_line, _, _ in instructions
     )
-    saw_cr3_write = any(
-        _control_register_write_source(raw_line, "cr3") is not None
-        for raw_line, _, _ in instructions
-    )
-    saw_cr4_restore_candidate = any(
-        _control_register_write_source(raw_line, "cr4") is not None
-        for raw_line, _, _ in instructions
-    )
+    saw_clear_reach_cr4 = False
+    saw_cr3_write = False
+    saw_original_cr4_write = False
 
     # State includes the path stage and per-register provenance, so separate
     # branches never contaminate each other's values. Reaching a repeated
@@ -347,6 +342,20 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         if len(visited) > state_limit:
             return False, "control-flow path analysis exceeded its state limit"
 
+        raw_line, mnemonic, operands = instructions[index]
+        pair = _source_destination(operands) if mnemonic.startswith("mov") else None
+        if pair is not None:
+            source, destination = pair
+            source_register = _operand_register(source)
+            source_tag = tags[reg_index[source_register]] if source_register in reg_index else NONE
+            if _is_control_register(destination, "cr4") and source_register in reg_index:
+                if source_tag == CLEARED:
+                    saw_clear_reach_cr4 = True
+                elif source_tag == ORIGINAL:
+                    saw_original_cr4_write = True
+            elif _is_control_register(destination, "cr3") and source_register in reg_index:
+                saw_cr3_write = True
+
         next_tags, next_stage, success = instruction_transfer(index, tags, stage)
         if success:
             return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
@@ -355,9 +364,11 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
     if not saw_clear_instruction:
         return False, "no instruction clearing CR4.PGE bit 7 was found"
+    if not saw_clear_reach_cr4:
+        return False, "PGE-cleared value did not reach a CR4 write"
     if not saw_cr3_write:
         return False, "no actual CR3 write instruction found in activation routine"
-    if not saw_cr4_restore_candidate:
+    if not saw_original_cr4_write:
         return False, "original pre-switch CR4 value was not restored"
     return False, "required order is PGE disable -> CR3 write -> PGE restore"
 
