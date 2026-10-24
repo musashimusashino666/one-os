@@ -312,8 +312,13 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
             if _is_control_register(destination, "cr4"):
                 source_tag = state[reg_index[source_register]] if source_register in reg_index else NONE
-                if source_tag == CLEARED and stage == 0:
+                if source_tag == CLEARED and stage in (0, 4):
                     stage = 1
+                elif source_tag == ORIGINAL and stage == 1:
+                    # Restoring CR4 before CR3 can re-enable PGE on the path.
+                    # That path may still return an error safely, but a later
+                    # CR3 write on it must not be accepted.
+                    stage = 4
                 elif source_tag == ORIGINAL and stage == 2:
                     stage = 3
                 return tuple(state), stage
@@ -361,6 +366,8 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     saw_cr3_write = False
     saw_restore_write = False
     saw_completed_switch = False
+    unsafe_cr3_path: str | None = None
+    incomplete_exit: tuple[int, str] | None = None
 
     from collections import deque
 
@@ -390,9 +397,11 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             if _is_control_register(destination, "cr3"):
                 saw_cr3_write = True
                 if source_register not in reg_index:
-                    return False, f"unrecognized CR3 source at instruction {index}: {raw_line.strip()}"
-                if stage != 1:
-                    return False, (
+                    unsafe_cr3_path = (
+                        f"unrecognized CR3 source at instruction {index}: {raw_line.strip()}"
+                    )
+                elif stage != 1 and unsafe_cr3_path is None:
+                    unsafe_cr3_path = (
                         "reachable CR3 write is not dominated by a PGE-cleared CR4 write "
                         f"(stage={stage}, instruction {index}: {raw_line.strip()})"
                     )
@@ -408,22 +417,34 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         # cannot leave PGE disabled or CR4 unrestored after a CR3 write.
         is_terminal = mnemonic.startswith(("ret", "iret", "ud2", "hlt")) or not successors[index]
         if is_terminal:
-            if next_stage in (1, 2):
-                return False, (
-                    "reachable exit leaves the CR3 switch protocol incomplete "
-                    f"(stage={next_stage}, instruction {index}: {raw_line.strip()})"
+            if next_stage in (1, 2) and incomplete_exit is None:
+                incomplete_exit = (
+                    next_stage,
+                    f"instruction {index}: {raw_line.strip()}",
                 )
             if next_stage == 3:
                 saw_completed_switch = True
         for successor in successors[index]:
             pending.append((successor, next_tags, next_stage))
 
-    if not saw_clear_instruction or not saw_clear_write:
+    if not saw_clear_instruction:
+        return False, "no instruction clearing CR4.PGE bit 7 was found"
+    if not saw_clear_write:
         return False, "PGE-cleared value did not reach a CR4 write"
     if not saw_cr3_write:
         return False, "no actual CR3 write instruction found in activation routine"
+    if unsafe_cr3_path is not None:
+        return False, unsafe_cr3_path
+    if incomplete_exit is not None:
+        stage, location = incomplete_exit
+        if stage == 2:
+            return False, (
+                "original pre-switch CR4 value was not restored on every CR3-switch exit "
+                f"({location})"
+            )
+        return False, f"CR4.PGE disable path exited before completing CR3 switch ({location})"
     if not saw_restore_write or not saw_completed_switch:
-        return False, "original pre-switch CR4 was not restored on every CR3-switch exit"
+        return False, "original pre-switch CR4 value was not restored on every CR3-switch exit"
     return True, "all reachable CR3 writes are bracketed by PGE disable and original CR4 restore"
 
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
