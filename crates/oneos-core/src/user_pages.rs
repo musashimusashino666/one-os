@@ -44,12 +44,14 @@ pub enum UserFrameInitializationError {
 
 /// Architecture-provided operation for clearing a complete physical frame.
 ///
-/// # Safety
+/// Implementation contract:
 ///
 /// Implementations must only report success after every byte in the specified
 /// exclusively owned frame is zero. The frame must be accessed through a
 /// validated writable supervisor-only alias, and an error must never produce a
 /// `ZeroedFrame`. Implementations must preserve frame ownership on all paths.
+/// This is a trusted-kernel contract; a faulty implementation can violate the
+/// confidentiality property, so it must be implemented and reviewed in the kernel.
 pub trait UserFrameInitializer {
     /// Clears the complete 4 KiB frame, failing closed if it cannot be verified.
     fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError>;
@@ -67,13 +69,11 @@ pub struct ZeroedFrame {
 }
 
 impl ZeroedFrame {
-    /// Converts an owned frame token after a zeroing implementation reports success.
+    /// Creates the private token after the initializer reports successful zeroing.
     ///
-    /// # Safety
-    ///
-    /// Every byte in the complete frame must already be zero, the caller must own
-    /// it, and no concurrent or uncontrolled writable alias may mutate it before
-    /// publication to the intended user mapping.
+    /// The caller's initialization contract must still hold: every byte in the
+    /// complete frame is zero, ownership is exclusive, and no uncontrolled writer
+    /// may mutate the frame before publication to the intended user mapping.
     fn from_zeroed_frame(frame: Frame) -> Self {
         Self { frame }
     }
