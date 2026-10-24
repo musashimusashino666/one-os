@@ -12,7 +12,7 @@ FUNCTION_NAME = "activate_supervisor_kernel_root"
 TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
 SIZE_RE_TEMPLATE = r"^\s*\.size\s+{}\s*,"
-INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)\s+(.+?)\s*$")
+INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)(?:\s+(.+?))?\s*$")
 GPR_RE = re.compile(
     r"^(?:r(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+[dwb]?|"
     r"e(?:ax|bx|cx|dx|si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
@@ -63,7 +63,10 @@ def _instruction(raw_line: str) -> tuple[str, list[str]] | None:
     match = INSTRUCTION_RE.match(line)
     if not match:
         return None
-    return match.group(1).lower(), [part.strip() for part in match.group(2).split(",")]
+    operands = match.group(2)
+    return match.group(1).lower(), (
+        [part.strip() for part in operands.split(",")] if operands is not None else []
+    )
 
 
 def _att_syntax(operands: list[str]) -> bool:
