@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+FUNCTION_NAMES = ("activate_supervisor_kernel_root", "switch_address_space")
 FUNCTION_NAME = "activate_supervisor_kernel_root"
 TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
@@ -21,7 +22,7 @@ GPR_RE = re.compile(
 
 
 def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
-    """Return emitted function bodies for the activation routine."""
+    """Return emitted function bodies for all CR3-switch routines."""
     lines = assembly.splitlines()
     found: list[tuple[str, list[str]]] = []
 
@@ -30,7 +31,7 @@ def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
         if not match:
             continue
         symbol = match.group(1)
-        if FUNCTION_NAME not in symbol:
+        if not any(function_name in symbol for function_name in FUNCTION_NAMES):
             continue
 
         label_re = re.compile(r"^\s*" + re.escape(symbol) + r"\s*:\s*$")
@@ -451,39 +452,52 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     return True, "all reachable CR3 writes are bracketed by PGE disable and original CR4 restore"
 
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
-    """Ensure the CR3 inline asm retains the compiler memory clobber."""
-    match = re.search(
+    """Ensure every CR3 inline-asm block retains the compiler memory clobber."""
+    blocks = re.findall(
         r'asm!\s*\(\s*"mov\s+cr3\s*,\s*\{\}"(?P<body>.*?)\);',
         source,
         flags=re.DOTALL,
     )
-    if match is None:
-        return False, "could not locate the CR3 asm block in address_space.rs"
+    if not blocks:
+        return False, "could not locate any CR3 asm block in address_space.rs"
 
-    block = match.group("body")
-    if re.search(r"\bnomem\b", block):
-        return False, "CR3 inline asm must not specify nomem"
-    if not re.search(r"\bin\(reg\)\s+root_physical\b", block):
-        return False, "CR3 inline asm no longer uses the validated root_physical operand"
-    return True, "CR3 inline asm preserves the compiler memory-ordering boundary"
+    for index, block in enumerate(blocks, start=1):
+        if re.search(r"\bnomem\b", block):
+            return False, f"CR3 inline asm block {index} must not specify nomem"
+        if not re.search(r"\bin\(reg\)\s+root_physical\b", block):
+            return False, (
+                f"CR3 inline asm block {index} no longer uses the validated "
+                "root_physical operand"
+            )
+    return True, f"all {len(blocks)} CR3 asm blocks preserve the compiler memory-ordering boundary"
 
 
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
-    """Ensure source-level CR4 writes disable PGE then restore the original CR4."""
+    """Ensure every source-level CR3 switch clears PGE and restores original CR4."""
     blocks = re.findall(
         r'asm!\s*\(\s*"mov\s+cr4\s*,\s*\{\}"(?P<body>.*?)\);',
         source,
         flags=re.DOTALL,
     )
-    if len(blocks) < 2:
-        return False, "expected separate CR4 asm blocks for PGE disable and restore"
-    if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", blocks[0]):
-        return False, "first CR4 write must use the PGE-cleared cr4_without_pge value"
+    if len(blocks) < 2 or len(blocks) % 2 != 0:
+        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
     if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
         return False, "cr4_without_pge must be derived from cr4 with CR4_PGE cleared"
-    if not re.search(r"\bin\(reg\)\s+cr4\b", blocks[1]):
-        return False, "second CR4 write must restore the original cr4 value"
-    return True, "source CR4 writes disable PGE and restore the original CR4 value"
+
+    for pair_index in range(0, len(blocks), 2):
+        disable_block = blocks[pair_index]
+        restore_block = blocks[pair_index + 1]
+        switch_number = pair_index // 2 + 1
+        if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", disable_block):
+            return False, (
+                f"CR3 switch sequence {switch_number} must first write the "
+                "PGE-cleared cr4_without_pge value"
+            )
+        if not re.search(r"\bin\(reg\)\s+cr4\b", restore_block):
+            return False, (
+                f"CR3 switch sequence {switch_number} must restore the original cr4 value"
+            )
+    return True, f"all {len(blocks) // 2} source CR3 switch sequences clear PGE and restore original CR4"
 
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
@@ -503,13 +517,27 @@ def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
 
     if not matches:
         return False, errors + [
-            f"could not find optimized {FUNCTION_NAME} function in any .s file under {assembly_dir}"
+            f"could not find optimized CR3-switch functions {FUNCTION_NAMES!r} "
+            f"in any .s file under {assembly_dir}"
         ]
+
+    found_functions = {
+        function_name
+        for _path, symbol, _body in matches
+        for function_name in FUNCTION_NAMES
+        if function_name in symbol
+    }
+    missing_functions = sorted(set(FUNCTION_NAMES) - found_functions)
+    if missing_functions:
+        errors.append(
+            "optimized assembly did not contain required CR3-switch functions: "
+            + ", ".join(missing_functions)
+        )
 
     for path, symbol, body in matches:
         valid, message = validate_function_body(body)
         if not valid:
-            errors.append(f"{path}: {symbol}: {message}\n--- activation function body ---\n" + "\n".join(body) + "\n--- end activation function body ---")
+            errors.append(f"{path}: {symbol}: {message}\n--- CR3-switch function body ---\n" + "\n".join(body) + "\n--- end CR3-switch function body ---")
         else:
             print(f"PASS: {path}: {symbol}: {message}")
             for index, line in enumerate(body):
