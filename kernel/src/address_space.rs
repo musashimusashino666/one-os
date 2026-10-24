@@ -16,13 +16,12 @@ use oneos_core::{
     is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, AddressSpaceRoot,
     AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
-    PageTableError, PAGE_SIZE,
+    PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
-const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
@@ -107,12 +106,12 @@ pub fn verify_root_initialization_smoke_test(
         Optional::None => return Err(AddressSpaceError::PhysicalMemoryOffsetUnavailable),
     };
 
-    let maximum_extended_leaf = unsafe { __cpuid(CPUID_MAX_EXTENDED_LEAF) }.eax;
+    let maximum_extended_leaf = __cpuid(CPUID_MAX_EXTENDED_LEAF).eax;
     if maximum_extended_leaf < CPUID_PHYSICAL_ADDRESS_WIDTH {
         return Err(AddressSpaceError::InvalidPhysicalAddressWidth { bits: 0 });
     }
     let physical_address_bits =
-        (unsafe { __cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH) }.eax & 0xff) as u8;
+        (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
     if !(32..=52).contains(&physical_address_bits) {
         return Err(AddressSpaceError::InvalidPhysicalAddressWidth {
             bits: physical_address_bits,
