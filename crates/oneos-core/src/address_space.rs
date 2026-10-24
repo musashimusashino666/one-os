@@ -700,6 +700,75 @@ mod tests {
     }
 
     #[test]
+    fn accepts_lower_half_kernel_recursive_slot_and_uses_private_upper_slot() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 256, 0x3000 | PRESENT | WRITABLE);
+
+        root.initialize_from_kernel_root(kernel_address, 2, 511, &mut editor)
+            .unwrap();
+
+        assert_eq!(editor.entry(root_address, 2), 0);
+        assert_eq!(editor.entry(root_address, 511), root_address | PRESENT | WRITABLE | NO_EXECUTE);
+        assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_replace_an_occupied_destination_recursive_slot() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 511, 0x6000 | PRESENT | WRITABLE);
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 2, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied { index: 511 })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_out_of_range_kernel_recursive_index_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 512, 510, &mut editor),
+            Err(AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex { index: 512 })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
     fn rejects_user_accessible_kernel_entry_without_mutating_destination_root() {
         let regions = [(0x1000, 0x9000, true)];
         let mut slots = [FrameSegment::EMPTY; 1];
@@ -882,7 +951,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(root_address, 511, &mut editor),
+            root.initialize_from_kernel_root(root_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::RootAliasesKernelRoot)
         );
         assert_eq!(editor.tables[0].entries, before);
