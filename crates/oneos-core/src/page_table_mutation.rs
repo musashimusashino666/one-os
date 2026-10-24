@@ -525,9 +525,8 @@ fn indices(virtual_address: u64) -> [usize; 4] {
 mod tests {
     use super::{
         map_4k, map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor,
-        PageTableMutationError, UnmappedPage,
-        LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK, PRESENT, PROTECTION_KEY_FIELD_MASK,
-        USER_ACCESSIBLE, WRITABLE,
+        PageTableMutationError, UnmappedPage, LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK,
+        PRESENT, PROTECTION_KEY_FIELD_MASK, USER_ACCESSIBLE, WRITABLE,
     };
     use crate::{translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE};
     use std::boxed::Box;
