@@ -25,7 +25,6 @@ const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
 const ACCESSED: u64 = 1 << 5;
 const USER_ACCESSIBLE: u64 = 1 << 2;
-const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const PML4_ENTRY_COUNT: usize = 512;
