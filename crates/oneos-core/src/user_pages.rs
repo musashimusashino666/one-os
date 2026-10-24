@@ -2,7 +2,7 @@
 //!
 //! These helpers build on the generic four-level page-table mutation engine.
 //! They map only writable, user-accessible, non-executable 4 KiB data pages.
-//! The physical Frame token is retained by a per-address-space registry while
+//! The zeroed Frame token is retained by a per-address-space registry while
 //! the mapping exists, and is returned only after unmap and translation
 //! invalidation complete.
 //!
