@@ -127,7 +127,7 @@ class ActivationAssemblyTests(unittest.TestCase):
             [
                 "movq %cr4, %rbx",
                 "andq $-129, %r10",
-                "movq %rax, %cr4",
+                "movq %r10, %cr4",
                 "movq %r12, %cr3",
                 "movq %rbx, %cr4",
             ]
