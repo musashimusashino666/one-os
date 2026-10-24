@@ -77,7 +77,20 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("ordered between", message)
+        self.assertIn("PGE disable -> CR3 write -> PGE restore", message)
+
+    def test_rejects_mask_that_keeps_pge_bit_set(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "andq $-1, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("PGE-cleared value did not reach a CR4 write", message)
 
     def test_rejects_missing_cr3_write(self):
         valid, message = validate_function_body(
