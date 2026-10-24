@@ -8,17 +8,26 @@
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection",
     feature = "test-vm-transitions"
 ))]
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+
+use oneos_core::is_canonical_4level;
 
 const IDT_ENTRIES: usize = 256;
 const GATE_INTERRUPT: u8 = 0x8E;
 const DOUBLE_FAULT_IST_INDEX: u8 = 1;
+const NON_MASKABLE_IST_INDEX: u8 = 2;
+const MACHINE_CHECK_IST_INDEX: u8 = 3;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+const NON_MASKABLE_STACK_SIZE: usize = 16 * 1024;
+const MACHINE_CHECK_STACK_SIZE: usize = 16 * 1024;
+const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
+const RFLAGS_IF: u64 = 1 << 9;
 const MAX_GDT_ENTRIES: usize = 256;
 
 #[repr(C, packed)]
@@ -47,10 +56,19 @@ impl TaskStateSegment {
     }
 }
 
-// The CPU consumes this buffer through TSS.IST1 rather than Rust field reads.
+// These stacks are consumed by the CPU through TSS.IST entries, not Rust calls.
+// Each is isolated by stack selection, but guard pages are not established yet.
 #[allow(dead_code)]
 #[repr(align(16))]
 struct DoubleFaultStack([u8; DOUBLE_FAULT_STACK_SIZE]);
+
+#[allow(dead_code)]
+#[repr(align(16))]
+struct NonMaskableInterruptStack([u8; NON_MASKABLE_STACK_SIZE]);
+
+#[allow(dead_code)]
+#[repr(align(16))]
+struct MachineCheckStack([u8; MACHINE_CHECK_STACK_SIZE]);
 
 #[repr(C, packed)]
 struct Gdtr {
@@ -58,9 +76,13 @@ struct Gdtr {
     base: u64,
 }
 
+static INTERRUPT_INIT_STARTED: AtomicBool = AtomicBool::new(false);
 static mut GDT: [u64; MAX_GDT_ENTRIES] = [0; MAX_GDT_ENTRIES];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static mut NON_MASKABLE_INTERRUPT_STACK: NonMaskableInterruptStack =
+    NonMaskableInterruptStack([0; NON_MASKABLE_STACK_SIZE]);
+static mut MACHINE_CHECK_STACK: MachineCheckStack = MachineCheckStack([0; MACHINE_CHECK_STACK_SIZE]);
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -950,7 +972,9 @@ unsafe fn install_gate_with_ist(vector: usize, handler: usize, selector: u16, is
 ///
 /// The current GDT entries are copied unchanged so the bootloader-provided CS
 /// selector and all existing selectors retain their descriptor indices.
-fn initialize_tss_and_gdt() {
+/// RSP0 is the top of the validated bootloader kernel stack; IST1/2/3 are
+/// separate bootstrap stacks for double fault, NMI, and machine-check events.
+fn initialize_tss_and_gdt(kernel_stack_top: u64) {
     let mut old_gdtr = Gdtr { limit: 0, base: 0 };
     // SAFETY: SGDT writes the active descriptor-table pointer into this buffer.
     unsafe {
@@ -983,9 +1007,18 @@ fn initialize_tss_and_gdt() {
     unsafe {
         ptr::copy_nonoverlapping(old_base as *const u8, gdt_base.cast::<u8>(), old_bytes);
 
-        let stack_base = ptr::addr_of_mut!(DOUBLE_FAULT_STACK).cast::<u8>();
-        let stack_top = stack_base.add(size_of::<DoubleFaultStack>()) as u64;
-        ptr::addr_of_mut!((*tss_pointer).ist[0]).write_unaligned(stack_top);
+        let double_fault_base = ptr::addr_of_mut!(DOUBLE_FAULT_STACK).cast::<u8>();
+        let double_fault_top = double_fault_base.add(size_of::<DoubleFaultStack>()) as u64;
+        let non_maskable_base = ptr::addr_of_mut!(NON_MASKABLE_INTERRUPT_STACK).cast::<u8>();
+        let non_maskable_top =
+            non_maskable_base.add(size_of::<NonMaskableInterruptStack>()) as u64;
+        let machine_check_base = ptr::addr_of_mut!(MACHINE_CHECK_STACK).cast::<u8>();
+        let machine_check_top = machine_check_base.add(size_of::<MachineCheckStack>()) as u64;
+
+        ptr::addr_of_mut!((*tss_pointer).rsp[0]).write_unaligned(kernel_stack_top);
+        ptr::addr_of_mut!((*tss_pointer).ist[0]).write_unaligned(double_fault_top);
+        ptr::addr_of_mut!((*tss_pointer).ist[1]).write_unaligned(non_maskable_top);
+        ptr::addr_of_mut!((*tss_pointer).ist[2]).write_unaligned(machine_check_top);
 
         let tss_base = tss_pointer as u64;
         let tss_limit = (size_of::<TaskStateSegment>() - 1) as u64;
@@ -1023,10 +1056,40 @@ fn initialize_tss_and_gdt() {
 /// # Safety
 ///
 /// Call exactly once during single-core bootstrap, before any code enables
-/// external interrupts. This function replaces the active GDT and IDT and
-/// loads the task register with the bootstrap TSS.
-pub unsafe fn init() {
-    initialize_tss_and_gdt();
+/// external interrupts. The function validates the active stack against the
+/// bootloader-provided kernel-stack interval, configures TSS.RSP0 and IST stacks,
+/// then replaces the active GDT/IDT and loads the task register.
+pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
+    if INTERRUPT_INIT_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: called more than once\\n");
+        super::halt_forever();
+    }
+
+    let rflags: u64;
+    let stack_pointer: u64;
+    // SAFETY: reading RFLAGS and RSP is valid during privileged x86_64 bootstrap.
+    unsafe {
+        asm!("pushfq", "pop {}", out(reg) rflags, options(preserves_flags));
+        asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
+    }
+    if rflags & RFLAGS_IF != 0 {
+        super::serial_write(b"ONE OS INTERRUPT INIT FAILED: interrupts enabled\\n");
+        super::halt_forever();
+    }
+
+    let Some(kernel_stack_top) = validate_kernel_entry_stack(
+        kernel_stack_bottom,
+        kernel_stack_len,
+        stack_pointer,
+    ) else {
+        super::serial_write(b"ONE OS TSS INIT FAILED: invalid kernel entry stack interval\\n");
+        super::halt_forever();
+    };
+
+    initialize_tss_and_gdt(kernel_stack_top);
 
     let selector: u16;
     // SAFETY: reading CS is valid in the current x86_64 kernel context.
@@ -1058,7 +1121,12 @@ pub unsafe fn init() {
 
         install!(0, divide_error_handler);
         install!(1, debug_handler);
-        install!(2, non_maskable_interrupt_handler);
+        install_gate_with_ist(
+            2,
+            non_maskable_interrupt_handler as *const () as usize,
+            selector,
+            NON_MASKABLE_IST_INDEX,
+        );
         install!(3, breakpoint_handler);
         install!(4, overflow_handler);
         install!(5, bound_range_handler);
@@ -1079,7 +1147,12 @@ pub unsafe fn init() {
         install!(15, reserved_15_handler);
         install!(16, x87_floating_point_handler);
         install!(17, alignment_check_handler);
-        install!(18, machine_check_handler);
+        install_gate_with_ist(
+            18,
+            machine_check_handler as *const () as usize,
+            selector,
+            MACHINE_CHECK_IST_INDEX,
+        );
         install!(19, simd_floating_point_handler);
         install!(20, virtualization_handler);
         install!(21, control_protection_handler);
@@ -1110,6 +1183,28 @@ pub unsafe fn init() {
     }
 
     super::serial_write(b"CPU exception IDT installed\n");
+}
+
+fn validate_kernel_entry_stack(
+    bottom: u64,
+    length: u64,
+    current_stack_pointer: u64,
+) -> Option<u64> {
+    if length == 0 || bottom < KERNEL_HALF_START || !is_canonical_4level(bottom) {
+        return None;
+    }
+    let top = bottom.checked_add(length)?;
+    let last = top.checked_sub(1)?;
+    if top & 0xf != 0
+        || top < KERNEL_HALF_START
+        || !is_canonical_4level(top)
+        || !is_canonical_4level(last)
+        || current_stack_pointer < bottom
+        || current_stack_pointer >= top
+    {
+        return None;
+    }
+    Some(top)
 }
 
 fn report_exception(
