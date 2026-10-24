@@ -292,7 +292,7 @@ pub fn activate_supervisor_kernel_root(
     };
 
     let cr4: u64;
-    let mut stack_pointer: u64;
+    let stack_pointer: u64;
     // SAFETY: CR4 and RSP are readable in the privileged x86_64 kernel.
     unsafe {
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
