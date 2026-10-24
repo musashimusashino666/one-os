@@ -28,7 +28,7 @@ concurrency:
   # Separate event types so workflow_dispatch on a PR branch cannot cancel its
   # required PR-context run. Within the same event type, newer PR runs still replace
   # older ones for that head branch; repository qualification avoids fork collisions.
-  group: one-os-\${{ github.workflow }}-\${{ github.event_name }}-\${{ github.event.pull_request.head.repo.full_name || github.repository }}-\${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: one-os-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -90,13 +90,13 @@ jobs:
           # Cargo's assembly output location varies with target kind and Cargo version.
           # Search the isolated target directory recursively rather than hard-coding deps/.
           mapfile -t asm_files < <(find "$asm_target_dir" -type f -name '*.s' -print)
-          if [[ "\${#asm_files[@]}" -eq 0 ]]; then
+          if [[ "${#asm_files[@]}" -eq 0 ]]; then
             echo "Optimized kernel assembly was not emitted under $asm_target_dir" >&2
             exit 1
           fi
 
           found_cr3=0
-          for asm_file in "\${asm_files[@]}"; do
+          for asm_file in "${asm_files[@]}"; do
             if grep -qi 'cr3' "$asm_file"; then
               found_cr3=1
               echo "Inspecting CR3-related instructions in $asm_file"
@@ -118,8 +118,8 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            echo "QEMU boot attempt \${attempt}/3"
-            log="$CARGO_TARGET_DIR/qemu-serial-\${attempt}.log"
+            echo "QEMU boot attempt ${attempt}/3"
+            log="$CARGO_TARGET_DIR/qemu-serial-${attempt}.log"
             set +e
             timeout 10s qemu-system-x86_64 \
               -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
