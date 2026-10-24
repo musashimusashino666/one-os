@@ -1043,8 +1043,7 @@ mod tests {
         .unwrap();
 
         let pml4_index = ((virtual_address >> 39) & 0x1ff) as usize;
-        let intermediate = tables.read_any(root, pml4_index).unwrap()
-            & PHYSICAL_ADDRESS_FIELD_MASK;
+        let intermediate = tables.read_any(root, pml4_index).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         assert!(tables.pages.contains_key(&intermediate));
         let prior_table_count = tables.pages.len();
         let prior_root_entry = tables.read_any(root, pml4_index);
