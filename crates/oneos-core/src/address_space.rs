@@ -283,7 +283,10 @@ impl ActiveAddressSpaceRoot {
         observed_cr3_root_physical: u64,
     ) -> Result<AddressSpaceRoot, (Self, AddressSpaceRootDeactivationError)> {
         if self.root.recursive_index != Some(self.recursive_index) {
-            return Err((self, AddressSpaceRootDeactivationError::RecursiveIndexMismatch));
+            return Err((
+                self,
+                AddressSpaceRootDeactivationError::RecursiveIndexMismatch,
+            ));
         }
         if let Err(error) = validate_deactivation_root(
             self.root.physical_address(),
@@ -527,9 +530,6 @@ fn validate_kernel_entry(
 
 /// Checks whether a byte range is wholly inside the x86_64 four-level user half.
 ///
-/// This function validates arithmetic and the user/kernel canonical-half
-/// boundary only. It does not check mappings, page permissions, frame
-/// ownership, guard regions, or whether address zero is intentionally unmapped.
 fn validate_deactivation_root(
     root_physical_address: u64,
     physical_address_bits: u8,
@@ -544,6 +544,9 @@ fn validate_deactivation_root(
     Ok(())
 }
 
+/// This function validates arithmetic and the user/kernel canonical-half
+/// boundary only. It does not check mappings, page permissions, frame
+/// ownership, guard regions, or whether address zero is intentionally unmapped.
 pub fn validate_user_virtual_range(start: u64, length: u64) -> Result<(), UserVirtualRangeError> {
     if length == 0 {
         return Err(UserVirtualRangeError::EmptyRange);
