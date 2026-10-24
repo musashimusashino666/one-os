@@ -62,12 +62,15 @@ Expected serial output includes:
     ONE OS PAGE TABLE INSPECTION READY
     ONE OS VM MAPPING SMOKE TEST READY
     ONE OS ADDRESS SPACE ROOT INITIALIZATION READY
+    ONE OS KERNEL ADDRESS SPACE ACTIVATED
     Usable physical frames: 0x...
     Usable physical regions: 0x...
     Architecture: x86_64
     Milestone: serial bootstrap
     Memory map: structurally validated
     ONE OS BOOTSTRAP COMPLETE
+
+The normal boot path now constructs a fresh PML4 root, verifies that execution-critical addresses are in the upper canonical half, activates it, and emits `ONE OS KERNEL ADDRESS SPACE ACTIVATED` only after CR3 readback succeeds. The activated root frame remains owned while in use. This check is a bootstrap-continuity test, not proof of ring-3 execution or process isolation.
 
 For the dedicated memory-acceptance images, CI additionally builds and runs:
 `image-test-supervisor-write-protection`, `image-test-nx-protection`, and
