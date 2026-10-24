@@ -629,7 +629,6 @@ mod tests {
         allocator: &mut FrameAllocator<'_>,
     ) -> (AddressSpaceRoot, u64, Frame) {
         let root_frame = allocator.allocate_frame().unwrap();
-        let root_address = root_frame.physical_address();
         let kernel_frame = allocator.allocate_frame().unwrap();
         let kernel_address = kernel_frame.physical_address();
         let root = AddressSpaceRoot::try_from_frame(root_frame, 32).unwrap();
