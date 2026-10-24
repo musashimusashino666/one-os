@@ -791,6 +791,13 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         !self.is_usable_frame(physical_address) || self.is_table_frame(physical_address)
     }
 
+    fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
+        // The physical-memory-offset mapping is currently writable for Usable
+        // frames. Until the kernel can remove/downgrade every writable alias and
+        // track all aliases, executable mappings fail closed to preserve W^X.
+        false
+    }
+
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
         let (pointer, _reachable) = self.entry_pointer(table_physical, index, level)?;
         // SAFETY: entry_pointer validated the alias and alignment. Reachable
@@ -1075,6 +1082,85 @@ pub struct ProtectionTestMapping {
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection"
 ))]
+struct ProtectionTestFrameGuard<'a> {
+    boot_info: &'a BootInfo,
+    frame: Option<Frame>,
+    mapped_virtual_address: Option<u64>,
+}
+
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+impl<'a> ProtectionTestFrameGuard<'a> {
+    fn new(boot_info: &'a BootInfo, frame: Frame) -> Self {
+        Self {
+            boot_info,
+            frame: Some(frame),
+            mapped_virtual_address: None,
+        }
+    }
+
+    fn physical_address(&self) -> u64 {
+        self.frame
+            .as_ref()
+            .expect("protection test guard owns a frame")
+            .physical_address()
+    }
+
+    fn mark_mapped(&mut self, virtual_address: u64) {
+        self.mapped_virtual_address = Some(virtual_address);
+    }
+
+    fn into_frame(mut self) -> Frame {
+        self.mapped_virtual_address = None;
+        self.frame
+            .take()
+            .expect("protection test guard owns a frame")
+    }
+}
+
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
+impl Drop for ProtectionTestFrameGuard<'_> {
+    fn drop(&mut self) {
+        let Some(frame) = self.frame.take() else {
+            return;
+        };
+
+        if let Some(virtual_address) = self.mapped_virtual_address {
+            let root = active_root_table_physical();
+            let Ok(mut editor) = KernelPageTableEditor::new(self.boot_info, virtual_address) else {
+                // Keep the allocator's ownership bit set if safe unmapping cannot
+                // be proven; a leaked frame is safer than a dangling live mapping.
+                let _unreleased_frame = frame;
+                return;
+            };
+            match unmap_4k(root, virtual_address, &mut editor) {
+                Ok(unmapped) if unmapped.physical_address == frame.physical_address() => {
+                    invalidate_local_tlb(virtual_address);
+                    if let Err((_error, _frame)) = super::memory::free_frame(frame) {
+                        // Keep the frame allocated on release failure; never panic
+                        // while cleaning up a failed test setup.
+                    }
+                }
+                _ => {
+                    // Do not recycle a frame while its mapping state is uncertain.
+                    let _unreleased_frame = frame;
+                }
+            }
+        } else if let Err((_error, _frame)) = super::memory::free_frame(frame) {
+            // The frame remains allocated if the allocator rejects release.
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "test-supervisor-write-protection",
+    feature = "test-nx-protection"
+))]
 #[derive(Clone, Copy)]
 enum ProtectionTestPayload {
     Sentinel,
@@ -1119,7 +1205,8 @@ fn prepare_protection_test_mapping(
     payload: ProtectionTestPayload,
 ) -> Result<ProtectionTestMapping, PagingError> {
     let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
-    let physical_address = frame.physical_address();
+    let mut frame_guard = ProtectionTestFrameGuard::new(boot_info, frame);
+    let physical_address = frame_guard.physical_address();
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => {
@@ -1191,7 +1278,7 @@ fn prepare_protection_test_mapping(
             protected_permissions,
             &mut editor,
         ) {
-            Ok(()) => {}
+            Ok(()) => frame_guard.mark_mapped(candidate),
             Err(error) if error.is_retryable_for_mapping_candidate() => continue,
             Err(error) => return Err(PagingError::MappingMutation(error)),
         }
@@ -1241,7 +1328,7 @@ fn prepare_protection_test_mapping(
         return Ok(ProtectionTestMapping {
             virtual_address: candidate,
             physical_address,
-            _frame: frame,
+            _frame: frame_guard.into_frame(),
         });
     }
 
