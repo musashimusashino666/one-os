@@ -116,7 +116,7 @@ impl AddressSpaceError {
                 AddressSpaceRootInitializationError::KernelEntryAliasesOwnedRoot { .. } => {
                     b"Address-space source entry aliases the owned destination root\n"
                 }
-            }
+            },
             Self::RootTableUnavailable => {
                 b"Address-space root setup could not safely access a complete root frame\n"
             }
