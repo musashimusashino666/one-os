@@ -48,8 +48,9 @@ pub use paging_preconditions::{
     validate_paging_cpu_capabilities, PagingPreconditionError,
 };
 pub use user_pages::{
-    map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
-    UserPageMappingRegistry,
+    initialize_user_frame, map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor,
+    UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
+    UserPageMappingRegistry, ZeroedFrame,
 };
 
 /// Stable identifier for a resource managed by an authority.
