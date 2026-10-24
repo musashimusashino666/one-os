@@ -46,10 +46,18 @@ The allocator tracks physical-frame ownership. The kernel now uses a guarded pag
 ## Page-table mutation and physical-frame permissions
 
 The host-testable `map_4k` primitive rejects leaf targets that the editor identifies
-as page-table or reserved frames, and separately rejects the supplied root frame.
-The kernel editor is stricter: ordinary leaf targets must belong to allocator-eligible
-`Usable` memory and must not be registered as page tables. These checks protect the
-mapping engine itself rather than assuming every caller obeys the allocator contract.
+as page-table or reserved frames, and separately rejects the supplied root frame. It
+also requires the exact target frame to be currently allocated according to the editor's
+allocation-state query; a free frame inside a `Usable` region is rejected. The kernel
+editor checks the global allocator bitmap under its lock and fails closed if the state
+cannot be read. These checks protect the mapping engine itself rather than assuming
+every caller obeys the allocator contract.
+
+The check-to-publication guarantee currently relies on the mutation path running on the
+single CPU with maskable interrupts disabled. Allocation-state inspection does not prove
+which caller owns a frame token and is not an SMP ownership protocol. Before enabling
+preemption or SMP address-space mutation, retain ownership tokens for mapped data frames
+and synchronize token lifetime, mapping publication, unmapping, and remote TLB shootdowns.
 
 The physical-memory-offset alias used to initialize a frame is validated against the
 expected physical address and must be writable, supervisor-only, and non-executable.
