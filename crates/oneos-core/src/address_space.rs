@@ -274,9 +274,11 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
         return Err(AddressSpaceRootInitializationError::RootAliasesKernelRoot);
     }
     if kernel_recursive_index >= PML4_ENTRIES {
-        return Err(AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex {
-            index: kernel_recursive_index,
-        });
+        return Err(
+            AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex {
+                index: kernel_recursive_index,
+            },
+        );
     }
     if !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES).contains(&root_recursive_index) {
         return Err(AddressSpaceRootInitializationError::InvalidRecursiveIndex {
@@ -315,9 +317,7 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
                 .ok_or(AddressSpaceRootInitializationError::KernelEntryUnavailable { index })?;
             if entry != 0 {
                 return Err(
-                    AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied {
-                        index,
-                    },
+                    AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied { index },
                 );
             }
             upper_entries[index - LOWER_HALF_PML4_ENTRIES] =
@@ -715,7 +715,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(editor.entry(root_address, 2), 0);
-        assert_eq!(editor.entry(root_address, 511), root_address | PRESENT | WRITABLE | NO_EXECUTE);
+        assert_eq!(
+            editor.entry(root_address, 511),
+            root_address | PRESENT | WRITABLE | NO_EXECUTE
+        );
         assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
 
         allocator.free_frame(root.into_frame()).unwrap();
@@ -737,7 +740,11 @@ mod tests {
 
         assert_eq!(
             root.initialize_from_kernel_root(kernel_address, 2, 511, &mut editor),
-            Err(AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied { index: 511 })
+            Err(
+                AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied {
+                    index: 511
+                }
+            )
         );
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
