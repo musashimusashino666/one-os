@@ -109,6 +109,10 @@ impl PagingError {
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
             }
+            Self::PagingDisabled => b"CR0.PG is disabled; paging is not active\n",
+            Self::PcidUnsupported => {
+                b"CR4.PCIDE is enabled; PCID-tagged CR3 switching is not supported\n"
+            }
             Self::SupervisorWriteProtectionDisabled => {
                 b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\n"
             }
