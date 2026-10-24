@@ -43,6 +43,7 @@ pub enum AddressSpaceError {
     InvalidOwnedRoot(AddressSpaceRootError),
     RootInitialization(AddressSpaceRootInitializationError),
     RootTableUnavailable,
+    NoUnusedRecursiveIndex,
     RootVerificationFailed { index: usize },
 }
 
@@ -83,8 +84,14 @@ impl AddressSpaceError {
                 AddressSpaceRootInitializationError::InvalidKernelRootFrame(_) => {
                     b"Address-space initializer rejected the kernel root frame\n"
                 }
+                AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex { .. } => {
+                    b"Address-space initializer rejected the bootloader recursive index\n"
+                }
                 AddressSpaceRootInitializationError::InvalidRecursiveIndex { .. } => {
-                    b"Address-space initializer rejected the recursive index\n"
+                    b"Address-space initializer rejected the new root recursive index\n"
+                }
+                AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied { .. } => {
+                    b"Address-space root recursive slot is already occupied by a kernel mapping\n"
                 }
                 AddressSpaceRootInitializationError::RootAliasesKernelRoot => {
                     b"Address-space root aliases the active kernel root\n"
@@ -119,6 +126,9 @@ impl AddressSpaceError {
             },
             Self::RootTableUnavailable => {
                 b"Address-space root setup could not safely access a complete root frame\n"
+            }
+            Self::NoUnusedRecursiveIndex => {
+                b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
             }
             Self::RootVerificationFailed { .. } => {
                 b"Address-space root contents did not match the initialization contract\n"
@@ -190,9 +200,24 @@ pub fn verify_root_initialization_smoke_test(
         destination_root_pointer: None,
     };
 
+    if !editor.table_is_readable(kernel_root_physical)
+        || !editor.table_is_read_write_accessible(root_physical)
+    {
+        release_frame(root.into_frame())?;
+        return Err(AddressSpaceError::RootTableUnavailable);
+    }
+    let root_recursive_index = match editor.select_root_recursive_index() {
+        Ok(index) => index,
+        Err(error) => {
+            release_frame(root.into_frame())?;
+            return Err(error);
+        }
+    };
+
     let initialization = root.initialize_from_kernel_root(
         kernel_root_physical,
         usize::from(recursive_index),
+        root_recursive_index,
         &mut editor,
     );
 
@@ -202,6 +227,7 @@ pub fn verify_root_initialization_smoke_test(
             root_physical,
             kernel_root_physical,
             usize::from(recursive_index),
+            root_recursive_index,
         )
     } else {
         Ok(())
@@ -219,7 +245,8 @@ fn verify_initialized_entries(
     editor: &mut KernelAddressSpaceRootEditor<'_>,
     root_physical: u64,
     kernel_root_physical: u64,
-    recursive_index: usize,
+    kernel_recursive_index: usize,
+    root_recursive_index: usize,
 ) -> Result<(), AddressSpaceError> {
     for index in 0..LOWER_HALF_PML4_ENTRIES {
         if editor.read_entry(root_physical, index, 4) != Some(0) {
@@ -228,8 +255,10 @@ fn verify_initialized_entries(
     }
 
     for index in LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT {
-        let expected = if index == recursive_index {
+        let expected = if index == root_recursive_index {
             root_physical | PRESENT | WRITABLE | NO_EXECUTE
+        } else if index == kernel_recursive_index {
+            0
         } else {
             editor
                 .read_entry(kernel_root_physical, index, 4)
@@ -290,6 +319,24 @@ impl KernelAddressSpaceRootEditor<'_> {
             return None;
         }
         Some(pointer)
+    }
+
+    fn select_root_recursive_index(&mut self) -> Result<usize, AddressSpaceError> {
+        if !self.table_is_readable(self.kernel_root_physical) {
+            return Err(AddressSpaceError::RootTableUnavailable);
+        }
+
+        for index in (LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT).rev() {
+            if index == usize::from(self.recursive_index) {
+                continue;
+            }
+            match self.read_entry(self.kernel_root_physical, index, 4) {
+                Some(0) => return Ok(index),
+                Some(_) => continue,
+                None => return Err(AddressSpaceError::RootTableUnavailable),
+            }
+        }
+        Err(AddressSpaceError::NoUnusedRecursiveIndex)
     }
 
     fn destination_root_pointer(&self) -> Option<*mut u64> {
