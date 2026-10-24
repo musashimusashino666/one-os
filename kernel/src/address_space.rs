@@ -424,7 +424,11 @@ pub fn activate_supervisor_kernel_root(
         // SAFETY: PGE may be toggled by the privileged kernel; disabling it
         // flushes global translations before the root switch.
         unsafe {
-            asm!("mov cr4, {}", in(reg) cr4_without_pge, options(nomem, nostack, preserves_flags));
+            asm!(
+                "mov cr4, {}",
+                in(reg) cr4_without_pge,
+                options(nomem, nostack, preserves_flags)
+            );
         }
     }
     // SAFETY: root initialization and complete required mapping checks have
@@ -436,7 +440,11 @@ pub fn activate_supervisor_kernel_root(
         // SAFETY: restore the original paging-feature configuration after CR3
         // has switched and all old global translations have been flushed.
         unsafe {
-            asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+            asm!(
+                "mov cr4, {}",
+                in(reg) cr4,
+                options(nomem, nostack, preserves_flags)
+            );
         }
     }
 
