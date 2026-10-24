@@ -1,9 +1,12 @@
-//! Kernel integration for constructing an inactive address-space root.
+//! Kernel integration for constructing and runtime-switching address-space roots.
 //!
-//! This smoke test connects the host-testable AddressSpaceRoot initializer to
-//! the bootloader's recursive mapping and the checked physical-memory offset.
-//! It never switches CR3 and never publishes the new root to a running context.
-//! The new root is verified and zeroed before its frame can return to the allocator.
+//! This module connects host-testable address-space-root initialization to the
+//! bootloader's recursive mapping and the checked physical-memory offset. During
+//! normal boot, the smoke test exercises an A -> B -> A CR3 switch between the
+//! active kernel root and a temporary root with shared supervisor-only mappings.
+//! It validates the paging context and CR3 readback, then clears and releases the
+//! temporary root only after switching back. This does not implement user-process
+//! isolation, lower-level page-table reclamation, or SMP/remote TLB shootdowns.
 
 use core::arch::asm;
 use core::arch::x86_64::__cpuid;
