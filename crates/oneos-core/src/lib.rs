@@ -42,14 +42,14 @@ pub use page_table::{
 pub use page_table_mutation::{
     map_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
 };
-pub use user_pages::{
-    map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
-    UserPageMappingRegistry,
-};
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
     validate_kernel_entry_stack, validate_kernel_root_activation_state,
     validate_paging_cpu_capabilities, PagingPreconditionError,
+};
+pub use user_pages::{
+    map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor, UserPageMappingError,
+    UserPageMappingRegistry,
 };
 
 /// Stable identifier for a resource managed by an authority.
