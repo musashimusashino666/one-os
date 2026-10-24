@@ -23,7 +23,7 @@ EXCEPTION = "ONE OS EXCEPTION"
 
 class ValidateSerialOutputTests(unittest.TestCase):
     def test_healthy_boot_marker_and_expected_timeout_pass(self):
-        valid, _ = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{COMPLETE}\n", 124)
+        valid, _ = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n", 124)
         self.assertTrue(valid)
 
     def test_invalid_memory_map_marker_fails(self):
@@ -75,7 +75,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
         self.assertIn("allocator failure marker", reason.lower())
 
     def test_clean_exit_is_not_accepted_as_expected_halt(self):
-        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{COMPLETE}\n", 0)
+        valid, reason = validate_serial_output(f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n", 0)
         self.assertFalse(valid)
         self.assertIn("expected 124", reason.lower())
 
@@ -133,7 +133,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_address_space_root_failure_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{START}\n{ADDRESS_SPACE_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{COMPLETE}\n",
+            f"{START}\n{ADDRESS_SPACE_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n",
             124,
         )
         self.assertFalse(valid)
