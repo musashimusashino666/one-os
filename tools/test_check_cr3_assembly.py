@@ -377,6 +377,34 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("block 2 must not specify nomem", message)
 
+    def test_cr3_named_operand_template_is_still_checked(self):
+        source = '''
+            asm!(
+                "mov cr3, {root}",
+                root = in(reg) root_physical,
+                options(nostack, preserves_flags)
+            );
+            asm!(
+                "mov cr3, {root}",
+                root = in(reg) root_physical,
+                options(nomem, nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("block 2 must not specify nomem", message)
+
+    def test_cr4_named_operand_template_is_supported(self):
+        source = """
+            let cr4_without_pge = cr4 & !CR4_PGE;
+            asm!("mov cr4, {value}", value = in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {value}", value = in(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertTrue(valid, message)
+
     def test_cr4_source_validator_checks_every_switch_sequence(self):
         source = """
             let cr4_without_pge = cr4 & !CR4_PGE;
