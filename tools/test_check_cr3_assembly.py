@@ -51,6 +51,7 @@ class ActivationAssemblyTests(unittest.TestCase):
     def test_rejects_cr3_write_after_restore(self):
         valid, message = validate_function_body(
             [
+                "movq %cr4, %rbx",
                 "andq $-129, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr4",
