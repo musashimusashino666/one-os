@@ -13,13 +13,14 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
-    physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
-    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities,
-    initialize_user_frame, Frame, FrameRegistryError, PagePermissions, PageTableEditor,
-    PageTableError, PageTableFrameRegistry, PageTableMutationError, PageTranslation,
-    PagingPreconditionError, UserFrameInitializationError, UserFrameInitializer, PAGE_SIZE,
+    initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index,
+    map_supervisor_4k, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, Frame, FrameRegistryError, PagePermissions,
+    PageTableEditor, PageTableError, PageTableFrameRegistry, PageTableMutationError,
+    PageTranslation, PagingPreconditionError, UserFrameInitializationError,
+    UserFrameInitializer, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
