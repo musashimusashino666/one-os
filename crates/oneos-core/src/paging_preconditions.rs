@@ -234,11 +234,23 @@ mod tests {
         let bottom = 0xffff_8000_1000_0000;
         let length = 0x8000;
         let top = bottom + length;
-        assert_eq!(super::validate_kernel_entry_stack(bottom, length, top - 8), Some(top));
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, top - 8),
+            Some(top)
+        );
         assert_eq!(super::validate_kernel_entry_stack(bottom, 0, top - 8), None);
-        assert_eq!(super::validate_kernel_entry_stack(bottom, u64::MAX, top - 8), None);
-        assert_eq!(super::validate_kernel_entry_stack(bottom, length + 1, top - 8), None);
-        assert_eq!(super::validate_kernel_entry_stack(bottom, length, bottom - 1), None);
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, u64::MAX, top - 8),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length + 1, top - 8),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, bottom - 1),
+            None
+        );
         assert_eq!(super::validate_kernel_entry_stack(bottom, length, top), None);
         assert_eq!(super::validate_kernel_entry_stack(0x1000, length, 0x2000), None);
         assert_eq!(
