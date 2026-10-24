@@ -1028,9 +1028,8 @@ unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
 
 /// Exercise the kernel-backed user-frame initializer on an allocated, dirty
 /// frame. This runs in the existing VM-transition QEMU image before any user
-/// address space exists; it validates the initialization/token gate, not live
-/// Ring-3 publication or process isolation.
-#[cfg(feature = "test-vm-transitions")]
+/// frame before kernel-root activation on every boot. This validates the
+/// initialization/token gate, not live Ring-3 publication or process isolation.
 pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let physical_address = frame.physical_address();
