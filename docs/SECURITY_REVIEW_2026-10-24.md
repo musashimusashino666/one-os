@@ -37,6 +37,23 @@ These are API-level mitigations only. The kernel-backed zeroing adapter and live
 mapping integration remain outstanding, as do process isolation, SMP synchronization,
 remote TLB shootdowns and system-wide W^X.
 
+## Follow-up: public low-level mapping bypass and physical-frame test model
+
+The raw `map_4k` primitive is now crate-private and is no longer re-exported by
+`oneos-core`. Downstream callers cannot combine an arbitrary physical address with
+user-accessible permission flags through a public mapping entry point. User-visible
+data mappings must use `map_user_data_page` with a `ZeroedFrame` token, and a
+compile-fail doctest verifies that importing the raw mapper from the crate root is
+rejected.
+
+The host test editor now stores content by physical frame address. Its initializer
+reads the input Frame's physical address and clears only that frame's backing store.
+The cross-address-space regression verifies that the physical frame installed in
+address space B is exactly the frame whose old contents were scrubbed.
+
+This is still not a production kernel-backed zeroing implementation. Its real physical
+memory adapter and integration into live user mappings remain acceptance gates.
+
 ## Validation gate
 
 The required CI suite must pass on the exact latest PR HEAD before merge. It includes
