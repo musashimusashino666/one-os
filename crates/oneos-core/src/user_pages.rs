@@ -311,9 +311,6 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
 
     // translate_4level calls the reader in level order (4, 3, 2, 1). Keep
     // level tracking here because PageTableEditor validates access per level.
-    let mut level = 4;
-    let translation = translate_4level(root_physical, root_physical, |_| None);
-    let _ = translation;
     let mut next_level = 4;
     let translation = translate_4level(virtual_address, root_physical, |table, index| {
         let current_level = next_level;
@@ -321,8 +318,6 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
         editor.read_entry(table, index, current_level)
     })
     .map_err(UserPageMappingError::Translation)?;
-    level = level.saturating_sub(1);
-    let _ = level;
 
     if translation.page_size != PAGE_SIZE
         || translation.physical_address != expected_physical
@@ -356,7 +351,7 @@ mod tests {
     };
     use crate::{
         AddressSpaceRoot, Frame, FrameAllocator, FrameSegment, PagePermissions, PageTableEditor,
-        PageTableMutationError, PAGE_SIZE,
+        PageTableMutationError,
     };
 
     const PRESENT: u64 = 1;
@@ -545,7 +540,6 @@ mod tests {
         allocator.free_frame(returned_frame).unwrap();
         allocator.free_frame(root.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
-        assert_eq!(PAGE_SIZE, 4096);
     }
 
     #[test]
