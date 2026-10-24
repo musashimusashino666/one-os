@@ -255,6 +255,9 @@ impl KernelAddressSpaceRootEditor<'_> {
     }
 
     fn destination_root_pointer(&self) -> Option<*mut u64> {
+        // Validate the recursive self-reference before translating the direct-map
+        // alias, matching the precondition established by boot mapping inspection.
+        let _validated_kernel_root = self.kernel_root_pointer()?;
         if !is_physical_page(self.root_physical, self.physical_address_bits)
             || !is_region_page(
                 self.regions,
@@ -306,18 +309,20 @@ impl AddressSpaceRootEditor for KernelAddressSpaceRootEditor<'_> {
         if table_physical != self.kernel_root_physical {
             return false;
         }
-        self.kernel_root_pointer
-            .get_or_insert_with(|| self.kernel_root_pointer())
-            .is_some()
+        if self.kernel_root_pointer.is_none() {
+            self.kernel_root_pointer = self.kernel_root_pointer();
+        }
+        self.kernel_root_pointer.is_some()
     }
 
     fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool {
         if table_physical != self.root_physical {
             return false;
         }
-        self.destination_root_pointer
-            .get_or_insert_with(|| self.destination_root_pointer())
-            .is_some()
+        if self.destination_root_pointer.is_none() {
+            self.destination_root_pointer = self.destination_root_pointer();
+        }
+        self.destination_root_pointer.is_some()
     }
 
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
