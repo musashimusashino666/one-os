@@ -251,8 +251,14 @@ mod tests {
             super::validate_kernel_entry_stack(bottom, length, bottom - 1),
             None
         );
-        assert_eq!(super::validate_kernel_entry_stack(bottom, length, top), None);
-        assert_eq!(super::validate_kernel_entry_stack(0x1000, length, 0x2000), None);
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, top),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(0x1000, length, 0x2000),
+            None
+        );
         assert_eq!(
             super::validate_kernel_entry_stack(0xffff_7fff_ffff_f000, length, top - 8),
             None
