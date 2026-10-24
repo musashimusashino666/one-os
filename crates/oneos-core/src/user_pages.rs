@@ -651,10 +651,7 @@ mod tests {
     }
 
     impl UserFrameInitializer for TestEditor {
-        fn zero_frame(
-            &mut self,
-            _frame: &Frame,
-        ) -> Result<(), UserFrameInitializationError> {
+        fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
             if self.fail_zeroing {
                 return Err(UserFrameInitializationError::InitializationFailed);
             }
@@ -799,15 +796,14 @@ mod tests {
         let mut registry = UserPageMappingRegistry::<ZeroedFrame, 1>::new(&root);
         editor.fail_allocation = true;
 
-        let (error, returned_frame) =
-            map_user_data_page(
-                &root,
-                virtual_address,
-                initialize_user_frame(frame, &mut editor).unwrap(),
-                &mut registry,
-                &mut editor,
-            )
-            .unwrap_err();
+        let (error, returned_frame) = map_user_data_page(
+            &root,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap_err();
 
         assert_eq!(
             error,
@@ -999,15 +995,14 @@ mod tests {
         let extra_frame = allocator.allocate_frame().unwrap();
         let extra_physical = extra_frame.physical_address();
         let root_b_entry_before = editor.entry(root_b_physical, 0);
-        let (map_error, returned_extra) =
-            map_user_data_page(
-                &root_b,
-                0x8000,
-                initialize_user_frame(extra_frame, &mut editor).unwrap(),
-                &mut registry,
-                &mut editor,
-            )
-            .unwrap_err();
+        let (map_error, returned_extra) = map_user_data_page(
+            &root_b,
+            0x8000,
+            initialize_user_frame(extra_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap_err();
         assert_eq!(
             map_error,
             UserPageMappingError::AddressSpaceRootMismatch {
