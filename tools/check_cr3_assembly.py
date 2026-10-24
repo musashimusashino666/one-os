@@ -221,10 +221,7 @@ def _clobbered_gpr(raw_line: str) -> str | None:
 
 
 def validate_function_body(body: list[str]) -> tuple[bool, str]:
-    """Validate the PGE-clear -> CR3-write -> original-CR4-restore path."""
-    # Analyze each abstract path independently. Merging register provenance
-    # from different predecessors can lose the saved CR4 value when an
-    # optimizer lays out error epilogues before the successful switch block.
+    """Require every reachable CR3 write to be bracketed by PGE disable/restore."""
     instructions: list[tuple[str, str, list[str]]] = []
     labels: dict[str, int] = {}
     for raw_line in body:
@@ -242,6 +239,9 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     if not instructions:
         return False, "activation routine contains no instructions"
 
+    # Build the CFG and analyze both edges of each conditional branch. This is
+    # deliberately conservative: any reachable CR3 write must satisfy the
+    # protocol, even if another path through the function is safe.
     successors: list[list[int]] = [[] for _ in instructions]
     for index, (_, mnemonic, operands) in enumerate(instructions):
         fallthrough = index + 1 if index + 1 < len(instructions) else None
@@ -259,8 +259,6 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         elif fallthrough is not None:
             successors[index].append(fallthrough)
 
-    # Only these registers can carry the CR4 provenance being checked.
-    # 32/16/8-bit names are normalized to their 64-bit parent register.
     registers = [
         "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
         *(f"r{i}" for i in range(8, 16)),
@@ -270,10 +268,14 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     ORIGINAL = "original_cr4"
     CLEARED = "pge_cleared"
 
+    # Protocol stage:
+    #   0 = no verified CR4.PGE-clear write
+    #   1 = PGE-cleared CR4 has been written; CR3 write is now permitted
+    #   2 = CR3 was written; original CR4 must be restored before any exit
+    #   3 = original CR4 was restored; completed switch
     def instruction_transfer(
         index: int, tags: tuple[str, ...], stage: int
-    ) -> tuple[tuple[str, ...], int, bool]:
-        """Apply one instruction; return updated tags, path stage, and success."""
+    ) -> tuple[tuple[str, ...], int]:
         raw_line, mnemonic, operands = instructions[index]
         state = list(tags)
 
@@ -281,17 +283,17 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             # SysV x86-64 caller-saved registers are not preserved by calls.
             for name in ("rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"):
                 state[reg_index[name]] = NONE
-            return tuple(state), stage, False
+            return tuple(state), stage
 
         if mnemonic == "cpuid":
             for name in ("rax", "rbx", "rcx", "rdx"):
                 state[reg_index[name]] = NONE
-            return tuple(state), stage, False
+            return tuple(state), stage
 
         if mnemonic == "rdmsr":
             state[reg_index["rax"]] = NONE
             state[reg_index["rdx"]] = NONE
-            return tuple(state), stage, False
+            return tuple(state), stage
 
         clear_destination = _pge_clear_destination(raw_line)
         if clear_destination is not None:
@@ -300,7 +302,7 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
                 state[slot] = CLEARED
             elif slot is not None:
                 state[slot] = NONE
-            return tuple(state), stage, False
+            return tuple(state), stage
 
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
         if pair is not None:
@@ -313,17 +315,19 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
                 if source_tag == CLEARED and stage == 0:
                     stage = 1
                 elif source_tag == ORIGINAL and stage == 2:
-                    return tuple(state), stage, True
-                return tuple(state), stage, False
+                    stage = 3
+                return tuple(state), stage
 
             if _is_control_register(destination, "cr3"):
+                # The caller checks this edge before transfer; retain this
+                # transition only for a path already proven to have PGE clear.
                 if source_register in reg_index and stage == 1:
                     stage = 2
-                return tuple(state), stage, False
+                return tuple(state), stage
 
             if _is_control_register(source, "cr4") and destination_register in reg_index:
                 state[reg_index[destination_register]] = ORIGINAL
-                return tuple(state), stage, False
+                return tuple(state), stage
 
             if destination_register in reg_index:
                 destination_slot = reg_index[destination_register]
@@ -332,11 +336,8 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
                     if source_register in reg_index
                     else NONE
                 )
-            return tuple(state), stage, False
+            return tuple(state), stage
 
-        # Clear provenance on common destination-writing instructions. This
-        # includes POP (which overwrites its destination), while PUSH preserves
-        # all general-purpose register values.
         clobbered = _clobbered_gpr(raw_line)
         if clobbered in reg_index:
             state[reg_index[clobbered]] = NONE
@@ -345,24 +346,22 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             register = _operand_register(destination) if destination else None
             if register in reg_index:
                 state[reg_index[register]] = NONE
-        if mnemonic == "xchg" or mnemonic.startswith("xchg"):
+        if mnemonic.startswith("xchg"):
             for operand in operands:
                 register = _operand_register(operand)
                 if register in reg_index:
                     state[reg_index[register]] = NONE
-        return tuple(state), stage, False
+        return tuple(state), stage
 
     saw_clear_instruction = any(
         _pge_clear_destination(raw_line) is not None
         for raw_line, _, _ in instructions
     )
-    saw_clear_reach_cr4 = False
+    saw_clear_write = False
     saw_cr3_write = False
-    saw_original_cr4_write = False
+    saw_restore_write = False
+    saw_completed_switch = False
 
-    # State includes the path stage and per-register provenance, so separate
-    # branches never contaminate each other's values. Reaching a repeated
-    # (instruction, state) pair means further exploration cannot add evidence.
     from collections import deque
 
     initial_tags = tuple(NONE for _ in registers)
@@ -381,33 +380,51 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
         raw_line, mnemonic, operands = instructions[index]
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
+
+        # Reject each unsafe CR3 edge immediately. Do not return success merely
+        # because some other path completed the protocol.
         if pair is not None:
             source, destination = pair
             source_register = _operand_register(source)
             source_tag = tags[reg_index[source_register]] if source_register in reg_index else NONE
-            if _is_control_register(destination, "cr4") and source_register in reg_index:
-                if source_tag == CLEARED:
-                    saw_clear_reach_cr4 = True
-                elif source_tag == ORIGINAL:
-                    saw_original_cr4_write = True
-            elif _is_control_register(destination, "cr3") and source_register in reg_index:
+            if _is_control_register(destination, "cr3"):
                 saw_cr3_write = True
+                if source_register not in reg_index:
+                    return False, f"unrecognized CR3 source at instruction {index}: {raw_line.strip()}"
+                if stage != 1:
+                    return False, (
+                        "reachable CR3 write is not dominated by a PGE-cleared CR4 write "
+                        f"(stage={stage}, instruction {index}: {raw_line.strip()})"
+                    )
+            elif _is_control_register(destination, "cr4") and source_register in reg_index:
+                if source_tag == CLEARED:
+                    saw_clear_write = True
+                elif source_tag == ORIGINAL:
+                    saw_restore_write = True
 
-        next_tags, next_stage, success = instruction_transfer(index, tags, stage)
-        if success:
-            return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
+        next_tags, next_stage = instruction_transfer(index, tags, stage)
+
+        # A terminal instruction or a block that falls out of the function
+        # cannot leave PGE disabled or CR4 unrestored after a CR3 write.
+        is_terminal = mnemonic.startswith(("ret", "iret", "ud2", "hlt")) or not successors[index]
+        if is_terminal:
+            if next_stage in (1, 2):
+                return False, (
+                    "reachable exit leaves the CR3 switch protocol incomplete "
+                    f"(stage={next_stage}, instruction {index}: {raw_line.strip()})"
+                )
+            if next_stage == 3:
+                saw_completed_switch = True
         for successor in successors[index]:
             pending.append((successor, next_tags, next_stage))
 
-    if not saw_clear_instruction:
-        return False, "no instruction clearing CR4.PGE bit 7 was found"
-    if not saw_clear_reach_cr4:
+    if not saw_clear_instruction or not saw_clear_write:
         return False, "PGE-cleared value did not reach a CR4 write"
     if not saw_cr3_write:
         return False, "no actual CR3 write instruction found in activation routine"
-    if not saw_original_cr4_write:
-        return False, "original pre-switch CR4 value was not restored"
-    return False, "required order is PGE disable -> CR3 write -> PGE restore"
+    if not saw_restore_write or not saw_completed_switch:
+        return False, "original pre-switch CR4 was not restored on every CR3-switch exit"
+    return True, "all reachable CR3 writes are bracketed by PGE disable and original CR4 restore"
 
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
     """Ensure the CR3 inline asm retains the compiler memory clobber."""
