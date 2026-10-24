@@ -785,7 +785,10 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
-        self.is_table_frame(physical_address)
+        // Only allocator-eligible Usable frames may be mapped as ordinary data.
+        // Bootloader-owned, unknown/reserved, and registered page-table frames
+        // must never be accepted as leaf targets.
+        !self.is_usable_frame(physical_address) || self.is_table_frame(physical_address)
     }
 
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
