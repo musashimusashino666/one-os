@@ -322,12 +322,13 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   frame at a dedicated target VA as present, supervisor-only, read-only, and NX. Before
   attempting execution, inspect the complete four-level walk. Require every entry to
   be present; require the PML4E, PDPTE, and PDE to have NX=0 (execution permitted at
-  all ancestor levels) and R/W=1. Do not require ancestor U/S=0: the current
-  `map_4k` sets `USER_ACCESSIBLE=1` on newly created intermediate tables. Require
-  the target PTE to point to the expected frame with NX=1, R/W=0, and U/S=0. Reject
-  large-page entries in the ancestor path. This proves that the leaf PTE's NX bit,
-  rather than an ancestor NX bit, prevents instruction fetch; the leaf U/S bit also
-  ensures the effective mapping is supervisor-only. Ensure the exception handler,
+  all ancestor levels) and R/W=1. Newly created upper-half ancestors are supervisor-only
+  by the current address-aware policy; verify the actual ancestor U/S bits without using
+  them as the cause of the NX denial. Require the target PTE to point to the expected
+  frame with NX=1, R/W=0, and U/S=0. Reject large-page entries in the ancestor path.
+  This proves that the leaf PTE's NX bit, rather than an ancestor NX bit, prevents
+  instruction fetch; the leaf U/S bit also ensures the effective mapping is
+  supervisor-only. Ensure the exception handler,
   recovery continuation, stack, and serial code are not in the target page.
 - Arm a narrowly scoped test-only page-fault expectation immediately before a
   controlled indirect branch to the exact target VA. Require vector 14, `CR2` equal
