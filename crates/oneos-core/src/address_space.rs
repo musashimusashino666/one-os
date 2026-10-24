@@ -819,10 +819,12 @@ mod tests {
 
         assert_eq!(
             root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
-            Err(AddressSpaceRootInitializationError::PhysicalAddressWidthMismatch {
-                root_bits: 32,
-                editor_bits: 36,
-            })
+            Err(
+                AddressSpaceRootInitializationError::PhysicalAddressWidthMismatch {
+                    root_bits: 32,
+                    editor_bits: 36,
+                }
+            )
         );
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
@@ -876,5 +878,4 @@ mod tests {
         allocator.free_frame(root.into_frame()).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
-
 }
