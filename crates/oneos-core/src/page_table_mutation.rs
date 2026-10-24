@@ -804,7 +804,7 @@ mod tests {
         let root_entry = tables.read_any(root, indices[0]).unwrap();
         assert_ne!(root_entry & PRESENT, 0);
         assert_ne!(root_entry & WRITABLE, 0);
-        assert_ne!(root_entry & USER_ACCESSIBLE, 0);
+        assert_eq!(root_entry & USER_ACCESSIBLE, 0);
         assert_eq!(root_entry & NO_EXECUTE, 0);
         let translation = translate_4level(virtual_address, root, |table, index| {
             tables.read_any(table, index)
