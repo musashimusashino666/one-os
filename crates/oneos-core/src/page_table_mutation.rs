@@ -88,6 +88,12 @@ pub trait PageTableEditor {
     /// targets. Implementations must fail closed when frame role is unknown.
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool;
 
+    /// Returns true only when every writable alias of this physical frame has
+    /// been removed or downgraded and the caller can safely publish an executable
+    /// mapping. Unknown alias state must return false. This includes direct-map,
+    /// kernel, shared-address-space, and large-page aliases.
+    fn executable_mapping_allowed(&self, physical_address: u64) -> bool;
+
     /// Releases a page-table frame allocated by allocate_table.
     fn free_table(&mut self, physical_address: u64);
 }
@@ -102,6 +108,7 @@ pub enum PageTableMutationError {
     InvalidPhysicalAddress,
     MappedFrameIsReserved,
     WritableExecutable,
+    ExecutableAliasConflict,
     UserAddressOutsideUserHalf,
     TableUnavailable { level: u8 },
     NotMapped { level: u8 },
@@ -184,6 +191,9 @@ pub fn map_4k<E: PageTableEditor>(
     }
     if permissions.writable && permissions.executable {
         return Err(PageTableMutationError::WritableExecutable);
+    }
+    if permissions.executable && !editor.executable_mapping_allowed(physical_address) {
+        return Err(PageTableMutationError::ExecutableAliasConflict);
     }
 
     let indices = indices(virtual_address);
@@ -482,6 +492,7 @@ mod tests {
         next_physical: u64,
         allocations_remaining: Option<usize>,
         physical_address_bits: u8,
+        allow_executable_mappings: bool,
     }
 
     impl TestTables {
@@ -493,6 +504,7 @@ mod tests {
                 next_physical: 0x10_000,
                 allocations_remaining: None,
                 physical_address_bits: 48,
+                allow_executable_mappings: true,
             }
         }
 
@@ -512,6 +524,10 @@ mod tests {
 
         fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
             self.pages.contains_key(&physical_address)
+        }
+
+        fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
+            self.allow_executable_mappings
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
@@ -599,6 +615,10 @@ mod tests {
 
         fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
             self.pages.contains_key(&physical_address) || self.registry.contains(physical_address)
+        }
+
+        fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
+            true
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
@@ -1004,6 +1024,26 @@ mod tests {
         );
         assert_eq!(tables.pages.len(), prior_table_count);
         assert_eq!(tables.read_any(root, pml4_index), prior_root_entry);
+    }
+
+    #[test]
+    fn refuses_executable_mapping_when_frame_wx_cannot_be_proven() {
+        let root = 0x1000;
+        let mut tables = TestTables::new(root);
+        tables.allow_executable_mappings = false;
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                0xffff_8000_1000_0000,
+                0x8000,
+                PagePermissions::new(false, false, true),
+            ),
+            Err(PageTableMutationError::ExecutableAliasConflict)
+        );
+        assert_eq!(tables.pages.len(), 1);
+        assert_eq!(tables.read_any(root, 0x100), Some(0));
     }
 
     #[test]
