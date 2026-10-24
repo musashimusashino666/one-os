@@ -237,10 +237,6 @@ pub fn verify_root_initialization_smoke_test(
         }
     };
 
-    // select_root_recursive_index searches only upper-half PML4 slots
-    // (256..512), so this conversion preserves the private recursive index.
-    let active_recursive_index = root_recursive_index as u16;
-
     let initialization = root.initialize_from_kernel_root(
         kernel_root_physical,
         usize::from(recursive_index),
@@ -412,6 +408,10 @@ pub fn activate_supervisor_kernel_root(
             return Err(error);
         }
     };
+
+    // select_root_recursive_index searches only upper-half PML4 slots
+    // (256..512), so this conversion preserves the private recursive index.
+    let active_recursive_index = root_recursive_index as u16;
 
     let initialization = root.initialize_from_kernel_root(
         kernel_root_physical,
