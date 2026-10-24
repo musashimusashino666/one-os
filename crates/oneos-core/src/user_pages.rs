@@ -52,7 +52,7 @@ pub enum UserFrameInitializationError {
 /// `ZeroedFrame`. Implementations must preserve frame ownership on all paths.
 /// This is a trusted-kernel contract; a faulty implementation can violate the
 /// confidentiality property, so it must be implemented and reviewed in the kernel.
-pub trait UserFrameInitializer {
+pub unsafe trait UserFrameInitializer {
     /// Clears the complete 4 KiB frame, failing closed if it cannot be verified.
     fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError>;
 }
@@ -650,7 +650,7 @@ mod tests {
         }
     }
 
-    impl UserFrameInitializer for TestEditor {
+    unsafe impl UserFrameInitializer for TestEditor {
         fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
             if self.fail_zeroing {
                 return Err(UserFrameInitializationError::InitializationFailed);
@@ -876,15 +876,14 @@ mod tests {
         // Allocate two of the three missing intermediate tables, then fail.
         editor.fail_after_successful_allocations = Some(2);
 
-        let (error, returned_frame) =
-            map_user_data_page(
-                &root,
-                virtual_address,
-                initialize_user_frame(frame, &mut editor).unwrap(),
-                &mut registry,
-                &mut editor,
-            )
-            .unwrap_err();
+        let (error, returned_frame) = map_user_data_page(
+            &root,
+            virtual_address,
+            initialize_user_frame(frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap_err();
 
         assert_eq!(
             error,
