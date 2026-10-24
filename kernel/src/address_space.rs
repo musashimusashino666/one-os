@@ -366,7 +366,7 @@ fn switch_address_space(
     let (physical_address_bits, physical_memory_offset) =
         validate_runtime_root_context(boot_info, &current)?;
     let current_physical = current.physical_address();
-    let next_physical = next.physical_address();
+    let root_physical = next.physical_address();
     let current_recursive_index = current.recursive_index();
     let next_recursive_index = next
         .recursive_index()
@@ -374,7 +374,7 @@ fn switch_address_space(
         .ok_or(AddressSpaceError::RootActivationFailed)?;
 
     if !next.is_initialized()
-        || next_physical == current_physical
+        || root_physical == current_physical
         || next.physical_address_bits() != physical_address_bits
         || active_root_table_physical() != current_physical
     {
@@ -388,7 +388,7 @@ fn switch_address_space(
         regions: &boot_info.memory_regions,
         physical_memory_offset,
         kernel_root_physical: current_physical,
-        root_physical: next_physical,
+        root_physical: root_physical,
         recursive_index: current_recursive_index,
         physical_address_bits,
         kernel_root_is_owned: true,
@@ -396,13 +396,13 @@ fn switch_address_space(
         destination_root_pointer: None,
     };
     if !editor.table_is_readable(current_physical)
-        || !editor.table_is_read_write_accessible(next_physical)
+        || !editor.table_is_read_write_accessible(root_physical)
     {
         return Err(AddressSpaceError::RootTableUnavailable);
     }
     verify_initialized_entries(
         &mut editor,
-        next_physical,
+        root_physical,
         current_physical,
         usize::from(current_recursive_index),
         usize::from(next_recursive_index),
@@ -432,7 +432,7 @@ fn switch_address_space(
     unsafe {
         asm!(
             "mov cr3, {}",
-            in(reg) next_physical,
+            in(reg) root_physical,
             options(nostack, preserves_flags)
         );
     }
@@ -446,7 +446,7 @@ fn switch_address_space(
     }
 
     let observed_root = active_root_table_physical();
-    if observed_root != next_physical {
+    if observed_root != root_physical {
         // The hardware's active root is uncertain. Intentionally leak both
         // ownership tokens so neither frame can be recycled while referenced.
         core::mem::forget(current);
