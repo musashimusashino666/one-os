@@ -345,8 +345,8 @@ mod tests {
         UserPageMappingRegistry,
     };
     use crate::{
-        AddressSpaceRoot, Frame, FrameAllocator, FrameSegment, PagePermissions, PageTableEditor,
-        PageTableMutationError,
+        AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator, FrameSegment,
+        PagePermissions, PageTableEditor, PageTableMutationError,
     };
 
     const PRESENT: u64 = 1;
@@ -409,6 +409,40 @@ mod tests {
                 .find(|candidate| candidate.physical_address == table)
                 .expect("test table must exist")
                 .entries[index]
+        }
+    }
+
+    impl AddressSpaceRootEditor for TestEditor {
+        fn physical_address_bits(&self) -> u8 {
+            32
+        }
+
+        fn table_is_readable(&mut self, table_physical: u64) -> bool {
+            self.tables.iter().any(|table| {
+                table.physical_address == table_physical && table.in_use
+            })
+        }
+
+        fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool {
+            self.tables.iter().any(|table| {
+                table.physical_address == table_physical && table.in_use
+            })
+        }
+
+        fn read_entry(&mut self, table_physical: u64, index: usize, _level: u8) -> Option<u64> {
+            self.tables
+                .iter()
+                .find(|table| table.physical_address == table_physical && table.in_use)
+                .and_then(|table| table.entries.get(index).copied())
+        }
+
+        fn write_entry(&mut self, table_physical: u64, index: usize, _level: u8, value: u64) {
+            let table = self
+                .tables
+                .iter_mut()
+                .find(|table| table.physical_address == table_physical && table.in_use)
+                .expect("writes require a known, allocated table");
+            table.entries[index] = value;
         }
     }
 
