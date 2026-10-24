@@ -13,10 +13,15 @@ TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
 SIZE_RE_TEMPLATE = r"^\s*\.size\s+{}\s*,"
 INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)\s+(.+?)\s*$")
+GPR_RE = re.compile(
+    r"^(?:r(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+[dwb]?|"
+    r"e(?:ax|bx|cx|dx|si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
+    re.IGNORECASE,
+)
 
 
 def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
-    """Return the emitted function body or bodies for the activation routine."""
+    """Return emitted function bodies for the activation routine."""
     lines = assembly.splitlines()
     found: list[tuple[str, list[str]]] = []
 
@@ -51,7 +56,7 @@ def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
 
 
 def _instruction(raw_line: str) -> tuple[str, list[str]] | None:
-    """Parse a simple emitted instruction, accepting AT&T and Intel operand order."""
+    """Parse a simple emitted instruction, accepting ATT and Intel operand order."""
     line = raw_line.split("#", 1)[0].strip()
     if not line or line.startswith(".") or line.endswith(":"):
         return None
@@ -65,19 +70,29 @@ def _att_syntax(operands: list[str]) -> bool:
     return any("%" in part for part in operands)
 
 
+def _operand_register(operand: str) -> str | None:
+    name = operand.strip().lstrip("%").lower()
+    if GPR_RE.fullmatch(name):
+        return name
+    return None
+
+
 def _register_name(operand: str) -> str:
     return operand.strip().lstrip("%").lower()
 
 
-def _writes_control_register(raw_line: str, register: str) -> bool:
-    parsed = _instruction(raw_line)
-    if parsed is None:
-        return False
-    mnemonic, operands = parsed
-    if not mnemonic.startswith("mov") or not operands:
-        return False
-    destination = operands[-1] if _att_syntax(operands) else operands[0]
-    return _register_name(destination) == register
+def _source_destination(operands: list[str]) -> tuple[str, str] | None:
+    if len(operands) < 2:
+        return None
+    if _att_syntax(operands):
+        return operands[0], operands[-1]
+    return operands[-1], operands[0]
+
+
+def _destination(operands: list[str]) -> str | None:
+    if not operands:
+        return None
+    return operands[-1] if _att_syntax(operands) else operands[0]
 
 
 def _control_register_write_source(raw_line: str, register: str) -> str | None:
@@ -85,18 +100,19 @@ def _control_register_write_source(raw_line: str, register: str) -> str | None:
     if parsed is None:
         return None
     mnemonic, operands = parsed
-    if not mnemonic.startswith("mov") or not operands:
+    if not mnemonic.startswith("mov"):
         return None
-    destination = operands[-1] if _att_syntax(operands) else operands[0]
-    if _register_name(destination) != register or len(operands) < 2:
+    pair = _source_destination(operands)
+    if pair is None:
         return None
-    source = operands[0] if _att_syntax(operands) else operands[-1]
+    source, destination = pair
+    if _register_name(destination) != register:
+        return None
     return _register_name(source)
 
 
-
 def _pge_clear_destination(raw_line: str) -> str | None:
-    """Return the register modified by an instruction that clears CR4.PGE bit 7."""
+    """Return the GPR modified by an instruction that clears CR4.PGE bit 7."""
     parsed = _instruction(raw_line)
     if parsed is None:
         return None
@@ -113,43 +129,118 @@ def _pge_clear_destination(raw_line: str) -> str | None:
     elif re.fullmatch(r"btr(?:b|w|l|q)?", mnemonic):
         clears_pge = bool(re.search(r"(?:\$)?7\b", joined))
 
-    if not clears_pge or not operands:
+    if not clears_pge:
         return None
-    # AND and BTR modify their destination in both supported assembly dialects.
-    destination = operands[-1] if _att_syntax(operands) else operands[0]
-    if destination.startswith("$") or destination.lstrip("%").lower().startswith("cr"):
+    destination = _destination(operands)
+    if destination is None:
         return None
-    return _register_name(destination)
+    register = _operand_register(destination)
+    return register
+
+
+def _is_control_register(operand: str, register: str) -> bool:
+    return _register_name(operand) == register
+
+
+def _clobbered_gpr(raw_line: str) -> str | None:
+    """Return a destination register for common compiler-emitted write instructions."""
+    parsed = _instruction(raw_line)
+    if parsed is None:
+        return None
+    mnemonic, operands = parsed
+    if mnemonic.startswith(("cmp", "test", "j", "call", "ret", "push", "nop", "ud2")):
+        return None
+    if mnemonic.startswith(("mov", "and", "or", "xor", "add", "sub", "shl", "shr",
+                            "sar", "sal", "rol", "ror", "not", "neg", "inc", "dec",
+                            "lea", "imul", "bts", "btc", "btr", "xchg", "pop")):
+        target = _destination(operands)
+        if target is None:
+            return None
+        return _operand_register(target)
+    return None
 
 
 def validate_function_body(body: list[str]) -> tuple[bool, str]:
-    """Require a data-flow-consistent PGE clear -> CR3 write -> PGE restore sequence."""
-    cr4_writes = [
-        index for index, line in enumerate(body) if _writes_control_register(line, "cr4")
-    ]
-    cr3_writes = [
-        index for index, line in enumerate(body) if _writes_control_register(line, "cr3")
-    ]
+    """Track values through register moves and verify PGE clear -> CR3 -> restore."""
+    # Register taints move with ordinary GPR-to-GPR MOVs, matching LLVM register
+    # allocation even when it inserts a copy between an AND/BTR and MOV CR4.
+    # original_cr4 marks the value captured before the switch; pge_cleared marks
+    # a derived value with CR4.PGE bit 7 cleared.
+    taint: dict[str, str] = {}
+    pge_disable_index: int | None = None
+    cr3_write_indices: list[int] = []
+    pge_restore_index: int | None = None
+    first_cr4_write_index: int | None = None
+    saw_pge_clear = False
 
-    if len(cr4_writes) < 2:
-        return False, f"expected CR4 writes for PGE disable/restore; found {len(cr4_writes)}"
-    if not cr3_writes:
+    for index, line in enumerate(body):
+        parsed = _instruction(line)
+        if parsed is None:
+            continue
+        mnemonic, operands = parsed
+
+        clear_destination = _pge_clear_destination(line)
+        if clear_destination is not None:
+            taint[clear_destination] = "pge_cleared"
+            saw_pge_clear = True
+            continue
+
+        pair = _source_destination(operands) if mnemonic.startswith("mov") else None
+        if pair is not None:
+            source, destination = pair
+            source_reg = _operand_register(source)
+            destination_reg = _operand_register(destination)
+
+            if _is_control_register(destination, "cr4") and source_reg:
+                if first_cr4_write_index is None:
+                    first_cr4_write_index = index
+                source_taint = taint.get(source_reg)
+                if source_taint == "pge_cleared" and pge_disable_index is None:
+                    pge_disable_index = index
+                elif source_taint == "original_cr4":
+                    pge_restore_index = index
+                continue
+
+            if _is_control_register(destination, "cr3"):
+                if source_reg is not None:
+                    cr3_write_indices.append(index)
+                continue
+
+            if _is_control_register(source, "cr4") and destination_reg:
+                # A CR4 read prior to the first CR4 write captures the original value.
+                if first_cr4_write_index is None and pge_disable_index is None:
+                    taint[destination_reg] = "original_cr4"
+                else:
+                    taint.pop(destination_reg, None)
+                continue
+
+            if source_reg and destination_reg:
+                source_taint = taint.get(source_reg)
+                if source_taint:
+                    taint[destination_reg] = source_taint
+                else:
+                    taint.pop(destination_reg, None)
+                continue
+
+            if destination_reg:
+                taint.pop(destination_reg, None)
+            continue
+
+        # Do not carry a taint through later instructions that overwrite its register.
+        clobbered = _clobbered_gpr(line)
+        if clobbered:
+            taint.pop(clobbered, None)
+
+    if first_cr4_write_index is None or pge_disable_index is None:
+        if not saw_pge_clear:
+            return False, "no instruction clearing CR4.PGE bit 7 was found"
+        return False, "PGE-cleared value did not reach a CR4 write"
+    if not cr3_write_indices:
         return False, "no actual CR3 write instruction found in activation routine"
-
-    first_cr4_write = cr4_writes[0]
-    last_cr4_write = cr4_writes[-1]
-    disabled_value = _control_register_write_source(body[first_cr4_write], "cr4")
-    restored_value = _control_register_write_source(body[last_cr4_write], "cr4")
-
-    if disabled_value is None or not any(
-        _pge_clear_destination(line) == disabled_value for line in body[:first_cr4_write]
-    ):
-        return False, "PGE bit 7 is not cleared in the register written to CR4"
-    if not any(first_cr4_write < index < last_cr4_write for index in cr3_writes):
-        return False, "CR3 write is not ordered between the PGE disable and restore writes"
-
-    if restored_value is None or restored_value == disabled_value:
-        return False, "PGE restore does not use a separate saved CR4 value"
+    if pge_restore_index is None:
+        return False, "original pre-switch CR4 value was not restored"
+    if not (pge_disable_index < min(cr3_write_indices) < pge_restore_index):
+        return False, "required order is PGE disable -> CR3 write -> PGE restore"
 
     return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
 
@@ -164,17 +255,16 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
     if match is None:
         return False, "could not locate the CR3 asm block in address_space.rs"
 
-    body = match.group("body")
-    if re.search(r"\bnomem\b", body):
+    block = match.group("body")
+    if re.search(r"\bnomem\b", block):
         return False, "CR3 inline asm must not specify nomem"
-    if not re.search(r"\bin\(reg\)\s+root_physical\b", body):
+    if not re.search(r"\bin\(reg\)\s+root_physical\b", block):
         return False, "CR3 inline asm no longer uses the validated root_physical operand"
     return True, "CR3 inline asm preserves the compiler memory-ordering boundary"
 
 
-
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
-    """Ensure source-level CR4 writes clear PGE first and restore original CR4 second."""
+    """Ensure source-level CR4 writes disable PGE then restore the original CR4."""
     blocks = re.findall(
         r'asm!\s*\(\s*"mov\s+cr4\s*,\s*\{\}"(?P<body>.*?)\);',
         source,
@@ -186,7 +276,8 @@ def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
         return False, "first CR4 write must use the PGE-cleared cr4_without_pge value"
     if not re.search(r"\bin\(reg\)\s+cr4\b", blocks[1]):
         return False, "second CR4 write must restore the original cr4 value"
-    return True, "source CR4 writes disable PGE before CR3 and restore the original CR4 value"
+    return True, "source CR4 writes disable PGE and restore the original CR4 value"
+
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
     paths = sorted(assembly_dir.rglob("*.s"))
@@ -211,7 +302,7 @@ def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
     for path, symbol, body in matches:
         valid, message = validate_function_body(body)
         if not valid:
-            errors.append(f"{path}: {symbol}: {message}")
+            errors.append(f"{path}: {symbol}: {message}\n--- activation function body ---\n" + "\n".join(body) + "\n--- end activation function body ---")
         else:
             print(f"PASS: {path}: {symbol}: {message}")
 
@@ -229,8 +320,6 @@ def main() -> int:
         for message in messages:
             print(f"FAIL: {message}", file=sys.stderr)
         return 1
-    for message in messages:
-        print(f"NOTE: {message}")
 
     try:
         source = args.source.read_text(encoding="utf-8")
