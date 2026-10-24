@@ -1164,12 +1164,20 @@ fn translate_with_editor(
     root_table_physical: u64,
     virtual_address: u64,
 ) -> Result<PageTranslation, PageTableError> {
+    // entry_pointer() derives recursive aliases from editor.target_virtual_address.
+    // That context must describe the address being translated, not the unrelated
+    // mapping candidate the editor was originally created for. Restore the prior
+    // target afterwards so a caller can continue its existing map/unmap operation.
+    let previous_target = editor.target_virtual_address;
+    editor.target_virtual_address = virtual_address;
     let mut level = 4u8;
-    translate_4level(virtual_address, root_table_physical, |table, index| {
+    let result = translate_4level(virtual_address, root_table_physical, |table, index| {
         let current_level = level;
         level = level.saturating_sub(1);
         editor.read_entry(table, index, current_level)
-    })
+    });
+    editor.target_virtual_address = previous_target;
+    result
 }
 
 /// Exercise a real active-kernel map/access/unmap cycle before reporting
