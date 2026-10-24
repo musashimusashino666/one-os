@@ -117,7 +117,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_missing_kernel_address_space_activation_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{START}\\n{ALLOCATOR_READY}\\n{PAGING_READY}\\n{MUTATION_READY}\\n{ADDRESS_SPACE_READY}\\n{COMPLETE}\\n",
+            f"{START}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{COMPLETE}\n",
             124,
         )
         self.assertFalse(valid)
@@ -125,7 +125,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
 
     def test_kernel_address_space_activation_failure_marker_fails(self):
         valid, reason = validate_serial_output(
-            f"{START}\\n{ACTIVATION_FAILED}\\n{ALLOCATOR_READY}\\n{PAGING_READY}\\n{MUTATION_READY}\\n{ADDRESS_SPACE_READY}\\n{ACTIVATION_READY}\\n{COMPLETE}\\n",
+            f"{START}\n{ACTIVATION_FAILED}\n{ALLOCATOR_READY}\n{PAGING_READY}\n{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{COMPLETE}\n",
             124,
         )
         self.assertFalse(valid)
