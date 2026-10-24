@@ -659,10 +659,7 @@ mod tests {
         for index in 0..LOWER_HALF_PML4_ENTRIES {
             assert_eq!(editor.entry(root_address, index), 0);
         }
-        assert_eq!(
-            editor.entry(root_address, 256),
-            0x3000 | PRESENT | WRITABLE
-        );
+        assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
         assert_eq!(
             editor.entry(root_address, 300),
             0x4000 | PRESENT | WRITABLE | NO_EXECUTE
@@ -690,9 +687,7 @@ mod tests {
 
         assert_eq!(
             root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
-            Err(AddressSpaceRootInitializationError::UserAccessibleKernelEntry {
-                index: 300
-            })
+            Err(AddressSpaceRootInitializationError::UserAccessibleKernelEntry { index: 300 })
         );
         assert!(!root.is_initialized());
         assert_eq!(editor.entry(root_address, 0), 0xdead_beef);
@@ -714,9 +709,7 @@ mod tests {
 
         assert_eq!(
             root.initialize_from_kernel_root(kernel_address, 255, &mut editor),
-            Err(AddressSpaceRootInitializationError::InvalidRecursiveIndex {
-                index: 255
-            })
+            Err(AddressSpaceRootInitializationError::InvalidRecursiveIndex { index: 255 })
         );
         assert_eq!(editor.entry(root_address, 0), 0xdead_beef);
         assert!(!root.is_initialized());
@@ -748,5 +741,4 @@ mod tests {
         allocator.free_frame(root.into_frame()).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
-
 }
