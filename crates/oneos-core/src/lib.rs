@@ -42,7 +42,8 @@ pub use page_table::{
 };
 pub(crate) use page_table_mutation::map_4k;
 pub use page_table_mutation::{
-    unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError, UnmappedPage,
+    map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError,
+    UnmappedPage,
 };
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
