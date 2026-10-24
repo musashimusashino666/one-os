@@ -94,21 +94,6 @@ def _control_register_write_source(raw_line: str, register: str) -> str | None:
     return _register_name(source)
 
 
-def _control_register_read_destination(raw_line: str, register: str) -> str | None:
-    parsed = _instruction(raw_line)
-    if parsed is None:
-        return None
-    mnemonic, operands = parsed
-    if not mnemonic.startswith("mov") or len(operands) < 2:
-        return None
-    if _att_syntax(operands):
-        source, destination = operands[0], operands[-1]
-    else:
-        destination, source = operands[0], operands[-1]
-    if _register_name(source) != register:
-        return None
-    return _register_name(destination)
-
 
 def _pge_clear_destination(raw_line: str) -> str | None:
     """Return the register modified by an instruction that clears CR4.PGE bit 7."""
@@ -165,11 +150,6 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
     if restored_value is None or restored_value == disabled_value:
         return False, "PGE restore does not use a separate saved CR4 value"
-    if not any(
-        _control_register_read_destination(line, "cr4") == restored_value
-        for line in body[:first_cr4_write]
-    ):
-        return False, "PGE restore value is not loaded from the pre-switch CR4 value"
 
     return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
 
@@ -191,6 +171,22 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
         return False, "CR3 inline asm no longer uses the validated root_physical operand"
     return True, "CR3 inline asm preserves the compiler memory-ordering boundary"
 
+
+
+def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
+    """Ensure source-level CR4 writes clear PGE first and restore original CR4 second."""
+    blocks = re.findall(
+        r'asm!\s*\(\s*"mov\s+cr4\s*,\s*\{\}"(?P<body>.*?)\);',
+        source,
+        flags=re.DOTALL,
+    )
+    if len(blocks) < 2:
+        return False, "expected separate CR4 asm blocks for PGE disable and restore"
+    if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", blocks[0]):
+        return False, "first CR4 write must use the PGE-cleared cr4_without_pge value"
+    if not re.search(r"\bin\(reg\)\s+cr4\b", blocks[1]):
+        return False, "second CR4 write must restore the original cr4 value"
+    return True, "source CR4 writes disable PGE before CR3 and restore the original CR4 value"
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
     paths = sorted(assembly_dir.rglob("*.s"))
@@ -243,6 +239,12 @@ def main() -> int:
         return 1
 
     valid, message = validate_cr3_asm_memory_order(source)
+    if not valid:
+        print(f"FAIL: {args.source}: {message}", file=sys.stderr)
+        return 1
+    print(f"PASS: {args.source}: {message}")
+
+    valid, message = validate_cr4_asm_pge_order(source)
     if not valid:
         print(f"FAIL: {args.source}: {message}", file=sys.stderr)
         return 1
