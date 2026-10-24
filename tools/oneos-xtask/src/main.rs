@@ -22,6 +22,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-general-protection" => build_bios_image(Some("test-general-protection")),
         "image-test-page-fault" => build_bios_image(Some("test-page-fault")),
         "image-test-double-fault" => build_bios_image(Some("test-double-fault")),
+        "image-test-ist" => build_bios_image(Some("test-ist")),
         "image-test-supervisor-write-protection" => {
             build_bios_image(Some("test-supervisor-write-protection"))
         }
@@ -41,6 +42,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a test-only page-fault exception image");
             println!("  cargo run -p oneos-xtask -- image-test-double-fault");
             println!("      Build a test-only double-fault/IST diagnostic image");
+            println!("  cargo run -p oneos-xtask -- image-test-ist");
+            println!("      Build an image to verify NMI and machine-check IST stack selection");
             println!("  cargo run -p oneos-xtask -- image-test-supervisor-write-protection");
             println!("      Build a test-only supervisor read-only protection image");
             println!("  cargo run -p oneos-xtask -- image-test-nx-protection");
@@ -167,6 +170,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-general-protection") => "one-os-general-protection-test-bios.img",
         Some("test-page-fault") => "one-os-page-fault-test-bios.img",
         Some("test-double-fault") => "one-os-double-fault-test-bios.img",
+        Some("test-ist") => "one-os-ist-test-bios.img",
         Some("test-supervisor-write-protection") => {
             "one-os-supervisor-write-protection-test-bios.img"
         }
