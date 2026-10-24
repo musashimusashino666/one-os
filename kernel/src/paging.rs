@@ -16,9 +16,11 @@ use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
     physical_page_is_in_allowed_region, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
-    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
-    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PagingPreconditionError, PAGE_SIZE,
+    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities,
+    initialize_user_frame, Frame, FrameRegistryError, PagePermissions, PageTableEditor,
+    PageTableError, PageTableFrameRegistry, PageTableMutationError, PageTranslation,
+    PagingPreconditionError, UserFrameInitializationError, UserFrameInitializer, ZeroedFrame,
+    PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -73,6 +75,7 @@ pub enum PagingError {
     InterruptsEnabled,
     FrameAllocationFailed,
     FrameReleaseFailed,
+    UserFrameInitializationFailed,
     NoUnusedVirtualAddress,
     MappingSmokeMismatch,
     MappingMutation(PageTableMutationError),
@@ -134,6 +137,9 @@ impl PagingError {
             }
             Self::FrameAllocationFailed => b"Could not allocate a data frame for the mapping smoke test\n",
             Self::FrameReleaseFailed => b"Could not release the mapping smoke-test frame\n",
+            Self::UserFrameInitializationFailed => {
+                b"Could not safely zero and verify a complete user data frame\n"
+            }
             Self::NoUnusedVirtualAddress => b"No unused virtual address was available for the mapping smoke test\n",
             Self::MappingSmokeMismatch => b"Active page-table map/unmap smoke test failed\n",
             Self::MappingMutation(_) => b"Active page-table map/unmap operation failed\n",
@@ -569,6 +575,24 @@ struct KernelPageTableEditor<'a> {
 
 impl<'a> KernelPageTableEditor<'a> {
     fn new(boot_info: &'a BootInfo, target_virtual_address: u64) -> Result<Self, PagingError> {
+        let recursive_index = match boot_info.recursive_index {
+            Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+            Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+            Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+        };
+        Self::new_with_recursive_index(boot_info, target_virtual_address, recursive_index)
+    }
+
+    /// Constructs an editor for the currently active root and its known recursive slot.
+    ///
+    /// This is used when a newly activated root uses a private recursive index
+    /// rather than the original bootloader index. The supplied index is checked
+    /// against the root's self-reference before any subsequent page-table walk.
+    fn new_with_recursive_index(
+        boot_info: &'a BootInfo,
+        target_virtual_address: u64,
+        recursive_index: u16,
+    ) -> Result<Self, PagingError> {
         let flags: u64;
         // SAFETY: PUSHFQ reads the current flags register; no flags are changed.
         unsafe {
@@ -582,20 +606,27 @@ impl<'a> KernelPageTableEditor<'a> {
         {
             return Err(PagingError::MappingSmokeMismatch);
         }
-
-        let recursive_index = match boot_info.recursive_index {
-            Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
-            Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
-            Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
-        };
+        if !is_safe_recursive_mapping_index(recursive_index) {
+            return Err(PagingError::InvalidRecursiveIndex);
+        }
         let physical_memory_offset = match boot_info.physical_memory_offset {
             Optional::Some(offset) => offset,
             Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
         };
         let root_table_physical = active_root_table_physical();
+
+        // The original boot root is bootloader-owned; a later kernel root is
+        // allocator-owned and remains allocated while CR3 references it.
+        let root_is_bootloader_owned =
+            is_bootloader_owned_page(&boot_info.memory_regions, root_table_physical);
+        let root_is_allocator_owned =
+            super::memory::is_frame_allocated(root_table_physical).unwrap_or(false);
+        // SAFETY: active_root_table_physical reads CR3. The page is not dereferenced
+        // until its alignment, full-frame ownership, and recursive self-reference
+        // have been checked below.
         if root_table_physical == 0
             || root_table_physical & (PAGE_SIZE - 1) != 0
-            || !is_bootloader_owned_page(&boot_info.memory_regions, root_table_physical)
+            || (!root_is_bootloader_owned && !root_is_allocator_owned)
         {
             return Err(PagingError::InvalidRootTable);
         }
@@ -603,11 +634,13 @@ impl<'a> KernelPageTableEditor<'a> {
         // SAFETY: the maximum extended leaf and NX support were checked during
         // initialize_paging_controls; read the width from the same CPU.
         let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
-        if !(32..=52).contains(&physical_address_bits) {
-            return Err(PagingError::InvalidPhysicalAddressWidth {
-                bits: physical_address_bits,
-            });
+        if !valid_physical_page(root_table_physical, physical_address_bits) {
+            return Err(PagingError::InvalidRootTable);
         }
+        if !validate_recursive_mapping_entry(recursive_index, root_table_physical) {
+            return Err(PagingError::InvalidRecursiveMapping);
+        }
+
         let cr0: u64;
         unsafe {
             asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
@@ -654,9 +687,11 @@ impl<'a> KernelPageTableEditor<'a> {
     fn is_table_frame(&self, physical_address: u64) -> bool {
         is_bootloader_owned_page(self.regions, physical_address)
             || registered_table_frame(physical_address)
+            || (physical_address == self.root_table_physical
+                && super::memory::is_frame_allocated(physical_address).unwrap_or(false))
     }
 
-    fn offset_alias(&self, physical_address: u64) -> Option<*mut u8> {
+    fn offset_alias(&mut self, physical_address: u64) -> Option<*mut u8> {
         if !self.is_usable_frame(physical_address) {
             return None;
         }
@@ -671,13 +706,8 @@ impl<'a> KernelPageTableEditor<'a> {
         // Prove that the physical-memory offset actually maps this complete
         // Usable frame to the expected physical page and permits supervisor
         // writes before zeroing an unpublished page-table frame.
-        let translation = translate_virtual_address(
-            address,
-            self.root_table_physical,
-            self.recursive_index,
-            self.regions,
-        )
-        .ok()?;
+        let translation =
+            translate_with_editor(self, self.root_table_physical, address).ok()?;
         if translation.physical_address != physical_address
             || !translation.writable
             || translation.user_accessible
@@ -903,6 +933,189 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
 
     fn free_table(&mut self, physical_address: u64) {
         release_registered_table_frame(physical_address);
+    }
+}
+
+/// Kernel implementation of the unsafe zero-before-publication contract.
+///
+/// The recursive PML4 index must describe the current CR3 root. It may be the
+/// bootloader-provided index before activation or the private index selected for
+/// an activated kernel root. The operation is single-CPU and requires maskable
+/// interrupts to remain disabled, as enforced by the page-table editor.
+pub struct KernelUserFrameInitializer<'a> {
+    boot_info: &'a BootInfo,
+    recursive_index: u16,
+}
+
+impl<'a> KernelUserFrameInitializer<'a> {
+    /// Creates an initializer bound to BootInfo and the currently active root's
+    /// recursive self-map slot.
+    ///
+    /// # Safety
+    ///
+    /// recursive_index must be the valid self-referential PML4 slot of the
+    /// current CR3 root, and that root must remain active for the entire call.
+    /// The caller must run under the kernel's documented single-CPU,
+    /// maskable-interrupts-disabled contract. The implementation verifies the
+    /// slot's entry and the full physical-memory-offset translation before use.
+    pub unsafe fn new(boot_info: &'a BootInfo, recursive_index: u16) -> Self {
+        Self {
+            boot_info,
+            recursive_index,
+        }
+    }
+}
+
+// SAFETY: zero_frame verifies allocator ownership, excludes active/page-table
+// frames, validates the full supervisor-writable/NX alias through the active
+// page tables, and verifies all 4096 bytes after writing. Interrupts must remain
+// disabled and the current root must not change, as required by the constructor.
+unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
+    fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError> {
+        let physical_address = frame.physical_address();
+        let root_physical = active_root_table_physical();
+        if physical_address == root_physical
+            || !super::memory::is_frame_allocated(physical_address).unwrap_or(false)
+            || registered_table_frame(physical_address)
+            || unpublished_table_frame(physical_address)
+        {
+            return Err(UserFrameInitializationError::InitializationFailed);
+        }
+
+        let physical_memory_offset = match self.boot_info.physical_memory_offset {
+            Optional::Some(offset) => offset,
+            Optional::None => return Err(UserFrameInitializationError::InitializationFailed),
+        };
+        let Some(alias_virtual_address) = physical_memory_offset.checked_add(physical_address)
+        else {
+            return Err(UserFrameInitializationError::InitializationFailed);
+        };
+        let mut editor = match KernelPageTableEditor::new_with_recursive_index(
+            self.boot_info,
+            alias_virtual_address,
+            self.recursive_index,
+        ) {
+            Ok(editor) => editor,
+            Err(_) => return Err(UserFrameInitializationError::InitializationFailed),
+        };
+        if !editor.is_usable_frame(physical_address)
+            || editor.is_table_frame(physical_address)
+            || !editor.is_frame_allocated(physical_address)
+        {
+            return Err(UserFrameInitializationError::InitializationFailed);
+        }
+        let Some(alias) = editor.offset_alias(physical_address) else {
+            return Err(UserFrameInitializationError::InitializationFailed);
+        };
+        if alias as usize & (PAGE_SIZE as usize - 1) != 0 {
+            return Err(UserFrameInitializationError::InitializationFailed);
+        }
+
+        // SAFETY: offset_alias proved that all 4096 bytes resolve to this exact,
+        // allocated Usable frame through a writable, supervisor-only, NX mapping.
+        // Ownership is retained by the caller's Frame token and interrupts are
+        // disabled, so this frame cannot be published concurrently in this model.
+        unsafe { ptr::write_bytes(alias, 0, PAGE_SIZE as usize) };
+
+        let entries = alias.cast::<u64>();
+        for index in 0..(PAGE_SIZE as usize / size_of::<u64>()) {
+            // SAFETY: the full page was validated through the same alias above.
+            if unsafe { ptr::read_volatile(entries.add(index)) } != 0 {
+                return Err(UserFrameInitializationError::InitializationFailed);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Exercise the kernel-backed user-frame initializer on an allocated, dirty
+/// frame. This runs in the existing VM-transition QEMU image before any user
+/// address space exists; it validates the initialization/token gate, not live
+/// Ring-3 publication or process isolation.
+#[cfg(feature = "test-vm-transitions")]
+pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), PagingError> {
+    let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let physical_address = frame.physical_address();
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        _ => {
+            let _ = release_data_frame(frame);
+            return Err(PagingError::InvalidRecursiveIndex);
+        }
+    };
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        _ => {
+            let _ = release_data_frame(frame);
+            return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+        }
+    };
+    let Some(alias_virtual_address) = physical_memory_offset.checked_add(physical_address) else {
+        let _ = release_data_frame(frame);
+        return Err(PagingError::PhysicalMemoryOffsetUnavailable);
+    };
+    let mut editor = match KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        alias_virtual_address,
+        recursive_index,
+    ) {
+        Ok(editor) => editor,
+        Err(error) => {
+            let _ = release_data_frame(frame);
+            return Err(error);
+        }
+    };
+    if !editor.is_usable_frame(physical_address)
+        || editor.is_table_frame(physical_address)
+        || !editor.is_frame_allocated(physical_address)
+    {
+        let _ = release_data_frame(frame);
+        return Err(PagingError::UserFrameInitializationFailed);
+    }
+    let Some(alias) = editor.offset_alias(physical_address) else {
+        let _ = release_data_frame(frame);
+        return Err(PagingError::UserFrameInitializationFailed);
+    };
+
+    // Dirty every word, then require the concrete kernel initializer to clear
+    // and verify every word before it can return a ZeroedFrame token.
+    let words = alias.cast::<u64>();
+    for index in 0..(PAGE_SIZE as usize / size_of::<u64>()) {
+        let dirty_value = 0xa5a5_5a5a_f0f0_0f0f_u64 ^ index as u64;
+        // SAFETY: the checked alias spans this complete allocated data frame.
+        unsafe { ptr::write_volatile(words.add(index), dirty_value) };
+    }
+    interrupts::write_hex(b"ONE OS USER FRAME ZERO TEST DIRTY: ", physical_address);
+
+    // SAFETY: the bootloader recursive index was validated above, and this test
+    // runs before the normal boot path activates a different root.
+    let mut initializer = unsafe { KernelUserFrameInitializer::new(boot_info, recursive_index) };
+    match initialize_user_frame(frame, &mut initializer) {
+        Ok(zeroed) => {
+            if zeroed.physical_address() != physical_address {
+                let _ = release_data_frame(zeroed.into_frame());
+                return Err(PagingError::UserFrameInitializationFailed);
+            }
+            for index in 0..(PAGE_SIZE as usize / size_of::<u64>()) {
+                // SAFETY: the initializer validated this exact alias and the
+                // test retains the frame's ownership token until verification ends.
+                if unsafe { ptr::read_volatile(words.add(index)) } != 0 {
+                    let _ = release_data_frame(zeroed.into_frame());
+                    return Err(PagingError::UserFrameInitializationFailed);
+                }
+            }
+            interrupts::write_hex(
+                b"ONE OS USER FRAME ZERO TEST VERIFIED: ",
+                zeroed.physical_address(),
+            );
+            release_data_frame(zeroed.into_frame())?;
+            super::serial_write(b"ONE OS USER FRAME ZERO TEST PASS\n");
+            Ok(())
+        }
+        Err((_error, frame)) => {
+            let _ = release_data_frame(frame);
+            Err(PagingError::UserFrameInitializationFailed)
+        }
     }
 }
 
