@@ -371,8 +371,8 @@ mod tests {
         UserPageMappingRegistry,
     };
     use crate::{
-        AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator, FrameSegment,
-        PagePermissions, PageTableEditor, PageTableMutationError,
+        map_4k, unmap_4k, AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator,
+        FrameSegment, PagePermissions, PageTableEditor, PageTableMutationError,
     };
 
     const PRESENT: u64 = 1;
@@ -451,6 +451,14 @@ mod tests {
                 .find(|table| table.physical_address == physical_address)
                 .expect("test table must exist")
                 .in_use = true;
+        }
+
+        fn table_is_in_use(&self, physical_address: u64) -> bool {
+            self.tables
+                .iter()
+                .find(|table| table.physical_address == physical_address)
+                .expect("test table must exist")
+                .in_use
         }
     }
 
@@ -676,7 +684,7 @@ mod tests {
         let mut bitmap = [0u64; 1];
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let virtual_address = 0x4000;
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new();
+        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
         map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor).unwrap();
 
         let second_frame = allocator.allocate_frame().unwrap();
@@ -704,4 +712,178 @@ mod tests {
         allocator.free_frame(root.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
+
+    #[test]
+    fn partial_intermediate_table_allocation_failure_rolls_back_every_table() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+        let virtual_address = 0x4000;
+        let root_entry_before = editor.entry(root.physical_address(), 0);
+        let mut registry = UserPageMappingRegistry::<Frame, 1>::new(&root);
+        // Allocate two of the three missing intermediate tables, then fail.
+        editor.fail_after_successful_allocations = Some(2);
+
+        let (error, returned_frame) =
+            map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor)
+                .unwrap_err();
+
+        assert_eq!(
+            error,
+            UserPageMappingError::PageTable(PageTableMutationError::AllocationFailed)
+        );
+        assert_eq!(returned_frame.physical_address(), physical);
+        assert_eq!(editor.entry(root.physical_address(), 0), root_entry_before);
+        assert!(!editor.table_is_in_use(0x2000));
+        assert!(!editor.table_is_in_use(0x3000));
+        assert!(!editor.table_is_in_use(0x4000));
+        assert_eq!(editor.invalidations, 0);
+        assert!(!registry.is_mapped(virtual_address));
+        assert_eq!(registry.available_slots(), 1);
+
+        allocator.free_frame(returned_frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn registry_capacity_exhaustion_returns_frame_before_page_table_mutation() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+        let virtual_address = 0x4000;
+        let root_entry_before = editor.entry(root.physical_address(), 0);
+        let mut registry = UserPageMappingRegistry::<Frame, 0>::new(&root);
+
+        let (error, returned_frame) =
+            map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor)
+                .unwrap_err();
+
+        assert_eq!(error, UserPageMappingError::RegistryFull);
+        assert_eq!(returned_frame.physical_address(), physical);
+        assert_eq!(editor.entry(root.physical_address(), 0), root_entry_before);
+        assert_eq!(editor.successful_allocations, 0);
+        assert_eq!(editor.invalidations, 0);
+        assert!(!registry.is_mapped(virtual_address));
+
+        allocator.free_frame(returned_frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn registry_reservation_rejects_duplicate_physical_frame_addresses() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
+
+        let first = registry.reserve_mapping(0x4000, physical).unwrap();
+        assert_eq!(
+            registry.reserve_mapping(0x8000, physical),
+            Err(UserPageMappingError::DuplicatePhysicalFrame)
+        );
+        registry.cancel_reservation(first);
+        assert_eq!(registry.available_slots(), 2);
+
+        allocator.free_frame(frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn rejects_mapping_and_unmapping_through_a_different_root_even_with_same_alias() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root_a, frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let physical = frame.physical_address();
+        let virtual_address = 0x4000;
+        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root_a);
+        map_user_data_page(&root_a, virtual_address, frame, &mut registry, &mut editor).unwrap();
+
+        // Prepare a separate root B, then deliberately create the same
+        // virtual-address -> physical-frame alias through the lower-level API.
+        let root_b_frame = allocator.allocate_frame().unwrap();
+        let root_b_physical = root_b_frame.physical_address();
+        editor.mark_table_in_use(root_b_physical);
+        let mut root_b = AddressSpaceRoot::try_from_frame(root_b_frame, 32).unwrap();
+        root_b
+            .initialize_from_kernel_root(0x1000, 511, 510, &mut editor)
+            .unwrap();
+
+        // Mapping through the wrong root must return a distinct caller-owned
+        // frame unchanged and must not touch either root's page tables.
+        let extra_frame = allocator.allocate_frame().unwrap();
+        let extra_physical = extra_frame.physical_address();
+        let root_b_entry_before = editor.entry(root_b_physical, 0);
+        let (map_error, returned_extra) = map_user_data_page(
+            &root_b,
+            0x8000,
+            extra_frame,
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap_err();
+        assert_eq!(
+            map_error,
+            UserPageMappingError::AddressSpaceRootMismatch {
+                registry_root_physical: root_a.physical_address(),
+                supplied_root_physical: root_b_physical,
+            }
+        );
+        assert_eq!(returned_extra.physical_address(), extra_physical);
+        assert_eq!(editor.entry(root_b_physical, 0), root_b_entry_before);
+        allocator.free_frame(returned_extra).unwrap();
+
+        map_4k(
+            root_b_physical,
+            virtual_address,
+            physical,
+            PagePermissions::new(true, true, false),
+            &mut editor,
+        )
+        .unwrap();
+
+        let invalidations_before_wrong_unmap = editor.invalidations;
+        assert_eq!(
+            unmap_user_data_page(&root_b, virtual_address, &mut registry, &mut editor),
+            Err(UserPageMappingError::AddressSpaceRootMismatch {
+                registry_root_physical: root_a.physical_address(),
+                supplied_root_physical: root_b_physical,
+            })
+        );
+        assert!(registry.is_mapped(virtual_address));
+        assert_eq!(registry.available_slots(), 1);
+        assert_eq!(editor.invalidations, invalidations_before_wrong_unmap);
+
+        // Confirm B's duplicate alias still exists after the rejected unmap.
+        let unmapped_b = unmap_4k(root_b_physical, virtual_address, &mut editor).unwrap();
+        assert_eq!(unmapped_b.physical_address, physical);
+        editor.invalidate_translation(root_b_physical, virtual_address);
+
+        // Only A's root may detach the token that A's registry owns.
+        let (unmapped_a, returned_frame) =
+            unmap_user_data_page(&root_a, virtual_address, &mut registry, &mut editor).unwrap();
+        assert_eq!(unmapped_a.physical_address, physical);
+        assert_eq!(returned_frame.physical_address(), physical);
+        assert!(!registry.is_mapped(virtual_address));
+        allocator.free_frame(returned_frame).unwrap();
+
+        disconnect_test_address_space(&root_a, &mut editor);
+        disconnect_test_address_space(&root_b, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root_a.into_frame()).unwrap();
+        allocator.free_frame(root_b.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
 }
