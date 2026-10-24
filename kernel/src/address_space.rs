@@ -476,8 +476,8 @@ pub fn activate_supervisor_kernel_root(
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    // SAFETY: CR3 readback above matched root_physical after the switch; this
-    // value must stay allocated for as long as it can be active.
+    // CR3 readback above matched root_physical after the switch. Keep the
+    // allocation reserved for as long as this root can remain active.
     Ok(ActiveAddressSpaceRoot::from_activated(root))
 }
 
