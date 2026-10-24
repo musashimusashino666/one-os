@@ -14,6 +14,7 @@ FAILURE_MARKERS = (
     "ONE OS EXCEPTION",
     "ONE OS EXCEPTION HALTED",
     "ONE OS PAGING MUTATION FAILED",
+    "ONE OS USER FRAME ZERO TEST FAILED",
     "ONE OS BOOTSTRAP COMPLETE",
 )
 MATCHED_MARKERS = (
@@ -82,8 +83,14 @@ def validate_vm_transition_output(log: str, exit_status: int) -> tuple[bool, str
         return False, f"expected exactly one start marker: {START_MARKER}"
     if log.count(PASS_MARKER) != 1:
         return False, f"expected exactly one success marker: {PASS_MARKER}"
-    if log.count(USER_FRAME_PASS_MARKER) != 1:
-        return False, f"expected exactly one kernel user-frame zeroing marker: {USER_FRAME_PASS_MARKER}"
+    pass_lines = [
+        line for line in log.splitlines() if line.startswith(USER_FRAME_PASS_MARKER)
+    ]
+    if len(pass_lines) != 1 or pass_lines[0] != USER_FRAME_PASS_MARKER:
+        return False, (
+            "expected exactly one exact kernel user-frame zeroing marker: "
+            f"{USER_FRAME_PASS_MARKER}"
+        )
     dirty_frame, error = _single_hex_field(log, USER_FRAME_DIRTY_LABEL)
     if error:
         return False, error

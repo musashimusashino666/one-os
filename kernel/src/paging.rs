@@ -691,7 +691,9 @@ impl<'a> KernelPageTableEditor<'a> {
     }
 
     fn offset_alias(&mut self, physical_address: u64) -> Option<*mut u8> {
-        if !self.is_usable_frame(physical_address) {
+        if !valid_physical_page(physical_address, self.physical_address_bits)
+            || !self.is_usable_frame(physical_address)
+        {
             return None;
         }
         let address = self.physical_memory_offset.checked_add(physical_address)?;

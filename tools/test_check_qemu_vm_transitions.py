@@ -66,6 +66,25 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("kernel user-frame zeroing marker", message)
 
+    def test_user_frame_success_marker_rejects_trailing_text(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST PASS\\n",
+            "ONE OS USER FRAME ZERO TEST PASS unexpected\\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("exact kernel user-frame zeroing marker", message)
+
+    def test_user_frame_failure_marker_is_rejected(self):
+        log = valid_log().replace(
+            "ONE OS VM TEST: mapping-transitions\\n",
+            "ONE OS VM TEST: mapping-transitions\\n"
+            "ONE OS USER FRAME ZERO TEST FAILED\\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("failure marker found", message.lower())
+
     def test_user_frame_dirty_marker_rejects_malformed_duplicate(self):
         log = valid_log().replace(
             "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n",
