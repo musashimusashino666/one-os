@@ -184,11 +184,10 @@ def _clobbered_gpr(raw_line: str) -> str | None:
 
 
 def validate_function_body(body: list[str]) -> tuple[bool, str]:
-    """Verify PGE clear -> CR3 write -> CR4 restore with control-flow-aware data flow."""
-    # A textual scan is incorrect for optimized assembly: LLVM can place an
-    # early-return epilogue before the successful path, so a POP in that
-    # unreachable fall-through region must not kill the CR4 value on a
-    # different branch. Build an instruction-level control-flow graph instead.
+    """Validate the PGE-clear -> CR3-write -> original-CR4-restore path."""
+    # Analyze each abstract path independently. Merging register provenance
+    # from different predecessors can lose the saved CR4 value when an
+    # optimizer lays out error epilogues before the successful switch block.
     instructions: list[tuple[str, str, list[str]]] = []
     labels: dict[str, int] = {}
     for raw_line in body:
@@ -207,13 +206,9 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "activation routine contains no instructions"
 
     successors: list[list[int]] = [[] for _ in instructions]
-    for index, (raw_line, mnemonic, operands) in enumerate(instructions):
+    for index, (_, mnemonic, operands) in enumerate(instructions):
         fallthrough = index + 1 if index + 1 < len(instructions) else None
-        target = None
-        if mnemonic.startswith("j") and operands:
-            target_name = operands[-1].strip()
-            target = labels.get(target_name)
-
+        target = labels.get(operands[-1].strip()) if mnemonic.startswith("j") and operands else None
         if mnemonic.startswith("jmp"):
             if target is not None:
                 successors[index].append(target)
@@ -223,96 +218,52 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             if fallthrough is not None and fallthrough not in successors[index]:
                 successors[index].append(fallthrough)
         elif mnemonic.startswith(("ret", "iret", "ud2", "hlt")):
-            pass
+            continue
         elif fallthrough is not None:
             successors[index].append(fallthrough)
 
-    reachable: set[int] = set()
-    work = [0]
-    while work:
-        index = work.pop()
-        if index in reachable:
-            continue
-        reachable.add(index)
-        work.extend(successors[index])
-
-    predecessors: list[list[int]] = [[] for _ in instructions]
-    for index in reachable:
-        for successor in successors[index]:
-            if successor in reachable:
-                predecessors[successor].append(index)
-
-    registers = {
+    # Only these registers can carry the CR4 provenance being checked.
+    # 32/16/8-bit names are normalized to their 64-bit parent register.
+    registers = [
         "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
         *(f"r{i}" for i in range(8, 16)),
-    }
-    for raw_line, mnemonic, operands in instructions:
-        for operand in operands:
-            register = _operand_register(operand)
-            if register is not None:
-                registers.add(register)
-
-    TOP = "unknown"
-    NONE = "none"
+    ]
+    reg_index = {name: index for index, name in enumerate(registers)}
+    NONE = "-"
     ORIGINAL = "original_cr4"
     CLEARED = "pge_cleared"
 
-    def unknown_state() -> dict[str, str]:
-        return {register: TOP for register in registers}
-
-    def entry_state() -> dict[str, str]:
-        return {register: NONE for register in registers}
-
-    def meet(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
-        # Keep a provenance tag only when all incoming paths agree. UNKNOWN is
-        # the lattice top and therefore contributes no additional restriction.
-        result: dict[str, str] = {}
-        for register in registers:
-            a = left.get(register, NONE)
-            b = right.get(register, NONE)
-            if a == b:
-                result[register] = a
-            elif a == TOP:
-                result[register] = b
-            elif b == TOP:
-                result[register] = a
-            else:
-                result[register] = NONE
-        return result
-
-    def transfer(index: int, incoming: dict[str, str]) -> dict[str, str]:
+    def instruction_transfer(
+        index: int, tags: tuple[str, ...], stage: int
+    ) -> tuple[tuple[str, ...], int, bool]:
+        """Apply one instruction; return updated tags, path stage, and success."""
         raw_line, mnemonic, operands = instructions[index]
-        state = dict(incoming)
+        state = list(tags)
 
         if mnemonic.startswith("call"):
-            # SysV x86-64 caller-saved registers do not preserve provenance.
-            for register in (
-                "rax", "rcx", "rdx", "rsi", "rdi",
-                "r8", "r9", "r10", "r11",
-            ):
-                state[register] = NONE
-            return state
+            # SysV x86-64 caller-saved registers are not preserved by calls.
+            for name in ("rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"):
+                state[reg_index[name]] = NONE
+            return tuple(state), stage, False
 
         if mnemonic == "cpuid":
-            for register in ("rax", "rbx", "rcx", "rdx"):
-                state[register] = NONE
-            return state
+            for name in ("rax", "rbx", "rcx", "rdx"):
+                state[reg_index[name]] = NONE
+            return tuple(state), stage, False
 
         if mnemonic == "rdmsr":
-            state["rax"] = NONE
-            state["rdx"] = NONE
-            return state
+            state[reg_index["rax"]] = NONE
+            state[reg_index["rdx"]] = NONE
+            return tuple(state), stage, False
 
         clear_destination = _pge_clear_destination(raw_line)
         if clear_destination is not None:
-            source_tag = state.get(clear_destination, NONE)
-            if source_tag in (ORIGINAL, CLEARED):
-                state[clear_destination] = CLEARED
-            elif source_tag == TOP:
-                state[clear_destination] = TOP
-            else:
-                state[clear_destination] = NONE
-            return state
+            slot = reg_index.get(clear_destination)
+            if slot is not None and state[slot] in (ORIGINAL, CLEARED):
+                state[slot] = CLEARED
+            elif slot is not None:
+                state[slot] = NONE
+            return tuple(state), stage, False
 
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
         if pair is not None:
@@ -320,120 +271,94 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             source_register = _operand_register(source)
             destination_register = _operand_register(destination)
 
-            if _is_control_register(destination, "cr4") or _is_control_register(destination, "cr3"):
-                return state
+            if _is_control_register(destination, "cr4"):
+                source_tag = state[reg_index[source_register]] if source_register in reg_index else NONE
+                if source_tag == CLEARED and stage == 0:
+                    stage = 1
+                elif source_tag == ORIGINAL and stage == 2:
+                    return tuple(state), stage, True
+                return tuple(state), stage, False
 
-            if _is_control_register(source, "cr4") and destination_register:
-                state[destination_register] = ORIGINAL
-                return state
+            if _is_control_register(destination, "cr3"):
+                if source_register in reg_index and stage == 1:
+                    stage = 2
+                return tuple(state), stage, False
 
-            if destination_register:
-                if source_register:
-                    state[destination_register] = state.get(source_register, NONE)
-                else:
-                    state[destination_register] = NONE
-            return state
+            if _is_control_register(source, "cr4") and destination_register in reg_index:
+                state[reg_index[destination_register]] = ORIGINAL
+                return tuple(state), stage, False
 
-        # Track common explicit GPR writes. Calls and implicit-register
-        # instructions are handled above so saved CR4 provenance survives only
-        # where the architecture and ABI guarantee it should.
+            if destination_register in reg_index:
+                destination_slot = reg_index[destination_register]
+                state[destination_slot] = (
+                    state[reg_index[source_register]]
+                    if source_register in reg_index
+                    else NONE
+                )
+            return tuple(state), stage, False
+
+        # Clear provenance on common destination-writing instructions. This
+        # includes POP (which overwrites its destination), while PUSH preserves
+        # all general-purpose register values.
         clobbered = _clobbered_gpr(raw_line)
-        if clobbered:
-            state[clobbered] = NONE
+        if clobbered in reg_index:
+            state[reg_index[clobbered]] = NONE
         if mnemonic.startswith("set") and operands:
             destination = _destination(operands)
             register = _operand_register(destination) if destination else None
-            if register:
-                state[register] = NONE
-        return state
+            if register in reg_index:
+                state[reg_index[register]] = NONE
+        if mnemonic == "xchg" or mnemonic.startswith("xchg"):
+            for operand in operands:
+                register = _operand_register(operand)
+                if register in reg_index:
+                    state[reg_index[register]] = NONE
+        return tuple(state), stage, False
 
-    in_states = [unknown_state() for _ in instructions]
-    out_states = [unknown_state() for _ in instructions]
-    in_states[0] = entry_state()
-
-    # The finite provenance lattice converges quickly; the explicit bound
-    # protects the validator from malformed or unexpectedly complex input.
-    max_iterations = max(32, len(instructions) * len(registers) * 4)
-    for _ in range(max_iterations):
-        changed = False
-        for index in sorted(reachable):
-            if index == 0:
-                merged = entry_state()
-            else:
-                incoming_states = [
-                    out_states[pred]
-                    for pred in predecessors[index]
-                    if pred in reachable
-                ]
-                if not incoming_states:
-                    continue
-                merged = incoming_states[0]
-                for candidate in incoming_states[1:]:
-                    merged = meet(merged, candidate)
-
-            if merged != in_states[index]:
-                in_states[index] = merged
-                changed = True
-            outgoing = transfer(index, in_states[index])
-            if outgoing != out_states[index]:
-                out_states[index] = outgoing
-                changed = True
-        if not changed:
-            break
-    else:
-        return False, "control-flow provenance analysis did not converge"
-
-    saw_pge_clear = any(
+    saw_clear_instruction = any(
         _pge_clear_destination(raw_line) is not None
         for raw_line, _, _ in instructions
     )
-    pge_disable_indices: list[int] = []
-    cr3_write_indices: list[int] = []
-    pge_restore_indices: list[int] = []
+    saw_cr3_write = any(
+        _control_register_write_source(raw_line, "cr3") is not None
+        for raw_line, _, _ in instructions
+    )
+    saw_cr4_restore_candidate = any(
+        _control_register_write_source(raw_line, "cr4") is not None
+        for raw_line, _, _ in instructions
+    )
 
-    for index, (raw_line, mnemonic, operands) in enumerate(instructions):
-        state = in_states[index]
-        pair = _source_destination(operands) if mnemonic.startswith("mov") else None
-        if pair is None:
+    # State includes the path stage and per-register provenance, so separate
+    # branches never contaminate each other's values. Reaching a repeated
+    # (instruction, state) pair means further exploration cannot add evidence.
+    from collections import deque
+
+    initial_tags = tuple(NONE for _ in registers)
+    pending = deque([(0, initial_tags, 0)])
+    visited: set[tuple[int, tuple[str, ...], int]] = set()
+    state_limit = max(100_000, len(instructions) * 4096)
+
+    while pending:
+        index, tags, stage = pending.popleft()
+        key = (index, tags, stage)
+        if key in visited:
             continue
-        source, destination = pair
-        source_register = _operand_register(source)
-        if _is_control_register(destination, "cr4") and source_register:
-            source_tag = state.get(source_register, NONE)
-            if source_tag == CLEARED:
-                pge_disable_indices.append(index)
-            elif source_tag == ORIGINAL:
-                pge_restore_indices.append(index)
-        elif _is_control_register(destination, "cr3") and source_register:
-            cr3_write_indices.append(index)
+        visited.add(key)
+        if len(visited) > state_limit:
+            return False, "control-flow path analysis exceeded its state limit"
 
-    if not pge_disable_indices:
-        if not saw_pge_clear:
-            return False, "no instruction clearing CR4.PGE bit 7 was found"
-        return False, "PGE-cleared value did not reach a CR4 write"
-    if not cr3_write_indices:
+        next_tags, next_stage, success = instruction_transfer(index, tags, stage)
+        if success:
+            return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
+        for successor in successors[index]:
+            pending.append((successor, next_tags, next_stage))
+
+    if not saw_clear_instruction:
+        return False, "no instruction clearing CR4.PGE bit 7 was found"
+    if not saw_cr3_write:
         return False, "no actual CR3 write instruction found in activation routine"
-    if not pge_restore_indices:
+    if not saw_cr4_restore_candidate:
         return False, "original pre-switch CR4 value was not restored"
-
-    # Check reachability, not textual index order: alternate blocks can be
-    # emitted out of source order by LLVM.
-    cr3_nodes = set(cr3_write_indices)
-    restore_nodes = set(pge_restore_indices)
-    for disable_index in pge_disable_indices:
-        pending = [(successor, 0) for successor in successors[disable_index]]
-        visited: set[tuple[int, int]] = set()
-        while pending:
-            index, stage = pending.pop()
-            if (index, stage) in visited:
-                continue
-            visited.add((index, stage))
-            if stage == 0 and index in cr3_nodes:
-                stage = 1
-            elif stage == 1 and index in restore_nodes:
-                return True, "optimized activation assembly validates PGE clear -> CR3 write -> PGE restore"
-            pending.extend((successor, stage) for successor in successors[index])
-
     return False, "required order is PGE disable -> CR3 write -> PGE restore"
 
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
