@@ -13,9 +13,9 @@ use core::ptr;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    is_canonical_4level, is_safe_recursive_mapping_index, map_4k,
+    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
     physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
+    recursive_table_page_virtual_address, translate_4level, unmap_supervisor_4k, validate_cr0_write_protect,
     validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
     FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PAGE_SIZE,
@@ -804,7 +804,7 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {
-        // map_4k runs with maskable interrupts disabled under the current
+        // map_supervisor_4k runs with maskable interrupts disabled under the current
         // single-CPU contract. If the allocator cannot be queried (for example,
         // because it is unavailable or busy), reject the mapping.
         super::memory::is_frame_allocated(physical_address).unwrap_or(false)
@@ -892,7 +892,7 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
             }
             // Include the physical frame address so the QEMU validator can
             // pair every successful 512-entry verification with one allocation.
-            // This is emitted before map_4k can publish the parent entry.
+            // This is emitted before map_supervisor_4k can publish the parent entry.
             super::interrupts::write_hex(
                 b"ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: ",
                 physical_address,
@@ -1024,7 +1024,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 return Err(error);
             }
         };
-        match map_4k(
+        match map_supervisor_4k(
             root_table_physical,
             candidate,
             data_physical,
@@ -1033,7 +1033,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
         ) {
             Ok(()) => {
                 invalidate_local_tlb(candidate);
-                // SAFETY: map_4k installed a writable, supervisor-only mapping to
+                // SAFETY: map_supervisor_4k installed a writable, supervisor-only mapping to
                 // the allocated frame and the new translation has been invalidated.
                 unsafe {
                     ptr::write_volatile(candidate as *mut u64, MAPPING_SMOKE_SENTINEL);
@@ -1050,7 +1050,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                             && !result.user_accessible
                             && !result.executable
                     });
-                let unmapped = unmap_4k(root_table_physical, candidate, &mut editor);
+                let unmapped = unmap_supervisor_4k(root_table_physical, candidate, &mut editor);
                 if unmapped.is_err() {
                     // Never return a data frame to the allocator while it may
                     // still be reachable through a live page-table entry.
@@ -1070,7 +1070,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 return Ok(());
             }
             Err(error) if error.is_retryable_for_mapping_candidate() => {
-                // map_4k reports these failures during its read-only preflight,
+                // map_supervisor_4k reports these failures during its read-only preflight,
                 // before allocating a table or writing a page-table entry.
                 continue;
             }
@@ -1157,9 +1157,9 @@ impl Drop for ProtectionTestFrameGuard<'_> {
                 let _unreleased_frame = frame;
                 return;
             };
-            match unmap_4k(root, virtual_address, &mut editor) {
+            match unmap_supervisor_4k(root, virtual_address, &mut editor) {
                 Ok(unmapped) => {
-                    // unmap_4k has cleared the leaf entry. Flush the stale
+                    // unmap_supervisor_4k has cleared the leaf entry. Flush the stale
                     // translation before checking identity or deciding whether
                     // the frame can be returned to the allocator.
                     invalidate_local_tlb(virtual_address);
@@ -1280,7 +1280,7 @@ fn prepare_protection_test_mapping(
 
         // Initialize the owned Usable data frame through the checked physical-
         // memory-offset alias. This avoids a temporary VA mapping and unmap, so
-        // a candidate that fails map_4k's read-only preflight leaves the page-table
+        // a candidate that fails map_supervisor_4k's read-only preflight leaves the page-table
         // tree untouched and can safely be skipped.
         let direct_alias = editor
             .offset_alias(physical_address)
@@ -1299,7 +1299,7 @@ fn prepare_protection_test_mapping(
             }
         }
 
-        match map_4k(
+        match map_supervisor_4k(
             root_table_physical,
             candidate,
             physical_address,
@@ -1595,7 +1595,7 @@ impl MappingTransitionTest {
         unsafe {
             ptr::write_volatile(direct_alias.cast::<u64>(), TRANSITION_SECOND_SENTINEL);
         }
-        map_4k(
+        map_supervisor_4k(
             root_table_physical,
             self.virtual_address,
             self.second_physical_address,
@@ -1645,7 +1645,7 @@ impl MappingTransitionTest {
     ) -> Result<(), PagingError> {
         let root_table_physical = active_root_table_physical();
         let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
-        map_4k(
+        map_supervisor_4k(
             root_table_physical,
             self.virtual_address,
             physical_address,
@@ -1664,7 +1664,7 @@ impl MappingTransitionTest {
     ) -> Result<(), PagingError> {
         let root_table_physical = active_root_table_physical();
         let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
-        let removed = unmap_4k(root_table_physical, self.virtual_address, &mut editor)
+        let removed = unmap_supervisor_4k(root_table_physical, self.virtual_address, &mut editor)
             .map_err(PagingError::MappingMutation)?;
         invalidate_local_tlb(self.virtual_address);
         if removed.physical_address != physical_address
