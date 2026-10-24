@@ -62,6 +62,29 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(valid, message)
 
+    def test_accepts_optimized_cr4_value_through_branch_and_epilogue(self):
+        # Mirrors the compiler shape from CI: the CR4-disabled route is a
+        # conditional block with a direct CR3 fast path and a later epilogue.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "testb %r13b, %r13b",
+                "js .Lswitch",
+                "movq %rbx, %cr3",
+                "jmp .Lverify",
+                ".Lswitch:",
+                "movq %r13, %rax",
+                "andq $-135297, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                ".Lverify:",
+                "movq %cr3, %rax",
+                "retq",
+            ]
+        )
+        self.assertTrue(valid, message)
+
     def test_accepts_fast_path_cr3_before_pge_path(self):
         valid, message = validate_function_body(
             [
