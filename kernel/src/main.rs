@@ -630,15 +630,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         };
         serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATED\n");
 
-        let _active_root =
-            match address_space::verify_runtime_address_space_switch_smoke_test(boot_info, active_root) {
-                Ok(root) => root,
-                Err(error) => {
-                    serial_write(b"ONE OS ADDRESS SPACE SWITCH FAILED\n");
-                    serial_write(error.message());
-                    halt_forever()
-                }
-            };
+        let _active_root = match address_space::verify_runtime_address_space_switch_smoke_test(
+            boot_info,
+            active_root,
+        ) {
+            Ok(root) => root,
+            Err(error) => {
+                serial_write(b"ONE OS ADDRESS SPACE SWITCH FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
         serial_write(b"ONE OS ADDRESS SPACE SWITCH PASS\n");
 
 
