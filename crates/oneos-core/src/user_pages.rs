@@ -44,7 +44,7 @@ pub enum UserFrameInitializationError {
 
 /// Architecture-provided operation for clearing a complete physical frame.
 ///
-/// Implementation contract:
+/// # Safety
 ///
 /// Implementations must only report success after every byte in the specified
 /// exclusively owned frame is zero. The frame must be accessed through a
