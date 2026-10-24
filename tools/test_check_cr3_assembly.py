@@ -14,13 +14,13 @@ from check_cr3_assembly import (
 SYMBOL = "_ZN12one_os_kernel13address_space30activate_supervisor_kernel_root17h0123456789abcdefE"
 
 
-def assembly_with(body: str) -> str:
-    return f""".section .text.{SYMBOL},"ax",@progbits
-.type {SYMBOL},@function
-{SYMBOL}:
+def assembly_with(body: str, symbol: str = SYMBOL) -> str:
+    return f""".section .text.{symbol},"ax",@progbits
+.type {symbol},@function
+{symbol}:
 {body}
 .Lfunc_end0:
-.size {SYMBOL}, .Lfunc_end0-{SYMBOL}
+.size {symbol}, .Lfunc_end0-{symbol}
 """
 
 
@@ -44,6 +44,28 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         functions = activation_function_bodies(source)
         self.assertEqual(len(functions), 1)
+        valid, message = validate_function_body(functions[0][1])
+        self.assertTrue(valid, message)
+
+    def test_finds_runtime_switch_function_in_optimized_assembly(self):
+        symbol = (
+            "_ZN12one_os_kernel13address_space18switch_address_space17h0123456789abcdefE"
+        )
+        source = assembly_with(
+            "    movq %cr4, %rbx\n"
+            "    movq %rbx, %rax\n"
+            "    andq $-131201, %rax\n"
+            "    movq %rax, %r11\n"
+            "    movq %r11, %cr4\n"
+            "    movq %r12, %cr3\n"
+            "    movq %rbx, %r10\n"
+            "    movq %r10, %cr4\n"
+            "    retq\n",
+            symbol=symbol,
+        )
+        functions = activation_function_bodies(source)
+        self.assertEqual(len(functions), 1)
+        self.assertIn("switch_address_space", functions[0][0])
         valid, message = validate_function_body(functions[0][1])
         self.assertTrue(valid, message)
 
@@ -337,6 +359,39 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr3_asm_memory_order(source)
         self.assertFalse(valid)
         self.assertIn("must not specify nomem", message)
+
+    def test_cr3_inline_asm_checks_every_switch_block(self):
+        source = '''
+            asm!(
+                "mov cr3, {}",
+                in(reg) root_physical,
+                options(nostack, preserves_flags)
+            );
+            asm!(
+                "mov cr3, {}",
+                in(reg) root_physical,
+                options(nomem, nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("block 2 must not specify nomem", message)
+
+    def test_cr4_source_validator_checks_every_switch_sequence(self):
+        source = """
+            let cr4_without_pge = cr4 & !CR4_PGE;
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertFalse(valid)
+        self.assertIn("sequence 2 must restore the original cr4 value", message)
 
 
 if __name__ == "__main__":
