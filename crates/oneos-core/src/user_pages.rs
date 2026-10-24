@@ -534,6 +534,20 @@ mod tests {
         (allocator, root, data_frame, editor)
     }
 
+    // The production user-page API intentionally leaves intermediate tables
+    // allocated. This test-only teardown disconnects an inactive root first,
+    // then releases the mock's table frames so the allocator can be checked.
+    fn release_test_address_space(root: AddressSpaceRoot, editor: &mut TestEditor) -> Frame {
+        let root_physical = root.physical_address();
+        for index in 0..512 {
+            editor.set_entry(root_physical, index, 0);
+        }
+        for table_physical in [0x2000, 0x3000, 0x4000] {
+            editor.free_table(table_physical);
+        }
+        root.into_frame()
+    }
+
     #[test]
     fn maps_nx_user_data_and_returns_ownership_only_after_unmap_invalidation() {
         let mut slots = [FrameSegment::EMPTY; 1];
@@ -566,9 +580,9 @@ mod tests {
         assert_eq!(editor.invalidations, 2);
 
         allocator.free_frame(returned_frame).unwrap();
-        // The empty intermediate tables and their root remain allocated; their
-        // reclamation belongs to the later address-space teardown increment.
-        assert_eq!(allocator.stats().allocated_frames, 1);
+        let root_frame = release_test_address_space(root, &mut editor);
+        allocator.free_frame(root_frame).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
     #[test]
@@ -597,7 +611,8 @@ mod tests {
         assert_eq!(registry.available_slots(), 1);
 
         allocator.free_frame(returned_frame).unwrap();
-        allocator.free_frame(root.into_frame()).unwrap();
+        let root_frame = release_test_address_space(root, &mut editor);
+        allocator.free_frame(root_frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -630,7 +645,8 @@ mod tests {
         let (_, first_frame) =
             unmap_user_data_page(&root, virtual_address, &mut registry, &mut editor).unwrap();
         allocator.free_frame(first_frame).unwrap();
-        // Empty intermediate page tables are deliberately retained by this API.
-        assert_eq!(allocator.stats().allocated_frames, 1);
+        let root_frame = release_test_address_space(root, &mut editor);
+        allocator.free_frame(root_frame).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
     }
 }
