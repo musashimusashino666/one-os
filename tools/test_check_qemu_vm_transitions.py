@@ -66,6 +66,26 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("kernel user-frame zeroing marker", message)
 
+    def test_user_frame_dirty_marker_rejects_malformed_duplicate(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n",
+            "ONE OS USER FRAME ZERO TEST DIRTY: malformed\n"
+            "ONE OS USER FRAME ZERO TEST DIRTY: 0x0000000000102000\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly one", message)
+
+    def test_user_frame_zeroed_marker_rejects_malformed_line_with_valid_line(self):
+        log = valid_log().replace(
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000\n",
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000\n"
+            "ONE OS USER FRAME ZERO TEST VERIFIED: 0x0000000000102000 trailing-data\n",
+        )
+        valid, message = validate_vm_transition_output(log, 33)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly one", message)
+
     def test_every_allocated_table_frame_requires_its_zero_verification(self):
         log = valid_log().replace(
             "ONE OS VM TABLE PREPUBLICATION ZERO VERIFIED: 0x0000000000101000\n",
