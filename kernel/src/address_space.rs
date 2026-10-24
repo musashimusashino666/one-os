@@ -357,6 +357,7 @@ fn create_inactive_address_space_root(
 /// caller; the root tokens are never returned to the allocator on an error.
 ///
 /// This function does not implement user-page teardown, scheduling, or SMP.
+#[inline(never)]
 fn switch_address_space(
     current: ActiveAddressSpaceRoot,
     next: AddressSpaceRoot,
