@@ -16,6 +16,8 @@ PAGING_FAILED_MARKER = "ONE OS PAGING INSPECTION FAILED"
 PAGING_CONTROL_FAILED_MARKER = "ONE OS PAGING CONTROL INITIALIZATION FAILED"
 MUTATION_READY_MARKER = "ONE OS VM MAPPING SMOKE TEST READY"
 MUTATION_FAILED_MARKER = "ONE OS PAGING MUTATION FAILED"
+ADDRESS_SPACE_READY_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION READY"
+ADDRESS_SPACE_FAILED_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED"
 PANIC_MARKER = "ONE OS KERNEL PANIC"
 INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 EXCEPTION_MARKER = "ONE OS EXCEPTION"
@@ -31,6 +33,8 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Paging control initialization failure marker found: {PAGING_CONTROL_FAILED_MARKER}"
     if MUTATION_FAILED_MARKER in log:
         return False, f"Page-table mutation failure marker found: {MUTATION_FAILED_MARKER}"
+    if ADDRESS_SPACE_FAILED_MARKER in log:
+        return False, f"Address-space root initialization failure marker found: {ADDRESS_SPACE_FAILED_MARKER}"
     if INVALID_MAP_MARKER in log:
         return False, f"Invalid boot memory map marker found: {INVALID_MAP_MARKER}"
     if PANIC_MARKER in log:
@@ -60,6 +64,11 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Active page-table mutation marker missing: {MUTATION_READY_MARKER}"
     if mutation_index < paging_index or mutation_index > complete_index:
         return False, "Active page-table mutation marker appeared outside inspection/completion markers"
+    address_space_index = log.find(ADDRESS_SPACE_READY_MARKER)
+    if address_space_index < 0:
+        return False, f"Address-space root initialization marker missing: {ADDRESS_SPACE_READY_MARKER}"
+    if address_space_index < mutation_index or address_space_index > complete_index:
+        return False, "Address-space root initialization marker appeared outside mutation/completion markers"
     # QEMU is deliberately configured with -no-shutdown and the kernel halts
     # forever, so timeout(1)'s 124 is the expected result of a healthy run.
     if exit_status != 124:

@@ -102,11 +102,15 @@ impl AddressSpaceRoot {
 
     /// Initializes this inactive root from the kernel's validated PML4.
     ///
-    /// The operation preflights all source entries and table-access requirements
-    /// before the first write. It then clears the lower canonical half, copies
-    /// only supervisor-only upper-half entries, and replaces the recursive slot
-    /// with a supervisor-writable, non-executable self-reference.
+    /// The source recursive index may be in either canonical half because it
+    /// comes from the bootloader's active page tables. The destination recursive
+    /// index must be in the upper half and must name an unused source PML4 slot.
+    /// The active source recursive entry is omitted from the new root; the new
+    /// root receives its own supervisor-writable, non-executable self-reference.
     ///
+    /// The operation preflights all source entries and table-access requirements
+    /// before the first write. It then clears the lower canonical half and copies
+    /// only supervisor-only upper-half entries, excluding both recursive slots.
     /// The editor must provide read/write access to the complete root frame and
     /// read access to the source root. Its write_entry operation must not fail
     /// after table_is_read_write_accessible returns true. The source root must
@@ -116,7 +120,8 @@ impl AddressSpaceRoot {
     pub fn initialize_from_kernel_root<E: AddressSpaceRootEditor>(
         &mut self,
         kernel_root_physical: u64,
-        recursive_index: usize,
+        kernel_recursive_index: usize,
+        root_recursive_index: usize,
         editor: &mut E,
     ) -> Result<(), AddressSpaceRootInitializationError> {
         if self.initialized {
@@ -137,7 +142,8 @@ impl AddressSpaceRoot {
             self.physical_address(),
             self.physical_address_bits,
             kernel_root_physical,
-            recursive_index,
+            kernel_recursive_index,
+            root_recursive_index,
             editor,
         )?;
         self.initialized = true;
@@ -178,9 +184,19 @@ pub enum AddressSpaceRootInitializationError {
     },
     /// The supplied kernel-root frame is invalid for the selected address width.
     InvalidKernelRootFrame(AddressSpaceRootError),
-    /// The recursive PML4 slot must be in the supervisor-only upper half.
+    /// The active kernel recursive PML4 index is outside the four-level table.
+    InvalidKernelRecursiveIndex {
+        /// Supplied source PML4 index from BootInfo.
+        index: usize,
+    },
+    /// The new root's recursive PML4 slot must be in the upper half.
     InvalidRecursiveIndex {
-        /// Supplied four-level PML4 index.
+        /// Supplied destination PML4 index.
+        index: usize,
+    },
+    /// The chosen destination recursive slot is already used by the kernel root.
+    RecursiveDestinationSlotOccupied {
+        /// Upper-half PML4 index that cannot be reserved for the new root.
         index: usize,
     },
     /// The destination root aliases the source kernel root.
@@ -247,7 +263,8 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
     root_physical: u64,
     physical_address_bits: u8,
     kernel_root_physical: u64,
-    recursive_index: usize,
+    kernel_recursive_index: usize,
+    root_recursive_index: usize,
     editor: &mut E,
 ) -> Result<(), AddressSpaceRootInitializationError> {
     validate_root_frame_address(kernel_root_physical, physical_address_bits)
@@ -256,9 +273,16 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
     if root_physical == kernel_root_physical {
         return Err(AddressSpaceRootInitializationError::RootAliasesKernelRoot);
     }
-    if !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES).contains(&recursive_index) {
+    if kernel_recursive_index >= PML4_ENTRIES {
+        return Err(
+            AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex {
+                index: kernel_recursive_index,
+            },
+        );
+    }
+    if !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES).contains(&root_recursive_index) {
         return Err(AddressSpaceRootInitializationError::InvalidRecursiveIndex {
-            index: recursive_index,
+            index: root_recursive_index,
         });
     }
     if !editor.table_is_read_write_accessible(root_physical) {
@@ -269,7 +293,7 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
     }
 
     let recursive_entry = editor
-        .read_entry(kernel_root_physical, recursive_index, 4)
+        .read_entry(kernel_root_physical, kernel_recursive_index, 4)
         .ok_or(AddressSpaceRootInitializationError::KernelRootRecursiveEntryUnavailable)?;
     if recursive_entry & PRESENT == 0
         || recursive_entry & WRITABLE == 0
@@ -284,12 +308,24 @@ fn initialize_root_entries<E: AddressSpaceRootEditor>(
     let physical_limit = 1u64 << physical_address_bits;
     let mut upper_entries = [0u64; PML4_ENTRIES - LOWER_HALF_PML4_ENTRIES];
 
-    // Preflight every entry before changing the destination root. A recursive
-    // slot in the new root must refer to the new PML4 frame, never the old root.
+    // Preflight every source entry before changing the destination root. The
+    // source recursive slot is never copied: the new root uses its own slot.
     for index in LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES {
-        if index == recursive_index {
+        if index == root_recursive_index {
+            let entry = editor
+                .read_entry(kernel_root_physical, index, 4)
+                .ok_or(AddressSpaceRootInitializationError::KernelEntryUnavailable { index })?;
+            if entry != 0 {
+                return Err(
+                    AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied { index },
+                );
+            }
             upper_entries[index - LOWER_HALF_PML4_ENTRIES] =
                 root_physical | PRESENT | WRITABLE | NO_EXECUTE;
+            continue;
+        }
+        if index == kernel_recursive_index {
+            upper_entries[index - LOWER_HALF_PML4_ENTRIES] = 0;
             continue;
         }
 
@@ -633,7 +669,7 @@ mod tests {
         let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
         let root_address = root.physical_address();
         let mut editor = TestRootEditor::new(root_address, kernel_address);
-        editor.set_entry(kernel_address, 511, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
         editor.set_entry(kernel_address, 256, 0x3000 | PRESENT | WRITABLE);
         editor.set_entry(
             kernel_address,
@@ -641,22 +677,99 @@ mod tests {
             0x4000 | PRESENT | WRITABLE | NO_EXECUTE,
         );
 
-        root.initialize_from_kernel_root(kernel_address, 511, &mut editor)
+        root.initialize_from_kernel_root(kernel_address, 2, 510, &mut editor)
             .unwrap();
 
         assert!(root.is_initialized());
         for index in 0..LOWER_HALF_PML4_ENTRIES {
             assert_eq!(editor.entry(root_address, index), 0);
         }
+        assert_eq!(editor.entry(root_address, 2), 0);
         assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
         assert_eq!(
             editor.entry(root_address, 300),
             0x4000 | PRESENT | WRITABLE | NO_EXECUTE
         );
         assert_eq!(
+            editor.entry(root_address, 510),
+            root_address | PRESENT | WRITABLE | NO_EXECUTE
+        );
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn accepts_lower_half_kernel_recursive_slot_and_uses_private_upper_slot() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 256, 0x3000 | PRESENT | WRITABLE);
+
+        root.initialize_from_kernel_root(kernel_address, 2, 511, &mut editor)
+            .unwrap();
+
+        assert_eq!(editor.entry(root_address, 2), 0);
+        assert_eq!(
             editor.entry(root_address, 511),
             root_address | PRESENT | WRITABLE | NO_EXECUTE
         );
+        assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_replace_an_occupied_destination_recursive_slot() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 2, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 511, 0x6000 | PRESENT | WRITABLE);
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 2, 511, &mut editor),
+            Err(
+                AddressSpaceRootInitializationError::RecursiveDestinationSlotOccupied {
+                    index: 511
+                }
+            )
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_out_of_range_kernel_recursive_index_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 512, 510, &mut editor),
+            Err(AddressSpaceRootInitializationError::InvalidKernelRecursiveIndex { index: 512 })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
 
         allocator.free_frame(root.into_frame()).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
@@ -675,7 +788,7 @@ mod tests {
         editor.set_entry(kernel_address, 300, 0x4000 | PRESENT | USER_ACCESSIBLE);
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::UserAccessibleKernelEntry { index: 300 })
         );
         assert!(!root.is_initialized());
@@ -697,7 +810,7 @@ mod tests {
         let mut editor = TestRootEditor::new(root_address, kernel_address);
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 255, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 255, &mut editor),
             Err(AddressSpaceRootInitializationError::InvalidRecursiveIndex { index: 255 })
         );
         assert_eq!(editor.entry(root_address, 0), 0xdead_beef);
@@ -718,11 +831,11 @@ mod tests {
         let mut editor = TestRootEditor::new(root_address, kernel_address);
         editor.set_entry(kernel_address, 511, kernel_address | PRESENT | WRITABLE);
 
-        root.initialize_from_kernel_root(kernel_address, 511, &mut editor)
+        root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor)
             .unwrap();
         let before = editor.entry(root_address, 511);
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::AlreadyInitialized)
         );
         assert_eq!(editor.entry(root_address, 511), before);
@@ -744,7 +857,7 @@ mod tests {
         editor.blocked_table = Some(kernel_address);
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::KernelRootTableUnavailable)
         );
         assert_eq!(editor.tables[0].entries, before);
@@ -768,7 +881,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::KernelEntryUnavailable { index: 300 })
         );
         assert_eq!(editor.tables[0].entries, before);
@@ -795,7 +908,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::InvalidKernelRootRecursiveEntry)
         );
         assert_eq!(editor.tables[0].entries, before);
@@ -818,7 +931,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(
                 AddressSpaceRootInitializationError::PhysicalAddressWidthMismatch {
                     root_bits: 32,
@@ -845,7 +958,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(root_address, 511, &mut editor),
+            root.initialize_from_kernel_root(root_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::RootAliasesKernelRoot)
         );
         assert_eq!(editor.tables[0].entries, before);
@@ -869,7 +982,7 @@ mod tests {
         let before = editor.tables[0].entries;
 
         assert_eq!(
-            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            root.initialize_from_kernel_root(kernel_address, 511, 510, &mut editor),
             Err(AddressSpaceRootInitializationError::KernelEntryAliasesOwnedRoot { index: 300 })
         );
         assert_eq!(editor.tables[0].entries, before);

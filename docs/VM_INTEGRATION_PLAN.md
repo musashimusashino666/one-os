@@ -159,13 +159,14 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
   writable and user-accessible permissions require the corresponding bit to be set at
   every level; effective executable permission requires NX=0 at every level. A leaf
   PTE with U/S=0 is supervisor-only even when an ancestor U/S bit is 1.
-- Preserve compatibility with the current `map_4k` behavior: newly allocated
-  intermediate entries are written with PRESENT | WRITABLE | USER_ACCESSIBLE, while
-  leaf permissions come from `PagePermissions`. Therefore acceptance tests must not
-  require ancestor U/S=0 unless a separately reviewed implementation change also
-  changes this policy and updates host tests. For tests isolating a leaf write or NX
-  restriction, require ancestors to permit the operation in question and verify that
-  the effective access restriction comes from the intended leaf bit.
+- Intermediate-entry permissions are address-space aware. New intermediate entries
+  for lower-half virtual addresses set PRESENT | WRITABLE | USER_ACCESSIBLE so valid
+  user mappings can be created; new intermediate entries for upper-half virtual
+  addresses set PRESENT | WRITABLE and keep U/S=0. Reject a user-accessible leaf
+  request for an upper-half address. This is required because kernel-half PML4 entries
+  are copied into future user address spaces and must remain supervisor-only.
+  Host tests cover both policies. For leaf write/NX tests, still inspect the complete
+  walk and verify that the intended leaf bit causes the expected hardware fault.
 - Serialize page-table mutations. The bootstrap currently has a single CPU with
   maskable interrupts disabled; encode that as an explicit temporary precondition
   rather than pretending it provides SMP safety. Before SMP, add cross-CPU coordination
@@ -287,10 +288,10 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   protected write, read the sentinel successfully through the exact target virtual
   address and inspect the complete four-level walk. Require every entry to be present;
   require the PML4E, PDPTE, and PDE to have R/W=1 and NX=0. Do not require their U/S
-  bits to be 0: the current `map_4k` creates intermediate entries with
-  `USER_ACCESSIBLE=1`, and supervisor-only effective access is established by the
-  leaf PTE's U/S=0. Require the leaf PTE to have R/W=0 and U/S=0 and to point to the
-  expected frame. Reject large-page entries in the ancestor path and verify
+  bits to be 0 solely to identify the leaf as the restriction under test; upper-half
+  intermediates created by the current mapping helper are supervisor-only, while
+  existing bootloader ancestors must be checked as actually present. Require the leaf
+  PTE to have R/W=0 and U/S=0 and to point to the expected frame. Reject large-page entries in the ancestor path and verify
   `CR0.WP=1`. These checks prove the write denial comes from the leaf PTE's R/W bit,
   rather than an ancestor denying writes, and must pass before the faulting instruction
   executes.
@@ -321,12 +322,13 @@ fail-stop handler and the read-only-protection test's fail-stop path.
   frame at a dedicated target VA as present, supervisor-only, read-only, and NX. Before
   attempting execution, inspect the complete four-level walk. Require every entry to
   be present; require the PML4E, PDPTE, and PDE to have NX=0 (execution permitted at
-  all ancestor levels) and R/W=1. Do not require ancestor U/S=0: the current
-  `map_4k` sets `USER_ACCESSIBLE=1` on newly created intermediate tables. Require
-  the target PTE to point to the expected frame with NX=1, R/W=0, and U/S=0. Reject
-  large-page entries in the ancestor path. This proves that the leaf PTE's NX bit,
-  rather than an ancestor NX bit, prevents instruction fetch; the leaf U/S bit also
-  ensures the effective mapping is supervisor-only. Ensure the exception handler,
+  all ancestor levels) and R/W=1. Newly created upper-half ancestors are supervisor-only
+  by the current address-aware policy; verify the actual ancestor U/S bits without using
+  them as the cause of the NX denial. Require the target PTE to point to the expected
+  frame with NX=1, R/W=0, and U/S=0. Reject large-page entries in the ancestor path.
+  This proves that the leaf PTE's NX bit, rather than an ancestor NX bit, prevents
+  instruction fetch; the leaf U/S bit also ensures the effective mapping is
+  supervisor-only. Ensure the exception handler,
   recovery continuation, stack, and serial code are not in the target page.
 - Arm a narrowly scoped test-only page-fault expectation immediately before a
   controlled indirect branch to the exact target VA. Require vector 14, `CR2` equal

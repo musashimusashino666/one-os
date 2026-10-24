@@ -67,6 +67,15 @@ pub const fn is_canonical_4level(address: u64) -> bool {
     address <= 0x0000_7fff_ffff_ffff || address >= 0xffff_8000_0000_0000
 }
 
+/// Returns whether a recursive index can be used for pointer-based PML4 access.
+///
+/// Index zero is a valid hardware PML4 index, but its recursive PML4 alias is
+/// virtual address zero. This kernel access path must reject it rather than
+/// form a Rust pointer to the null address.
+pub const fn is_safe_recursive_mapping_index(index: u16) -> bool {
+    index != 0 && index < 512
+}
+
 /// Computes the virtual page address of a page-table page through the bootloader's
 /// recursive PML4 mapping.
 ///
@@ -267,10 +276,23 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_canonical_4level, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-        recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
+        is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
+        recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
+        PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
+
+    #[test]
+    fn rejects_recursive_index_zero_for_pointer_based_pml4_access() {
+        assert!(!is_safe_recursive_mapping_index(0));
+        assert!(is_safe_recursive_mapping_index(1));
+        assert!(is_safe_recursive_mapping_index(511));
+        assert!(!is_safe_recursive_mapping_index(512));
+        assert_eq!(
+            recursive_table_page_virtual_address(0, 0xffff_8000_0000_0000, 4),
+            Some(0)
+        );
+    }
 
     #[test]
     fn recursive_mapping_addresses_select_the_expected_table_levels() {
