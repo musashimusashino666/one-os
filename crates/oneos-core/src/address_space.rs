@@ -595,8 +595,8 @@ mod tests {
         validate_deactivation_root, validate_root_frame_address, validate_user_virtual_range,
         AddressSpaceRoot, AddressSpaceRootDeactivationError, AddressSpaceRootEditor,
         AddressSpaceRootError, AddressSpaceRootInitializationError, UserVirtualRangeError,
-        LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
-        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
+        LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE, USER_VIRTUAL_ADDRESS_LIMIT,
+        WRITABLE,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
