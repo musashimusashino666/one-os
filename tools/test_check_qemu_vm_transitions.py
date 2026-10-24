@@ -59,7 +59,7 @@ class ValidateVmTransitionOutputTests(unittest.TestCase):
 
     def test_user_frame_zeroing_marker_is_required(self):
         log = valid_log().replace(
-            "ONE OS USER FRAME ZERO TEST PASS\\n",
+            "ONE OS USER FRAME ZERO TEST PASS\n",
             "",
         )
         valid, message = validate_vm_transition_output(log, 33)
