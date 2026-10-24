@@ -21,15 +21,26 @@ const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const PHYSICAL_ADDRESS_FIELD_MASK: u64 = 0x000f_ffff_ffff_f000;
 const MAX_PHYSICAL_ADDRESS_BITS: u8 = 52;
 const MIN_PHYSICAL_ADDRESS_BITS: u8 = 32;
-const TABLE_ENTRY_FLAGS: u64 = PRESENT | WRITABLE | USER_ACCESSIBLE;
+const TABLE_ENTRY_FLAGS: u64 = PRESENT | WRITABLE;
+const USER_VIRTUAL_ADDRESS_LIMIT: u64 = 0x0000_8000_0000_0000;
+
+fn intermediate_entry_flags(virtual_address: u64) -> u64 {
+    TABLE_ENTRY_FLAGS
+        | if virtual_address < USER_VIRTUAL_ADDRESS_LIMIT {
+            USER_ACCESSIBLE
+        } else {
+            0
+        }
+}
 
 /// Effective leaf permissions requested for a mapping.
 ///
-/// Writable + executable mappings are rejected (W^X). Intermediate table
-/// entries created by this module allow write and user access so they do not
-/// accidentally restrict a later leaf mapping; the leaf entry still enforces
-/// the requested permissions, and effective x86_64 permissions are the
-/// intersection of all entries traversed.
+/// Writable + executable mappings are rejected (W^X). Intermediate entries
+/// allow writes. They allow user access only for lower-half virtual addresses;
+/// upper-half ancestors remain supervisor-only because they may be shared by
+/// independently constructed user address spaces. The leaf still enforces the
+/// requested permissions, and effective x86_64 permissions are the intersection
+/// of all entries traversed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PagePermissions {
     pub writable: bool,
@@ -83,6 +94,7 @@ pub enum PageTableMutationError {
     InvalidPhysicalAddressWidth { bits: u8 },
     InvalidPhysicalAddress,
     WritableExecutable,
+    UserAddressOutsideUserHalf,
     TableUnavailable { level: u8 },
     NotMapped { level: u8 },
     MalformedEntry { level: u8 },
@@ -151,6 +163,9 @@ pub fn map_4k<E: PageTableEditor>(
     }
     validate_root(root_table_physical, physical_address_bits)?;
     validate_virtual_page(virtual_address)?;
+    if permissions.user_accessible && virtual_address >= USER_VIRTUAL_ADDRESS_LIMIT {
+        return Err(PageTableMutationError::UserAddressOutsideUserHalf);
+    }
     if !valid_physical_page(physical_address, physical_address_bits) {
         return Err(PageTableMutationError::InvalidPhysicalAddress);
     }
@@ -270,7 +285,7 @@ pub fn map_4k<E: PageTableEditor>(
                     table,
                     indices[child_path_index],
                     4 - child_path_index as u8,
-                    allocated[allocation_index + 1] | TABLE_ENTRY_FLAGS,
+                    allocated[allocation_index + 1] | intermediate_entry_flags(virtual_address),
                 );
             } else {
                 editor.write_entry(table, indices[3], 1, leaf_entry);
@@ -282,7 +297,7 @@ pub fn map_4k<E: PageTableEditor>(
             tables[missing_index],
             indices[missing_index],
             parent_level,
-            allocated[0] | TABLE_ENTRY_FLAGS,
+            allocated[0] | intermediate_entry_flags(virtual_address),
         );
     } else {
         editor.write_entry(tables[3], indices[3], 1, leaf_entry);
@@ -829,6 +844,81 @@ mod tests {
             }),
             Err(PageTableError::NotPresent { level: 1 })
         );
+    }
+
+    #[test]
+    fn kernel_half_mapping_keeps_all_new_ancestors_supervisor_only() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            0x8000,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+        ];
+        let mut table = root;
+        for (level, index) in [(4u8, indices[0]), (3, indices[1]), (2, indices[2])] {
+            let entry = tables.read_any(table, index).unwrap();
+            assert_eq!(entry & USER_ACCESSIBLE, 0, "level {level} must be supervisor-only");
+            table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
+        }
+    }
+
+    #[test]
+    fn lower_half_user_mapping_sets_user_access_on_new_ancestors() {
+        let root = 0x1000;
+        let virtual_address = 0x0000_0040_1234_5000;
+        let mut tables = TestTables::new(root);
+
+        map(
+            &mut tables,
+            root,
+            virtual_address,
+            0x8000,
+            PagePermissions::new(true, true, false),
+        )
+        .unwrap();
+
+        let indices = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+        ];
+        let mut table = root;
+        for (level, index) in [(4u8, indices[0]), (3, indices[1]), (2, indices[2])] {
+            let entry = tables.read_any(table, index).unwrap();
+            assert_ne!(entry & USER_ACCESSIBLE, 0, "level {level} must permit user pages");
+            table = entry & PHYSICAL_ADDRESS_FIELD_MASK;
+        }
+    }
+
+    #[test]
+    fn rejects_user_accessible_mappings_in_the_kernel_half() {
+        let root = 0x1000;
+        let virtual_address = 0xffff_8000_1234_5000;
+        let mut tables = TestTables::new(root);
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                virtual_address,
+                0x8000,
+                PagePermissions::new(false, true, false),
+            ),
+            Err(PageTableMutationError::UserAddressOutsideUserHalf)
+        );
+        assert_eq!(tables.pages.len(), 1);
     }
 
     #[test]
