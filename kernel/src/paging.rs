@@ -15,10 +15,11 @@ use bootloader_api::BootInfo;
 use oneos_core::{
     is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
     physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_supervisor_4k, validate_cr0_write_protect,
-    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
-    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PagingPreconditionError, PAGE_SIZE,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, Frame, FrameRegistryError, PagePermissions, PageTableEditor,
+    PageTableError, PageTableFrameRegistry, PageTableMutationError, PageTranslation,
+    PagingPreconditionError, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -1050,7 +1051,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                             && !result.user_accessible
                             && !result.executable
                     });
-                let unmapped = unmap_supervisor_4k(root_table_physical, candidate, &mut editor);
+                let unmapped = unmap_4k(root_table_physical, candidate, &mut editor);
                 if unmapped.is_err() {
                     // Never return a data frame to the allocator while it may
                     // still be reachable through a live page-table entry.
@@ -1157,9 +1158,9 @@ impl Drop for ProtectionTestFrameGuard<'_> {
                 let _unreleased_frame = frame;
                 return;
             };
-            match unmap_supervisor_4k(root, virtual_address, &mut editor) {
+            match unmap_4k(root, virtual_address, &mut editor) {
                 Ok(unmapped) => {
-                    // unmap_supervisor_4k has cleared the leaf entry. Flush the stale
+                    // unmap_4k has cleared the leaf entry. Flush the stale
                     // translation before checking identity or deciding whether
                     // the frame can be returned to the allocator.
                     invalidate_local_tlb(virtual_address);
@@ -1664,7 +1665,7 @@ impl MappingTransitionTest {
     ) -> Result<(), PagingError> {
         let root_table_physical = active_root_table_physical();
         let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
-        let removed = unmap_supervisor_4k(root_table_physical, self.virtual_address, &mut editor)
+        let removed = unmap_4k(root_table_physical, self.virtual_address, &mut editor)
             .map_err(PagingError::MappingMutation)?;
         invalidate_local_tlb(self.virtual_address);
         if removed.physical_address != physical_address
