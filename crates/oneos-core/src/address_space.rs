@@ -404,8 +404,8 @@ mod tests {
     use super::{
         validate_root_frame_address, validate_user_virtual_range, AddressSpaceRoot,
         AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
-        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT,
-        USER_ACCESSIBLE, USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
+        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
+        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
@@ -539,6 +539,7 @@ mod tests {
         tables: [TestTable; 2],
         blocked_table: Option<u64>,
         unreadable_entry: Option<(u64, usize)>,
+        physical_address_bits: u8,
     }
 
     impl TestRootEditor {
@@ -556,6 +557,7 @@ mod tests {
                 ],
                 blocked_table: None,
                 unreadable_entry: None,
+                physical_address_bits: 32,
             }
         }
 
@@ -579,7 +581,7 @@ mod tests {
 
     impl AddressSpaceRootEditor for TestRootEditor {
         fn physical_address_bits(&self) -> u8 {
-            32
+            self.physical_address_bits
         }
 
         fn table_is_readable(&mut self, table_physical: u64) -> bool {
@@ -594,12 +596,7 @@ mod tests {
             self.table_is_readable(table_physical)
         }
 
-        fn read_entry(
-            &mut self,
-            table_physical: u64,
-            index: usize,
-            _level: u8,
-        ) -> Option<u64> {
+        fn read_entry(&mut self, table_physical: u64, index: usize, _level: u8) -> Option<u64> {
             if self.unreadable_entry == Some((table_physical, index)) {
                 return None;
             }
@@ -609,13 +606,7 @@ mod tests {
                 .and_then(|table| table.entries.get(index).copied())
         }
 
-        fn write_entry(
-            &mut self,
-            table_physical: u64,
-            index: usize,
-            _level: u8,
-            value: u64,
-        ) {
+        fn write_entry(&mut self, table_physical: u64, index: usize, _level: u8, value: u64) {
             let table = self
                 .tables
                 .iter_mut()
@@ -625,9 +616,7 @@ mod tests {
         }
     }
 
-    fn initialize_test_roots(
-        allocator: &mut FrameAllocator<'_>,
-    ) -> (AddressSpaceRoot, u64, Frame) {
+    fn initialize_test_roots(allocator: &mut FrameAllocator<'_>) -> (AddressSpaceRoot, u64, Frame) {
         let root_frame = allocator.allocate_frame().unwrap();
         let kernel_frame = allocator.allocate_frame().unwrap();
         let kernel_address = kernel_frame.physical_address();
@@ -741,4 +730,151 @@ mod tests {
         allocator.free_frame(root.into_frame()).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
+
+    #[test]
+    fn rejects_unreadable_kernel_root_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        let before = editor.tables[0].entries;
+        editor.blocked_table = Some(kernel_address);
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::KernelRootTableUnavailable)
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_unreadable_kernel_entry_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 511, kernel_address | PRESENT | WRITABLE);
+        editor.unreadable_entry = Some((kernel_address, 300));
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::KernelEntryUnavailable { index: 300 })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_kernel_recursive_entry_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(
+            kernel_address,
+            511,
+            kernel_address | PRESENT | WRITABLE | USER_ACCESSIBLE,
+        );
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::InvalidKernelRootRecursiveEntry)
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_physical_address_width_mismatch_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.physical_address_bits = 36;
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::PhysicalAddressWidthMismatch {
+                root_bits: 32,
+                editor_bits: 36,
+            })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_kernel_root_alias_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, _kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_frame.physical_address());
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(root_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::RootAliasesKernelRoot)
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
+    #[test]
+    fn rejects_kernel_entry_aliasing_owned_root_without_mutating_destination() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let (mut root, kernel_address, kernel_frame) = initialize_test_roots(&mut allocator);
+        let root_address = root.physical_address();
+        let mut editor = TestRootEditor::new(root_address, kernel_address);
+        editor.set_entry(kernel_address, 511, kernel_address | PRESENT | WRITABLE);
+        editor.set_entry(kernel_address, 300, root_address | PRESENT | WRITABLE);
+        let before = editor.tables[0].entries;
+
+        assert_eq!(
+            root.initialize_from_kernel_root(kernel_address, 511, &mut editor),
+            Err(AddressSpaceRootInitializationError::KernelEntryAliasesOwnedRoot { index: 300 })
+        );
+        assert_eq!(editor.tables[0].entries, before);
+        assert!(!root.is_initialized());
+
+        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(kernel_frame).unwrap();
+    }
+
 }
