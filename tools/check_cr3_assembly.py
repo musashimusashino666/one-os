@@ -451,20 +451,40 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "original pre-switch CR4 value was not restored on every CR3-switch exit"
     return True, "all reachable CR3 writes are bracketed by PGE disable and original CR4 restore"
 
-def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
-    """Ensure every CR3 inline-asm block retains the compiler memory clobber."""
-    blocks = re.findall(
-        r'asm!\s*\(\s*"mov\s+cr3\s*,\s*\{\}"(?P<body>.*?)\);',
-        source,
-        flags=re.DOTALL,
+def _asm_blocks_writing_control_register(
+    source: str, register: str
+) -> list[str]:
+    """Find asm! blocks whose string templates write the named control register.
+
+    Match the instruction independently of its operand placeholder style, so
+    both positional ("mov cr3, {}") and named ("mov cr3, {root}") operands are
+    checked. Rust's asm! templates are string literals; the macro body is
+    captured separately so options and operands can be validated as a whole.
+    """
+    macro_pattern = re.compile(r"\basm!\s*\((?P<body>.*?)\);", re.DOTALL)
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    instruction_pattern = re.compile(
+        rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE
     )
+    blocks: list[str] = []
+    for match in macro_pattern.finditer(source):
+        body = match.group("body")
+        templates = string_pattern.findall(body)
+        if any(instruction_pattern.search(template) for template in templates):
+            blocks.append(body)
+    return blocks
+
+
+def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
+    """Ensure every CR3 inline-asm block retains the compiler memory barrier."""
+    blocks = _asm_blocks_writing_control_register(source, "cr3")
     if not blocks:
-        return False, "could not locate any CR3 asm block in address_space.rs"
+        return False, "could not locate any asm! block writing CR3 in address_space.rs"
 
     for index, block in enumerate(blocks, start=1):
         if re.search(r"\bnomem\b", block):
             return False, f"CR3 inline asm block {index} must not specify nomem"
-        if not re.search(r"\bin\(reg\)\s+root_physical\b", block):
+        if not re.search(r"\bin\(\s*reg\s*\)\s+root_physical\b", block):
             return False, (
                 f"CR3 inline asm block {index} no longer uses the validated "
                 "root_physical operand"
@@ -474,11 +494,7 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
 
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
     """Ensure every source-level CR3 switch clears PGE and restores original CR4."""
-    blocks = re.findall(
-        r'asm!\s*\(\s*"mov\s+cr4\s*,\s*\{\}"(?P<body>.*?)\);',
-        source,
-        flags=re.DOTALL,
-    )
+    blocks = _asm_blocks_writing_control_register(source, "cr4")
     if len(blocks) < 2 or len(blocks) % 2 != 0:
         return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
     if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
@@ -488,12 +504,12 @@ def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
         disable_block = blocks[pair_index]
         restore_block = blocks[pair_index + 1]
         switch_number = pair_index // 2 + 1
-        if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", disable_block):
+        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4_without_pge\b", disable_block):
             return False, (
                 f"CR3 switch sequence {switch_number} must first write the "
                 "PGE-cleared cr4_without_pge value"
             )
-        if not re.search(r"\bin\(reg\)\s+cr4\b", restore_block):
+        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4\b", restore_block):
             return False, (
                 f"CR3 switch sequence {switch_number} must restore the original cr4 value"
             )
