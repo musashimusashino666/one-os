@@ -791,6 +791,13 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         !self.is_usable_frame(physical_address) || self.is_table_frame(physical_address)
     }
 
+    fn is_frame_allocated(&self, physical_address: u64) -> bool {
+        // map_4k runs with maskable interrupts disabled under the current
+        // single-CPU contract. If the allocator cannot be queried (for example,
+        // because it is unavailable or busy), reject the mapping.
+        super::memory::is_frame_allocated(physical_address).unwrap_or(false)
+    }
+
     fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
         // The physical-memory-offset mapping is currently writable for Usable
         // frames. Until the kernel can remove/downgrade every writable alias and
