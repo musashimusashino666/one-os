@@ -8,13 +8,13 @@
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection",
     feature = "test-vm-transitions"
 ))]
 use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use oneos_core::validate_kernel_entry_stack;
 
@@ -81,7 +81,8 @@ static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
 static mut NON_MASKABLE_INTERRUPT_STACK: NonMaskableInterruptStack =
     NonMaskableInterruptStack([0; NON_MASKABLE_STACK_SIZE]);
-static mut MACHINE_CHECK_STACK: MachineCheckStack = MachineCheckStack([0; MACHINE_CHECK_STACK_SIZE]);
+static mut MACHINE_CHECK_STACK: MachineCheckStack =
+    MachineCheckStack([0; MACHINE_CHECK_STACK_SIZE]);
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -1009,8 +1010,7 @@ fn initialize_tss_and_gdt(kernel_stack_top: u64) {
         let double_fault_base = ptr::addr_of_mut!(DOUBLE_FAULT_STACK).cast::<u8>();
         let double_fault_top = double_fault_base.add(size_of::<DoubleFaultStack>()) as u64;
         let non_maskable_base = ptr::addr_of_mut!(NON_MASKABLE_INTERRUPT_STACK).cast::<u8>();
-        let non_maskable_top =
-            non_maskable_base.add(size_of::<NonMaskableInterruptStack>()) as u64;
+        let non_maskable_top = non_maskable_base.add(size_of::<NonMaskableInterruptStack>()) as u64;
         let machine_check_base = ptr::addr_of_mut!(MACHINE_CHECK_STACK).cast::<u8>();
         let machine_check_top = machine_check_base.add(size_of::<MachineCheckStack>()) as u64;
 
@@ -1079,11 +1079,9 @@ pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {
         super::halt_forever();
     }
 
-    let Some(kernel_stack_top) = validate_kernel_entry_stack(
-        kernel_stack_bottom,
-        kernel_stack_len,
-        stack_pointer,
-    ) else {
+    let Some(kernel_stack_top) =
+        validate_kernel_entry_stack(kernel_stack_bottom, kernel_stack_len, stack_pointer)
+    else {
         super::serial_write(b"ONE OS TSS INIT FAILED: invalid kernel entry stack interval\n");
         super::halt_forever();
     };
