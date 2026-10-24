@@ -13,6 +13,8 @@ test-general-protection = []
 test-page-fault = []
 # Test-only invalid-stack fault injection to exercise the double-fault IST stack.
 test-double-fault = []
+# Test-only software-vector checks that verify the NMI and machine-check IST stacks.
+test-ist = []
 # Dedicated hardware memory-protection acceptance images (terminal expected #PF).
 test-supervisor-write-protection = []
 test-nx-protection = []

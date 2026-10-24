@@ -76,6 +76,9 @@ jobs:
       - name: Check bare-metal kernel
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
+      - name: Test CR3 assembly validator
+        run: python3 -m unittest discover -s tools -p 'test_check_cr3_assembly.py'
+
       - name: Inspect optimized CR3 switch assembly
         shell: bash
         run: |
@@ -146,6 +149,25 @@ jobs:
           verify_exception_case image-test-general-protection one-os-general-protection-test-bios.img gp
           verify_exception_case image-test-page-fault one-os-page-fault-test-bios.img pf
           verify_exception_case image-test-double-fault one-os-double-fault-test-bios.img df
+
+      - name: Verify NMI and machine-check IST stack selection in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-ist
+          log="$CARGO_TARGET_DIR/qemu-ist-stacks.log"
+          set +e
+          timeout 10s qemu-system-x86_64 \
+            -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-ist-test-bios.img" \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          python3 tools/check_qemu_ist.py \
+            --log "$log" \
+            --exit-status "$status"
 
       - name: Verify supervisor write protection in QEMU
         shell: bash

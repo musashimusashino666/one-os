@@ -207,6 +207,12 @@ being accessed. Do not leave this as implicit, mutable out-of-band state.
    gate unless the repository's required-check policy explicitly says so. Retain logs
    and the result summary.
 
+## Root activation and exception-entry contract
+
+Before creating the replacement kernel root, the activation path reads CR0, CR4, EFER, RFLAGS, and RSP at runtime. It refuses activation unless CR0.PG and CR0.WP are set, EFER.NXE is set, CR4.LA57 and CR4.PCIDE are clear, and RFLAGS.IF is zero. Pure validation helpers cover each rejected CPU state, and the normal QEMU boot validator requires the interrupt/TSS initialization marker.
+
+TSS.RSP0 is populated from the validated bootloader kernel-stack interval; IST1/2/3 are separate static stacks for double fault, NMI, and machine check. Their address and stack alignment contract is explicit, but guard pages are not yet mapped. Do not enable ring 3 or external interrupts based on these bootstrap settings alone. Guard pages, complete privilege-transition frame validation, and hardware-backed entry/return tests remain future work. Static IST stacks must not be described as overflow-protected.
+
 ## Current executable-mapping restriction
 
 The generic host-testable mutation engine supports executable mappings only when its

@@ -57,6 +57,8 @@ pub enum PagingError {
     InvalidRecursiveIndex,
     InvalidRecursiveMapping,
     UnsupportedFiveLevelPaging,
+    PagingDisabled,
+    PcidUnsupported,
     SupervisorWriteProtectionDisabled,
     UnsupportedNx,
     ExtendedCpuidLeafUnavailable {
@@ -106,6 +108,10 @@ impl PagingError {
             }
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
+            }
+            Self::PagingDisabled => b"CR0.PG is disabled; paging is not active\n",
+            Self::PcidUnsupported => {
+                b"CR4.PCIDE is enabled; PCID-tagged CR3 switching is not supported\n"
             }
             Self::SupervisorWriteProtectionDisabled => {
                 b"CR0.WP is disabled; supervisor writes may bypass read-only page-table entries\n"
@@ -457,6 +463,12 @@ fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError 
         PagingPreconditionError::SupervisorWriteProtectionDisabled => {
             PagingError::SupervisorWriteProtectionDisabled
         }
+        PagingPreconditionError::MaskableInterruptsEnabled => PagingError::InterruptsEnabled,
+        PagingPreconditionError::PagingDisabled => PagingError::PagingDisabled,
+        PagingPreconditionError::FiveLevelPagingUnsupported => {
+            PagingError::UnsupportedFiveLevelPaging
+        }
+        PagingPreconditionError::PcidUnsupported => PagingError::PcidUnsupported,
     }
 }
 

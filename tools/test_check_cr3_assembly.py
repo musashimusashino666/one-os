@@ -3,6 +3,7 @@
 import unittest
 
 from check_cr3_assembly import (
+    _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
     validate_cr4_asm_pge_order,
@@ -24,6 +25,11 @@ def assembly_with(body: str) -> str:
 
 
 class ActivationAssemblyTests(unittest.TestCase):
+    def test_parses_operandless_control_flow_and_clobber_instructions(self):
+        self.assertEqual(_instruction("retq"), ("retq", []))
+        self.assertEqual(_instruction("cpuid"), ("cpuid", []))
+        self.assertEqual(_instruction("rdmsr"), ("rdmsr", []))
+
     def test_finds_activation_function_in_optimized_assembly(self):
         source = assembly_with(
             "    movq %cr4, %rbx\n"
@@ -42,19 +48,86 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertTrue(valid, message)
 
 
-    def test_accepts_fast_path_cr3_before_pge_path(self):
+    def test_ignores_epilogue_clobber_on_alternate_control_flow_path(self):
         valid, message = validate_function_body(
             [
                 "movq %cr4, %r13",
-                "movq %rbx, %cr3",  # PGE is already clear: optimized fast path.
+                "jne .Lfailure",
+                "jmp .Lswitch",
+                ".Lfailure:",
+                "popq %r13",
+                "retq",
+                ".Lswitch:",
                 "movq %r13, %rax",
-                "andq $-131201, %rax",  # Clears PGE and the already-validated PCIDE bit.
+                "andq $-129, %rax",
                 "movq %rax, %cr4",
                 "movq %rbx, %cr3",
                 "movq %r13, %cr4",
+                "retq",
             ]
         )
         self.assertTrue(valid, message)
+
+    def test_accepts_branching_paths_when_all_cr3_writes_are_safe(self):
+        # Either branch may be taken, but both converge on the mandatory
+        # PGE-clear -> CR3-write -> original-CR4-restore sequence.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "testb %r13b, %r13b",
+                "jne .Lprepare",
+                "jmp .Lswitch",
+                ".Lprepare:",
+                "movq %r13, %rax",
+                ".Lswitch:",
+                "movq %r13, %rax",
+                "andq $-135297, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                "retq",
+            ]
+        )
+        self.assertTrue(valid, message)
+
+    def test_rejects_cr3_write_before_pge_disable(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "movq %rbx, %cr3",  # Unsafe: no PGE-clear CR4 write dominates this CR3 write.
+                "movq %r13, %rax",
+                "andq $-131201, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                "retq",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("reachable CR3 write is not dominated", message)
+
+    def test_rejects_function_with_one_safe_and_one_unsafe_cr3_path(self):
+        # The safe branch must not hide the unsafe branch. The old checker
+        # returned success as soon as it found any completed safe path.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "testb %r13b, %r13b",
+                "jne .Lsafe",
+                "movq %rbx, %cr3",
+                "jmp .Ldone",
+                ".Lsafe:",
+                "movq %r13, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                ".Ldone:",
+                "retq",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("reachable CR3 write is not dominated", message)
 
     def test_rejects_missing_pge_clear(self):
         valid, message = validate_function_body(
@@ -79,7 +152,7 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("PGE disable -> CR3 write -> PGE restore", message)
+        self.assertIn("reachable CR3 write is not dominated", message)
 
     def test_rejects_mask_that_keeps_pge_bit_set(self):
         valid, message = validate_function_body(
@@ -87,6 +160,76 @@ class ActivationAssemblyTests(unittest.TestCase):
                 "movq %cr4, %rbx",
                 "movq %rbx, %rax",
                 "andq $-1, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_accepts_mask_that_only_clears_pge_la57_and_pcide(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-135297, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertTrue(valid, message)
+
+    def test_rejects_zero_mask_that_destroys_all_cr4_bits(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $0, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_mask_that_clears_unrelated_cr4_bit(self):
+        # -385 clears PGE bit 7 and unrelated CR4 bit 8.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-385, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_32_bit_and_that_zero_extends_cr4_value(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %eax",
+                "andl $-129, %eax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("no instruction clearing CR4.PGE bit 7", message)
+
+    def test_rejects_btr_mask_that_targets_an_unrelated_bit(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "btrq $8, %rax",
                 "movq %rax, %cr4",
                 "movq %r12, %cr3",
                 "movq %rbx, %cr4",

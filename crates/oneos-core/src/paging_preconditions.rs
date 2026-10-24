@@ -5,7 +5,14 @@
 
 const NX_FEATURE: u32 = 1 << 20;
 const CR0_WP: u64 = 1 << 16;
+const CR0_PG: u64 = 1 << 31;
+const CR4_LA57: u64 = 1 << 12;
+const CR4_PCIDE: u64 = 1 << 17;
 const EFER_NXE: u64 = 1 << 11;
+const RFLAGS_IF: u64 = 1 << 9;
+const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
+// Reserve at least one page below the live RSP for bootstrap call depth.
+const MIN_KERNEL_STACK_HEADROOM: u64 = 4096;
 
 /// A CPU capability or control-state precondition required by active page-table mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +35,43 @@ pub enum PagingPreconditionError {
     SupervisorWriteProtectionDisabled,
     /// EFER.NXE is not enabled, so NX page-table entries cannot be relied upon.
     NxEnableDisabled,
+    /// Maskable interrupts are enabled during a single-CPU root switch.
+    MaskableInterruptsEnabled,
+    /// CR0.PG is clear, so paging is not active.
+    PagingDisabled,
+    /// CR4.LA57 enables five-level paging, which this kernel does not support.
+    FiveLevelPagingUnsupported,
+    /// CR4.PCIDE enables PCID-tagged CR3 behavior outside this contract.
+    PcidUnsupported,
+}
+
+impl PagingPreconditionError {
+    /// Stable, allocation-free diagnostic for bootstrap failure paths.
+    pub const fn message(self) -> &'static [u8] {
+        match self {
+            Self::ExtendedLeafUnavailable { .. } => {
+                b"Required extended CPUID leaf is unavailable\n"
+            }
+            Self::NxUnsupported => b"CPU does not advertise NX support\n",
+            Self::InvalidPhysicalAddressWidth { .. } => {
+                b"CPU reported an unsupported physical-address width\n"
+            }
+            Self::SupervisorWriteProtectionDisabled => {
+                b"CR0.WP is disabled; supervisor writes may bypass read-only entries\n"
+            }
+            Self::NxEnableDisabled => b"EFER.NXE is disabled\n",
+            Self::MaskableInterruptsEnabled => {
+                b"Maskable interrupts must remain disabled during the root switch\n"
+            }
+            Self::PagingDisabled => b"CR0.PG is disabled; paging is not active\n",
+            Self::FiveLevelPagingUnsupported => {
+                b"CR4.LA57 is enabled; five-level paging is not supported\n"
+            }
+            Self::PcidUnsupported => {
+                b"CR4.PCIDE is enabled; PCID-tagged CR3 switching is not supported\n"
+            }
+        }
+    }
 }
 
 /// Requires the extended CPUID leaf needed to query MAXPHYADDR.
@@ -77,6 +121,63 @@ pub fn validate_efer_nx_enable(efer: u64) -> Result<(), PagingPreconditionError>
         return Err(PagingPreconditionError::NxEnableDisabled);
     }
     Ok(())
+}
+
+/// Validates the bootloader-provided kernel stack range before using it as TSS.RSP0.
+///
+/// Returns the exclusive stack top when the interval is nonempty, canonical,
+/// wholly in the four-level kernel half, 16-byte aligned at its top, and contains
+/// the current stack pointer with at least one page of stack space remaining
+/// below RSP for bootstrap call depth. An invalid interval is rejected without mutation.
+pub fn validate_kernel_entry_stack(
+    bottom: u64,
+    length: u64,
+    current_stack_pointer: u64,
+) -> Option<u64> {
+    if length == 0 || bottom < KERNEL_HALF_START || !crate::is_canonical_4level(bottom) {
+        return None;
+    }
+    let top = bottom.checked_add(length)?;
+    let last = top.checked_sub(1)?;
+    let minimum_safe_rsp = bottom.checked_add(MIN_KERNEL_STACK_HEADROOM)?;
+    if top & 0xf != 0
+        || top < KERNEL_HALF_START
+        || !crate::is_canonical_4level(top)
+        || !crate::is_canonical_4level(last)
+        || current_stack_pointer < minimum_safe_rsp
+        || current_stack_pointer >= top
+    {
+        return None;
+    }
+    Some(top)
+}
+
+/// Validates the CPU state immediately before activating a new kernel root.
+///
+/// The current activation contract is a single CPU with maskable interrupts
+/// disabled, four-level paging enabled, CR0.WP and EFER.NXE enabled, and PCID
+/// disabled. Read these registers at the point of use instead of relying only
+/// on initialization having enabled them earlier.
+pub fn validate_kernel_root_activation_state(
+    cr0: u64,
+    cr4: u64,
+    efer: u64,
+    rflags: u64,
+) -> Result<(), PagingPreconditionError> {
+    if rflags & RFLAGS_IF != 0 {
+        return Err(PagingPreconditionError::MaskableInterruptsEnabled);
+    }
+    if cr0 & CR0_PG == 0 {
+        return Err(PagingPreconditionError::PagingDisabled);
+    }
+    validate_cr0_write_protect(cr0)?;
+    if cr4 & CR4_LA57 != 0 {
+        return Err(PagingPreconditionError::FiveLevelPagingUnsupported);
+    }
+    if cr4 & CR4_PCIDE != 0 {
+        return Err(PagingPreconditionError::PcidUnsupported);
+    }
+    validate_efer_nx_enable(efer)
 }
 
 #[cfg(test)]
@@ -130,6 +231,102 @@ mod tests {
         );
         assert_eq!(validate_cr0_write_protect(CR0_WP), Ok(()));
         assert_eq!(validate_efer_nx_enable(EFER_NXE), Ok(()));
+    }
+
+    #[test]
+    fn validates_kernel_entry_stack_top_and_rejects_invalid_intervals() {
+        let bottom = 0xffff_8000_1000_0000;
+        let length = 0x8000;
+        let top = bottom + length;
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, top - 8),
+            Some(top)
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, bottom),
+            None,
+            "RSP at the lower bound has no safe call headroom"
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(
+                bottom,
+                length,
+                bottom + super::MIN_KERNEL_STACK_HEADROOM - 1
+            ),
+            None,
+            "RSP below the required headroom must be rejected"
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(
+                bottom,
+                length,
+                bottom + super::MIN_KERNEL_STACK_HEADROOM
+            ),
+            Some(top),
+            "RSP with exactly one page of remaining stack is accepted"
+        );
+        assert_eq!(super::validate_kernel_entry_stack(bottom, 0, top - 8), None);
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, u64::MAX, top - 8),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length + 1, top - 8),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, bottom - 1),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(bottom, length, top),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(0x1000, length, 0x2000),
+            None
+        );
+        assert_eq!(
+            super::validate_kernel_entry_stack(0xffff_7fff_ffff_f000, length, top - 8),
+            None
+        );
+    }
+
+    #[test]
+    fn kernel_root_activation_requires_the_complete_cpu_state() {
+        const CR0_PG: u64 = 1 << 31;
+        const CR4_PGE: u64 = 1 << 7;
+        let cr0 = CR0_PG | CR0_WP;
+        let efer = EFER_NXE;
+
+        assert_eq!(
+            super::validate_kernel_root_activation_state(cr0, CR4_PGE, efer, 0x2),
+            Ok(())
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(cr0, CR4_PGE, efer, 1 << 9),
+            Err(PagingPreconditionError::MaskableInterruptsEnabled)
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(CR0_WP, CR4_PGE, efer, 0),
+            Err(PagingPreconditionError::PagingDisabled)
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(CR0_PG, CR4_PGE, efer, 0),
+            Err(PagingPreconditionError::SupervisorWriteProtectionDisabled)
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(cr0, 1 << 12, efer, 0),
+            Err(PagingPreconditionError::FiveLevelPagingUnsupported)
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(cr0, 1 << 17, efer, 0),
+            Err(PagingPreconditionError::PcidUnsupported)
+        );
+        assert_eq!(
+            super::validate_kernel_root_activation_state(cr0, CR4_PGE, 0, 0),
+            Err(PagingPreconditionError::NxEnableDisabled)
+        );
     }
 
     #[test]

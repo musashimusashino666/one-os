@@ -43,6 +43,7 @@ pub use page_table_mutation::{
 };
 pub use paging_preconditions::{
     validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_kernel_entry_stack, validate_kernel_root_activation_state,
     validate_paging_cpu_capabilities, PagingPreconditionError,
 };
 
