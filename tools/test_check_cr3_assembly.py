@@ -5,6 +5,7 @@ import unittest
 from check_cr3_assembly import (
     activation_function_bodies,
     validate_cr3_asm_memory_order,
+    validate_cr4_asm_pge_order,
     validate_function_body,
 )
 
@@ -98,17 +99,38 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("not cleared in the register written to CR4", message)
 
-    def test_rejects_restore_without_saved_cr4_source(self):
+    def test_rejects_restore_from_masked_value(self):
         valid, message = validate_function_body(
             [
                 "andq $-129, %rax",
                 "movq %rax, %cr4",
                 "movq %r12, %cr3",
-                "movq %rbx, %cr4",
+                "movq %rax, %cr4",
             ]
         )
         self.assertFalse(valid)
-        self.assertIn("pre-switch CR4 value", message)
+        self.assertIn("separate saved CR4 value", message)
+
+    def test_source_restores_original_cr4_value(self):
+        source = """
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertTrue(valid, message)
+
+    def test_source_rejects_restoring_masked_cr4_value(self):
+        source = """
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4_without_pge,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertFalse(valid)
+        self.assertIn("restore the original cr4 value", message)
 
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
