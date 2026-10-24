@@ -3,6 +3,7 @@
 import unittest
 
 from check_cr3_assembly import (
+    _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
     validate_cr4_asm_pge_order,
@@ -24,6 +25,11 @@ def assembly_with(body: str) -> str:
 
 
 class ActivationAssemblyTests(unittest.TestCase):
+    def test_parses_operandless_control_flow_and_clobber_instructions(self):
+        self.assertEqual(_instruction("retq"), ("retq", []))
+        self.assertEqual(_instruction("cpuid"), ("cpuid", []))
+        self.assertEqual(_instruction("rdmsr"), ("rdmsr", []))
+
     def test_finds_activation_function_in_optimized_assembly(self):
         source = assembly_with(
             "    movq %cr4, %rbx\n"
