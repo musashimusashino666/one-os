@@ -418,9 +418,9 @@ mod tests {
         }
 
         fn table_is_readable(&mut self, table_physical: u64) -> bool {
-            self.tables.iter().any(|table| {
-                table.physical_address == table_physical && table.in_use
-            })
+            self.tables
+                .iter()
+                .any(|table| table.physical_address == table_physical && table.in_use)
         }
 
         fn table_is_read_write_accessible(&mut self, table_physical: u64) -> bool {
