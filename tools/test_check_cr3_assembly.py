@@ -42,6 +42,26 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertTrue(valid, message)
 
 
+    def test_ignores_epilogue_clobber_on_alternate_control_flow_path(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %r13",
+                "jne .Lfailure",
+                "jmp .Lswitch",
+                ".Lfailure:",
+                "popq %r13",
+                "retq",
+                ".Lswitch:",
+                "movq %r13, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %cr4",
+                "movq %rbx, %cr3",
+                "movq %r13, %cr4",
+                "retq",
+            ]
+        )
+        self.assertTrue(valid, message)
+
     def test_accepts_fast_path_cr3_before_pge_path(self):
         valid, message = validate_function_body(
             [
