@@ -40,6 +40,13 @@ pub trait UserAddressSpaceEditor: PageTableEditor {
 pub enum UserPageMappingError {
     /// The address-space root has not completed initialization.
     AddressSpaceNotInitialized,
+    /// This registry is bound to a different address-space root.
+    AddressSpaceRootMismatch {
+        /// PML4 physical address captured when the registry was created.
+        registry_root_physical: u64,
+        /// PML4 physical address supplied to the operation.
+        supplied_root_physical: u64,
+    },
     /// Address zero is intentionally kept unmapped as a null guard.
     NullVirtualAddress,
     /// User data pages must be aligned to 4 KiB.
@@ -82,15 +89,36 @@ enum MappingSlot<T: FrameToken> {
 /// not replace the future global reverse-alias accounting needed for frame-wide
 /// W^X across processes and kernel/direct-map aliases.
 pub struct UserPageMappingRegistry<T: FrameToken, const CAPACITY: usize> {
+    root_physical: u64,
     slots: [MappingSlot<T>; CAPACITY],
 }
 
 impl<T: FrameToken, const CAPACITY: usize> UserPageMappingRegistry<T, CAPACITY> {
-    /// Creates an empty registry without allocating memory.
-    pub fn new() -> Self {
+    /// Creates an empty registry bound to one address-space root.
+    ///
+    /// The binding is permanent for the registry lifetime. Mapping operations
+    /// reject any different root before reading or mutating its page tables.
+    pub fn new(root: &AddressSpaceRoot) -> Self {
         Self {
+            root_physical: root.physical_address(),
             slots: core::array::from_fn(|_| MappingSlot::Empty),
         }
+    }
+
+    /// Physical address of the PML4 root this registry belongs to.
+    pub const fn root_physical_address(&self) -> u64 {
+        self.root_physical
+    }
+
+    fn validate_root(&self, root: &AddressSpaceRoot) -> Result<(), UserPageMappingError> {
+        let supplied_root_physical = root.physical_address();
+        if supplied_root_physical != self.root_physical {
+            return Err(UserPageMappingError::AddressSpaceRootMismatch {
+                registry_root_physical: self.root_physical,
+                supplied_root_physical,
+            });
+        }
+        Ok(())
     }
 
     /// Returns the number of unused ownership slots.
@@ -216,12 +244,6 @@ impl<T: FrameToken, const CAPACITY: usize> UserPageMappingRegistry<T, CAPACITY> 
     }
 }
 
-impl<T: FrameToken, const CAPACITY: usize> Default for UserPageMappingRegistry<T, CAPACITY> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 fn validate_user_page_address(virtual_address: u64) -> Result<(), UserPageMappingError> {
     if virtual_address == 0 {
         return Err(UserPageMappingError::NullVirtualAddress);
@@ -252,6 +274,9 @@ pub fn map_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     registry: &mut UserPageMappingRegistry<Frame, CAPACITY>,
     editor: &mut E,
 ) -> Result<(), (UserPageMappingError, Frame)> {
+    if let Err(error) = registry.validate_root(root) {
+        return Err((error, frame));
+    }
     if !root.is_initialized() {
         return Err((UserPageMappingError::AddressSpaceNotInitialized, frame));
     }
@@ -296,6 +321,7 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     registry: &mut UserPageMappingRegistry<Frame, CAPACITY>,
     editor: &mut E,
 ) -> Result<(UnmappedPage, Frame), UserPageMappingError> {
+    registry.validate_root(root)?;
     if !root.is_initialized() {
         return Err(UserPageMappingError::AddressSpaceNotInitialized);
     }
@@ -369,9 +395,11 @@ mod tests {
     }
 
     struct TestEditor {
-        tables: [TestTable; 5],
+        tables: [TestTable; 9],
         data_frame: u64,
         fail_allocation: bool,
+        fail_after_successful_allocations: Option<usize>,
+        successful_allocations: usize,
         invalidations: usize,
         last_invalidation: Option<(u64, u64)>,
     }
@@ -385,9 +413,15 @@ mod tests {
                     TestTable::new(0x3000, false),
                     TestTable::new(0x4000, false),
                     TestTable::new(0x5000, true),
+                    TestTable::new(0x7000, false),
+                    TestTable::new(0xb000, false),
+                    TestTable::new(0xc000, false),
+                    TestTable::new(0xd000, false),
                 ],
                 data_frame,
                 fail_allocation: false,
+                fail_after_successful_allocations: None,
+                successful_allocations: 0,
                 invalidations: 0,
                 last_invalidation: None,
             };
@@ -409,6 +443,14 @@ mod tests {
                 .find(|candidate| candidate.physical_address == table)
                 .expect("test table must exist")
                 .entries[index]
+        }
+
+        fn mark_table_in_use(&mut self, physical_address: u64) {
+            self.tables
+                .iter_mut()
+                .find(|table| table.physical_address == physical_address)
+                .expect("test table must exist")
+                .in_use = true;
         }
     }
 
@@ -468,14 +510,20 @@ mod tests {
         }
 
         fn allocate_table(&mut self) -> Option<u64> {
-            if self.fail_allocation {
+            if self.fail_allocation
+                || self.fail_after_successful_allocations == Some(self.successful_allocations)
+            {
                 return None;
             }
             let table = self.tables.iter_mut().find(|table| {
-                (0x2000..=0x4000).contains(&table.physical_address) && !table.in_use
+                matches!(
+                    table.physical_address,
+                    0x2000..=0x4000 | 0xb000..=0xd000
+                ) && !table.in_use
             })?;
             table.entries.fill(0);
             table.in_use = true;
+            self.successful_allocations += 1;
             Some(table.physical_address)
         }
 
@@ -500,7 +548,10 @@ mod tests {
         fn free_table(&mut self, physical_address: u64) {
             if let Some(table) = self.tables.iter_mut().find(|table| {
                 table.physical_address == physical_address
-                    && (0x2000..=0x4000).contains(&table.physical_address)
+                    && matches!(
+                        table.physical_address,
+                        0x2000..=0x4000 | 0xb000..=0xd000
+                    )
             }) {
                 table.entries.fill(0);
                 table.in_use = false;
@@ -535,17 +586,18 @@ mod tests {
     }
 
     // The production user-page API intentionally leaves intermediate tables
-    // allocated. This test-only teardown disconnects an inactive root first,
-    // then releases the mock's table frames so the allocator can be checked.
-    fn release_test_address_space(root: AddressSpaceRoot, editor: &mut TestEditor) -> Frame {
-        let root_physical = root.physical_address();
+    // allocated. These test-only helpers disconnect inactive roots before
+    // releasing mock table pages.
+    fn disconnect_test_address_space(root: &AddressSpaceRoot, editor: &mut TestEditor) {
         for index in 0..512 {
-            editor.set_entry(root_physical, index, 0);
+            editor.set_entry(root.physical_address(), index, 0);
         }
-        for table_physical in [0x2000, 0x3000, 0x4000] {
+    }
+
+    fn release_test_page_tables(editor: &mut TestEditor) {
+        for table_physical in [0x2000, 0x3000, 0x4000, 0xb000, 0xc000, 0xd000] {
             editor.free_table(table_physical);
         }
-        root.into_frame()
     }
 
     #[test]
@@ -555,7 +607,7 @@ mod tests {
         let (mut allocator, root, frame, mut editor) = setup(&mut slots, &mut bitmap);
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
-        let mut registry = UserPageMappingRegistry::<Frame, 2>::new();
+        let mut registry = UserPageMappingRegistry::<Frame, 2>::new(&root);
 
         map_user_data_page(&root, virtual_address, frame, &mut registry, &mut editor).unwrap();
 
@@ -580,8 +632,9 @@ mod tests {
         assert_eq!(editor.invalidations, 2);
 
         allocator.free_frame(returned_frame).unwrap();
-        let root_frame = release_test_address_space(root, &mut editor);
-        allocator.free_frame(root_frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -593,7 +646,7 @@ mod tests {
         let physical = frame.physical_address();
         let virtual_address = 0x4000;
         let root_entry_before = editor.entry(root.physical_address(), 0);
-        let mut registry = UserPageMappingRegistry::<Frame, 1>::new();
+        let mut registry = UserPageMappingRegistry::<Frame, 1>::new(&root);
         editor.fail_allocation = true;
 
         let (error, returned_frame) =
@@ -611,8 +664,9 @@ mod tests {
         assert_eq!(registry.available_slots(), 1);
 
         allocator.free_frame(returned_frame).unwrap();
-        let root_frame = release_test_address_space(root, &mut editor);
-        allocator.free_frame(root_frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -645,8 +699,9 @@ mod tests {
         let (_, first_frame) =
             unmap_user_data_page(&root, virtual_address, &mut registry, &mut editor).unwrap();
         allocator.free_frame(first_frame).unwrap();
-        let root_frame = release_test_address_space(root, &mut editor);
-        allocator.free_frame(root_frame).unwrap();
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 }
