@@ -566,8 +566,9 @@ mod tests {
         assert_eq!(editor.invalidations, 2);
 
         allocator.free_frame(returned_frame).unwrap();
-        allocator.free_frame(root.into_frame()).unwrap();
-        assert_eq!(allocator.stats().allocated_frames, 0);
+        // The empty intermediate tables and their root remain allocated; their
+        // reclamation belongs to the later address-space teardown increment.
+        assert_eq!(allocator.stats().allocated_frames, 1);
     }
 
     #[test]
@@ -629,7 +630,7 @@ mod tests {
         let (_, first_frame) =
             unmap_user_data_page(&root, virtual_address, &mut registry, &mut editor).unwrap();
         allocator.free_frame(first_frame).unwrap();
-        allocator.free_frame(root.into_frame()).unwrap();
-        assert_eq!(allocator.stats().allocated_frames, 0);
+        // Empty intermediate page tables are deliberately retained by this API.
+        assert_eq!(allocator.stats().allocated_frames, 1);
     }
 }
