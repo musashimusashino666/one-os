@@ -1082,7 +1082,7 @@ pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), Paging
         // SAFETY: the checked alias spans this complete allocated data frame.
         unsafe { ptr::write_volatile(words.add(index), dirty_value) };
     }
-    interrupts::write_hex(b"ONE OS USER FRAME ZERO TEST DIRTY: ", physical_address);
+    super::interrupts::write_hex(b"ONE OS USER FRAME ZERO TEST DIRTY: ", physical_address);
 
     // SAFETY: the bootloader recursive index was validated above, and this test
     // runs before the normal boot path activates a different root.
@@ -1101,7 +1101,7 @@ pub fn verify_user_frame_zeroing_test(boot_info: &BootInfo) -> Result<(), Paging
                     return Err(PagingError::UserFrameInitializationFailed);
                 }
             }
-            interrupts::write_hex(
+            super::interrupts::write_hex(
                 b"ONE OS USER FRAME ZERO TEST VERIFIED: ",
                 zeroed.physical_address(),
             );
