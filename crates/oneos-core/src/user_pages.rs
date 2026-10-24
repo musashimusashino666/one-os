@@ -53,6 +53,7 @@ pub enum UserFrameInitializationError {
 /// A faulty implementation can violate confidentiality, so only reviewed kernel
 /// code may implement this trait. The host-testable core cannot validate physical
 /// memory contents by itself.
+pub trait UserFrameInitializer {
     /// Clears the complete 4 KiB frame, failing closed if it cannot be verified.
     fn zero_frame(&mut self, frame: &Frame) -> Result<(), UserFrameInitializationError>;
 }
