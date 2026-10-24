@@ -49,9 +49,19 @@ Maskable interrupts may remain disabled and the legacy PIC masked during the ini
 The inactive-root type must not be reused as an active-root handle. After a
 successful CR3 activation and readback, keep the root in the non-releasable
 `ActiveAddressSpaceRoot` type; do not expose its allocator token while hardware
-may still use it. A later teardown API must establish inactivity, remove child
-mappings, complete the required TLB invalidation, and only then make resources
-reusable.
+may still use it. The root records its private recursive PML4 index once
+initialization succeeds.
+
+`ActiveAddressSpaceRoot::into_inactive_after_switch` adds a narrow
+ownership transition: it rejects an observed CR3 root that still names the
+handle being demoted. This method is unsafe because a CR3 value alone cannot
+prove that an actual switch occurred or that stale translations have been
+invalidated. The architecture caller must verify the actual CR3 readback,
+complete the required local/global TLB invalidation, and ensure no CPU can still
+use the old root before demotion. Demotion does not remove user mappings, reclaim
+lower-level page tables, or make their frames reusable. The kernel does not yet
+provide a live user-address-space switching/teardown path; the primitive is not
+evidence of Ring 3 execution or process isolation.
 
 The safe user-data mapping helper accepts only `ZeroedFrame`, not a raw allocator
 `Frame`. The kernel-backed `KernelUserFrameInitializer` validates the active CR3

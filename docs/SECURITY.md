@@ -46,12 +46,15 @@ The allocator tracks physical-frame ownership. The kernel now uses a guarded pag
 ## Review follow-up: root lifetime and user-frame initialization
 
 The kernel's successful supervisor-root activation path returns an
-`ActiveAddressSpaceRoot` handle. Unlike the inactive-root handle, it does not
-expose the physical-frame ownership token or a conversion back to the releasable
-inactive type. Dropping the active handle leaks the frame allocation rather than
-making an active page-table frame available for reuse. This is API-level protection,
-not a full address-space lifecycle: callers must still retain the active handle, and
-teardown/switching has not been implemented.
+`ActiveAddressSpaceRoot` handle. It does not expose the physical-frame ownership
+token. The type now provides an unsafe `into_inactive_after_switch` transition
+that rejects a CR3 readback which still names the root being demoted. Its safety
+contract requires the caller to have completed the actual switch and all required
+TLB invalidation; the API cannot prove those hardware conditions itself. The
+transition does not unmap user pages or reclaim lower-level tables. Dropping the
+active handle still leaks the frame allocation rather than recycling a frame that
+hardware may use. This is an ownership primitive, not a full address-space
+lifecycle: the kernel has not implemented runtime user-root switching or teardown.
 
 The raw `map_4k` primitive is crate-private and is not exported from `oneos-core`;
 external callers cannot request user-accessible leaf mappings by supplying arbitrary
