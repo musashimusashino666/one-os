@@ -1512,19 +1512,14 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
         }
 
         let mut level = 4u8;
-        let translation = translate_4level(
-            virtual_address,
-            root_physical,
-            |table_physical, index| {
+        let translation =
+            translate_4level(virtual_address, root_physical, |table_physical, index| {
                 let current_level = level;
                 level = level.saturating_sub(1);
                 editor.read_entry(table_physical, index, current_level)
-            },
-        )
-        .map_err(|_| PagingError::InactivePageTableMalformed)?;
-        if translation.page_size != PAGE_SIZE
-            || translation.physical_address != expected_physical
-        {
+            })
+            .map_err(|_| PagingError::InactivePageTableMalformed)?;
+        if translation.page_size != PAGE_SIZE || translation.physical_address != expected_physical {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         if !translation.writable || !translation.user_accessible || translation.executable {
@@ -1667,9 +1662,7 @@ fn preflight_private_pt<const CAPACITY: usize>(
                 editor.read_entry(table_physical, index, current_level)
             })
             .map_err(PagingError::Translation)?;
-        if translation.page_size != PAGE_SIZE
-            || translation.physical_address != expected_physical
-        {
+        if translation.page_size != PAGE_SIZE || translation.physical_address != expected_physical {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         if !translation.writable || !translation.user_accessible || translation.executable {
