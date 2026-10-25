@@ -54,7 +54,7 @@ pub struct FrameAllocatorStats {
     pub usable_regions: usize,
     /// Number of allocatable 4 KiB frames at initialization.
     pub total_frames: usize,
-    /// Number of frames currently allocated.
+    /// Number of frames unavailable for allocation (owned allocations plus permanent reservations).
     pub allocated_frames: usize,
     /// Number of frames currently available.
     pub free_frames: usize,
@@ -84,6 +84,10 @@ pub enum FrameAllocatorError {
     ForeignFrame,
     /// The frame token does not represent a currently allocated frame.
     FrameNotAllocated,
+    /// A reservation was attempted after the allocator returned to allocation callers.
+    ReservationAfterAllocation,
+    /// A permanent reservation requires an aligned, non-zero physical frame address.
+    InvalidReservationAddress,
 }
 
 impl FrameAllocatorError {
@@ -99,6 +103,8 @@ impl FrameAllocatorError {
             Self::Exhausted => b"No free physical frames remain\n",
             Self::ForeignFrame => b"Frame token belongs to another allocator\n",
             Self::FrameNotAllocated => b"Frame token is not currently allocated\n",
+            Self::ReservationAfterAllocation => b"Kernel frame reservations must precede all allocations\n",
+            Self::InvalidReservationAddress => b"Cannot reserve an invalid physical frame address\n",
         }
     }
 }
@@ -131,6 +137,7 @@ pub struct FrameAllocator<'a> {
     allocated_frames: usize,
     next_hint: usize,
     allocator_id: u64,
+    allocation_started: bool,
 }
 
 impl<'a> FrameAllocator<'a> {
@@ -236,11 +243,41 @@ impl<'a> FrameAllocator<'a> {
             allocated_frames: 0,
             next_hint: 0,
             allocator_id,
+            allocation_started: false,
         })
+    }
+
+    /// Permanently excludes a physical frame from future allocations.
+    ///
+    /// This is used for frames already occupied by the loaded kernel image when
+    /// the bootloader's memory map still labels their containing region Usable.
+    /// The reservation carries no releasable Frame token. Reservations must be
+    /// completed before the first allocation attempt; duplicate reservations are
+    /// idempotent. Returns false when the address is outside managed Usable frames.
+    pub fn reserve_frame(
+        &mut self,
+        physical_address: u64,
+    ) -> Result<bool, FrameAllocatorError> {
+        if self.allocation_started {
+            return Err(FrameAllocatorError::ReservationAfterAllocation);
+        }
+        if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+            return Err(FrameAllocatorError::InvalidReservationAddress);
+        }
+
+        let Some(index) = self.frame_index_for_address(physical_address) else {
+            return Ok(false);
+        };
+        if !self.is_allocated(index) {
+            self.set_allocated(index, true);
+            self.allocated_frames += 1;
+        }
+        Ok(true)
     }
 
     /// Allocates one frame using a word-level bitmap scan.
     pub fn allocate_frame(&mut self) -> Result<Frame, FrameAllocatorError> {
+        self.allocation_started = true;
         let index = self
             .find_free_in_range(self.next_hint, self.total_frames)
             .or_else(|| self.find_free_in_range(0, self.next_hint))
@@ -296,36 +333,33 @@ impl<'a> FrameAllocator<'a> {
     /// the caller owns the allocation token; synchronization with mapping/freeing
     /// remains the caller's responsibility.
     pub fn is_frame_allocated(&self, physical_address: u64) -> bool {
+        self.frame_index_for_address(physical_address)
+            .is_some_and(|index| self.is_allocated(index))
+    }
+
+    fn frame_index_for_address(&self, physical_address: u64) -> Option<usize> {
         if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
-            return false;
+            return None;
         }
 
         for segment in &self.segments[..self.segment_count] {
-            let Some(segment_bytes) = u64::try_from(segment.frame_count)
-                .ok()
-                .and_then(|count| count.checked_mul(PAGE_SIZE))
-            else {
-                return false;
-            };
-            let Some(segment_end) = segment.physical_start.checked_add(segment_bytes) else {
-                return false;
-            };
+            let segment_bytes = u64::try_from(segment.frame_count)
+                .ok()?
+                .checked_mul(PAGE_SIZE)?;
+            let segment_end = segment.physical_start.checked_add(segment_bytes)?;
             if physical_address < segment.physical_start || physical_address >= segment_end {
                 continue;
             }
 
-            let Ok(frame_offset) =
-                usize::try_from((physical_address - segment.physical_start) / PAGE_SIZE)
-            else {
-                return false;
-            };
-            let Some(index) = segment.bitmap_start.checked_add(frame_offset) else {
-                return false;
-            };
-            return index < self.total_frames && self.is_allocated(index);
+            let frame_offset = usize::try_from(
+                (physical_address - segment.physical_start) / PAGE_SIZE,
+            )
+            .ok()?;
+            let index = segment.bitmap_start.checked_add(frame_offset)?;
+            return (index < self.total_frames).then_some(index);
         }
 
-        false
+        None
     }
 
     /// Returns the current number of usable and allocated frames.
@@ -435,6 +469,72 @@ mod tests {
         bitmap: &'a mut [u64],
     ) -> Result<FrameAllocator<'a>, FrameAllocatorError> {
         FrameAllocator::initialize(regions.len(), |index| regions[index], slots, bitmap)
+    }
+
+    #[test]
+    fn permanently_reserves_loaded_kernel_frames_before_allocation() {
+        let regions = [(0x1000, 0x6000, true)];
+        let mut slots = [SLOT; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        assert!(allocator.reserve_frame(0x3000).unwrap());
+        // A second virtual alias must not make the same physical frame available.
+        assert!(allocator.reserve_frame(0x3000).unwrap());
+        assert!(allocator.is_frame_allocated(0x3000));
+        assert_eq!(allocator.stats().allocated_frames, 1);
+        assert_eq!(allocator.stats().free_frames, 4);
+
+        let mut allocated = Vec::new();
+        for _ in 0..4 {
+            let frame = allocator.allocate_frame().unwrap();
+            assert_ne!(frame.physical_address(), 0x3000);
+            allocated.push(frame);
+        }
+        assert_eq!(
+            allocator.allocate_frame().err(),
+            Some(FrameAllocatorError::Exhausted)
+        );
+
+        let released_address = allocated[0].physical_address();
+        allocator.free_frame(allocated.remove(0)).unwrap();
+        assert_eq!(
+            allocator.allocate_frame().unwrap().physical_address(),
+            released_address
+        );
+        assert!(allocator.is_frame_allocated(0x3000));
+    }
+
+    #[test]
+    fn permanent_reservation_fails_closed_after_any_allocation_attempt() {
+        let regions = [(0x1000, 0x5000, true)];
+        let mut slots = [SLOT; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        let _frame = allocator.allocate_frame().unwrap();
+        assert_eq!(
+            allocator.reserve_frame(0x3000),
+            Err(FrameAllocatorError::ReservationAfterAllocation)
+        );
+    }
+
+    #[test]
+    fn permanent_reservation_rejects_invalid_addresses() {
+        let regions = [(0x1000, 0x5000, true)];
+        let mut slots = [SLOT; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        assert_eq!(
+            allocator.reserve_frame(0),
+            Err(FrameAllocatorError::InvalidReservationAddress)
+        );
+        assert_eq!(
+            allocator.reserve_frame(0x2001),
+            Err(FrameAllocatorError::InvalidReservationAddress)
+        );
+        assert!(!allocator.reserve_frame(0x9000).unwrap());
     }
 
     #[test]

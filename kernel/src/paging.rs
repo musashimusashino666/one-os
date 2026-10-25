@@ -89,6 +89,7 @@ pub enum PagingError {
     InvalidKernelImageRange,
     InvalidKernelElf,
     InvalidKernelLoadMapping,
+    KernelFrameReservationFailed,
     InvalidKernelCodeMapping,
     InvalidStackMapping,
     InvalidBootInfoMapping,
@@ -119,6 +120,7 @@ impl PagingError {
             Self::InvalidKernelImageRange => b"BootInfo kernel image range is invalid\n",
             Self::InvalidKernelElf => b"Kernel ELF header or PT_LOAD metadata is malformed or inaccessible\n",
             Self::InvalidKernelLoadMapping => b"A kernel PT_LOAD page has a missing, conflicting, or unexpected translation or permission\n",
+            Self::KernelFrameReservationFailed => b"A loaded kernel frame in Usable memory could not be permanently reserved before allocation\n",
             Self::InvalidKernelCodeMapping => {
                 b"Kernel code translation is outside the ELF backing interval or has unexpected page-table permissions\n"
             }
@@ -466,18 +468,41 @@ fn read_kernel_elf_bytes(
     Ok(())
 }
 
+fn kernel_backing_region_kind(
+    regions: &[MemoryRegion],
+    physical_page: u64,
+) -> Option<MemoryRegionKind> {
+    let page_end = physical_page.checked_add(PAGE_SIZE)?;
+    regions
+        .iter()
+        .find(|region| region.start <= physical_page && page_end <= region.end)
+        .map(|region| region.kind)
+}
+
 fn is_kernel_backed_page(regions: &[MemoryRegion], physical_page: u64) -> bool {
-    physical_page_is_in_allowed_region(physical_page, regions.len(), |index| {
-        let region = regions[index];
-        (
-            region.start,
-            region.end,
-            matches!(
-                region.kind,
-                MemoryRegionKind::Usable | MemoryRegionKind::Bootloader
-            ),
-        )
-    })
+    matches!(
+        kernel_backing_region_kind(regions, physical_page),
+        Some(MemoryRegionKind::Usable | MemoryRegionKind::Bootloader)
+    )
+}
+
+fn reserve_kernel_load_frame(
+    regions: &[MemoryRegion],
+    physical_page: u64,
+) -> Result<(), PagingError> {
+    match kernel_backing_region_kind(regions, physical_page) {
+        Some(MemoryRegionKind::Bootloader) => Ok(()),
+        Some(MemoryRegionKind::Usable) => {
+            let reserved = crate::memory::reserve_frame(physical_page)
+                .map_err(|_| PagingError::KernelFrameReservationFailed)?;
+            if reserved {
+                Ok(())
+            } else {
+                Err(PagingError::KernelFrameReservationFailed)
+            }
+        }
+        _ => Err(PagingError::InvalidKernelLoadMapping),
+    }
 }
 
 fn canonical_range_stays_in_one_half(start: u64, end_exclusive: u64) -> bool {
@@ -576,6 +601,12 @@ fn validate_elf_load_mappings(
             {
                 return Err(PagingError::InvalidKernelLoadMapping);
             }
+
+            // A PT_LOAD frame can still be labelled Usable in the firmware map.
+            // Pin it in the allocator before any allocation is permitted, so it
+            // cannot be handed out as an ordinary free frame even if the loader
+            // copied it for relocations or BSS.
+            reserve_kernel_load_frame(regions, translation.physical_address)?;
 
             let file_backed_page = last_file_page
                 .is_some_and(|last| virtual_page >= first_virtual_page && virtual_page <= last);

@@ -231,7 +231,25 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     };
 
-    // Exercise both allocation and release before claiming bootstrap success.
+    if let Err(error) = paging::initialize_paging_controls() {
+        serial_write(b"\nONE OS PAGING CONTROL INITIALIZATION FAILED\n");
+        serial_write(error.message());
+        halt_forever()
+    }
+
+    // Inspect and permanently reserve every PT_LOAD frame before the first
+    // allocation. Some loader-created frames can reside in Usable map regions.
+    let paging_stats = match paging::inspect_boot_mappings(boot_info) {
+        Ok(stats) => stats,
+        Err(error) => {
+            serial_write(b"\nONE OS PAGING INSPECTION FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+
+    // Exercise both allocation and release only after loaded kernel frames
+    // have been excluded from the allocator bitmap.
     let probe_frame = match memory::allocate_frame() {
         Ok(frame) => frame,
         Err(error) => {
@@ -255,20 +273,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         allocator_stats.usable_regions as u64,
     );
 
-    if let Err(error) = paging::initialize_paging_controls() {
-        serial_write(b"\nONE OS PAGING CONTROL INITIALIZATION FAILED\n");
-        serial_write(error.message());
-        halt_forever()
-    }
-
-    let paging_stats = match paging::inspect_boot_mappings(boot_info) {
-        Ok(stats) => stats,
-        Err(error) => {
-            serial_write(b"\nONE OS PAGING INSPECTION FAILED\n");
-            serial_write(error.message());
-            halt_forever()
-        }
-    };
     serial_write(b"ONE OS PAGE TABLE INSPECTION READY\n");
     interrupts::write_hex(
         b"Current PML4 physical address: ",
