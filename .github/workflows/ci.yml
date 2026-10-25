@@ -133,7 +133,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          grep -Fx "ONE OS ROOT LEAK SAFETY PASS" "$log"
+          grep -Fq "ONE OS ROOT LEAK SAFETY PASS" "$log"
           python3 tools/check_qemu_serial.py \
             --log "$log" \
             --exit-status "$status"
