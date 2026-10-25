@@ -1730,9 +1730,10 @@ pub fn map_test_user_page_for_teardown(
     boot_info: &BootInfo,
     root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
-) -> Result<UserPageMappingRegistry<ZeroedFrame, 1>, PagingError> {
+) -> Result<(UserPageMappingRegistry<ZeroedFrame, 1>, u64), PagingError> {
     let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
     let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let data_frame_physical = frame.physical_address();
     // SAFETY: the initializer is bound to the current active root and the caller
     // keeps interrupts disabled and the active root stable for this operation.
     let mut initializer =
@@ -1749,7 +1750,7 @@ pub fn map_test_user_page_for_teardown(
         }
         return Err(PagingError::UserPageMapping(error));
     }
-    Ok(registry)
+    Ok((registry, data_frame_physical))
 }
 
 /// Validates an inactive root's complete lower-half user page-table tree before
