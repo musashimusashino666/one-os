@@ -743,9 +743,16 @@ fn release_inactive_address_space_root(
     clear_and_release_root(root, &mut editor, root_physical)
 }
 
-/// Checks with the real kernel allocator that abandoning a root never makes its
-/// physical frame available for reuse. This exercises the same leak API used when
-/// CR3 readback is uncertain; it does not pretend to inject a failed hardware switch.
+/// Conservatively handles a CR3 readback that does not establish which root is
+/// active. The token is abandoned without assuming that `root` is inactive.
+fn abandon_uncertain_root_activation(root: AddressSpaceRoot) -> AddressSpaceError {
+    root.leak_frame();
+    AddressSpaceError::RootActivationFailed
+}
+
+/// Checks the real kernel allocator through the same conservative error handler
+/// used by a CR3 readback mismatch. It tests resource retention without pretending
+/// to inject a failed hardware switch while the kernel is executing on that CPU.
 fn verify_root_leak_allocator_smoke_test(
     boot_info: &BootInfo,
     active_root: &ActiveAddressSpaceRoot,
@@ -753,9 +760,9 @@ fn verify_root_leak_allocator_smoke_test(
     let root = create_inactive_address_space_root(boot_info, active_root)?;
     let root_physical = root.physical_address();
 
-    // Intentionally model the conservative response to an uncertain activation:
-    // abandon the token and retain the allocator's allocated bit.
-    root.leak_frame();
+    if abandon_uncertain_root_activation(root) != AddressSpaceError::RootActivationFailed {
+        return Err(AddressSpaceError::RootLeakSafetyFailed);
+    }
 
     match super::memory::is_frame_allocated(root_physical) {
         Ok(true) => Ok(()),
@@ -1095,10 +1102,9 @@ pub fn activate_supervisor_kernel_root(
 
     if active_root_table_physical() != root_physical {
         // The root may already be active. Never recycle its frame after a
-        // switch attempt whose observed result is uncertain.
-        // Cleanup or access is uncertain. Preserve the allocator reservation.
-        root.leak_frame();
-        return Err(AddressSpaceError::RootActivationFailed);
+        // switch attempt whose observed result is uncertain. The shared handler
+        // deliberately does not assume that the root is inactive.
+        return Err(abandon_uncertain_root_activation(root));
     }
 
     // SAFETY: CR3 readback above matched root_physical. This is the architecture
