@@ -1645,12 +1645,15 @@ fn release_pending_detached_private_table(
         | Err(PublishedFrameReleaseError::Release(_)) => {
             Err(PagingError::PageTableFrameReleaseFailed)
         }
-        Err(PublishedFrameReleaseError::Restore { token, .. }) => {
-            // Restoration failure is an invariant violation. Preserve the
-            // allocator-issued token and fail-stop rather than let execution
-            // continue without a registry record for an allocated frame.
-            core::mem::forget(token);
-            panic!("failed to restore detached page-table ownership after free failure");
+        Err(PublishedFrameReleaseError::Restore { error, token }) => {
+            // Restoration failure is an invariant violation. The Frame token
+            // has no Drop-based allocator behavior, so leaving this branch only
+            // halts the kernel; it cannot make the still-allocated frame reusable.
+            let _stranded_frame_physical = token.physical_address();
+            panic!(
+                "failed to restore detached page-table ownership after free failure: {:?}",
+                error
+            );
         }
     }
 }
