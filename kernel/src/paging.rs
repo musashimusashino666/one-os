@@ -576,7 +576,13 @@ fn release_registered_table_frame(physical_address: u64) {
         Err(FrameRegistryError::FrameNotFound) => {
             panic!("attempted to release an unregistered page-table frame")
         }
-        Err(FrameRegistryError::InvalidReservation | FrameRegistryError::DuplicateFrameAddress) => {
+        Err(
+            FrameRegistryError::InvalidReservation
+            | FrameRegistryError::DuplicateFrameAddress
+            | FrameRegistryError::InvalidOwnerRoot
+            | FrameRegistryError::PublishedOwnerMismatch
+            | FrameRegistryError::NotPublished,
+        ) => {
             panic!("page-table frame registry state is invalid")
         }
     };
