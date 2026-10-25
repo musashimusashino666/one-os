@@ -2,7 +2,8 @@
 //!
 //! The registry reserves metadata capacity before a physical frame is allocated,
 //! retains the non-Copy token until the frame is released, and refuses to release
-//! a published page-table frame. Synchronization is the caller's responsibility.
+//! a published page-table frame until the caller proves it detached and records
+//! that state. Synchronization is the caller's responsibility.
 
 /// The ownership token for a physical frame tracked by a frame registry.
 pub trait FrameToken {
@@ -357,7 +358,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 detached: true,
                 ..
             } if *owner == root_physical && *level == table_level => {
-                Err(FrameRegistryError::NotDetached)
+                Err(FrameRegistryError::PublishedOwnerMismatch)
             }
             FrameSlot::Owned {
                 published: false, ..
@@ -789,6 +790,11 @@ mod tests {
             // SAFETY: a wrong-level release must be rejected before token removal.
             unsafe { registry.take_published_for_root(0x1000, 0x8000, 1) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert_eq!(
+            // SAFETY: correct owner/level alone is insufficient before detachment.
+            unsafe { registry.take_published_for_root(0x1000, 0x8000, 2) },
+            Err(FrameRegistryError::NotDetached)
         );
         assert!(registry.contains(0x8000));
         assert_eq!(
