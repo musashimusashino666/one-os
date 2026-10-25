@@ -42,7 +42,7 @@ review approval as enforced while its count is zero.
 
 ## Address-space teardown work
 
-PR #31 now contains an initial kernel integration slice: the inactive-root editor validates each table frame through the active root's physical-memory-offset mapping and requires root-and-level ownership records for private tables. The normal-boot A -> B -> A smoke path exercises one real user-data mapping, sentinel read/write, teardown, re-zeroing, and bottom-up private-table reclamation. The change is still a Draft and the latest-head CI result is the acceptance gate; this smoke path does not enter Ring 3 or prove process isolation. Follow [the kernel-backed teardown contract](ADDRESS_SPACE_TEARDOWN_PLAN.md) for the invariants, failure semantics, and remaining QEMU acceptance coverage.
+PR #31 now contains an initial kernel integration slice: the inactive-root editor validates each table frame through the active root's physical-memory-offset mapping and requires root-and-level ownership records for private tables. The normal-boot A -> B -> A smoke path exercises one real user-data mapping, sentinel read/write, teardown, re-zeroing, and bottom-up private-table reclamation. PR #31 is merged; every later change must still pass the same CI suite on its exact head. This smoke path does not enter Ring 3 or prove process isolation. Follow [the kernel-backed teardown contract](ADDRESS_SPACE_TEARDOWN_PLAN.md) for the invariants, failure semantics, and remaining QEMU acceptance coverage.
 
 ## Build a BIOS image
 

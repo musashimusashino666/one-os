@@ -53,6 +53,7 @@ pub enum AddressSpaceError {
     InvalidOwnedRoot(AddressSpaceRootError),
     RootInitialization(AddressSpaceRootInitializationError),
     RootTableUnavailable,
+    RootFrameRegistryFull,
     NoUnusedRecursiveIndex,
     RootVerificationFailed {
         index: usize,
@@ -148,6 +149,9 @@ impl AddressSpaceError {
             Self::RootTableUnavailable => {
                 b"Address-space root setup could not safely access a complete root frame\n"
             }
+            Self::RootFrameRegistryFull => {
+                b"Address-space root frame registry is full\n"
+            }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
             }
@@ -238,6 +242,10 @@ pub fn verify_root_initialization_smoke_test(
         kernel_root_pointer: None,
         destination_root_pointer: None,
     };
+    if !super::paging::register_address_space_root(root_physical) {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootFrameRegistryFull);
+    }
 
     let kernel_root_readable = editor.table_is_readable(kernel_root_physical);
     let destination_root_writable = editor.table_is_read_write_accessible(root_physical);
@@ -325,6 +333,10 @@ fn create_inactive_address_space_root(
         kernel_root_pointer: None,
         destination_root_pointer: None,
     };
+    if !super::paging::register_address_space_root(root_physical) {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootFrameRegistryFull);
+    }
 
     if !editor.table_is_readable(kernel_root_physical)
         || !editor.table_is_read_write_accessible(root_physical)
@@ -1025,6 +1037,10 @@ pub fn activate_supervisor_kernel_root(
         kernel_root_pointer: None,
         destination_root_pointer: None,
     };
+    if !super::paging::register_address_space_root(root_physical) {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootFrameRegistryFull);
+    }
 
     let kernel_root_readable = editor.table_is_readable(kernel_root_physical);
     let destination_root_writable = editor.table_is_read_write_accessible(root_physical);
@@ -1183,14 +1199,22 @@ fn clear_and_release_root(
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
-        // Cleanup or access is uncertain. Preserve the allocator reservation.
+        // Cleanup or access is uncertain. Preserve the allocator reservation and
+        // keep the root registered so it cannot be mapped as ordinary data.
         root.leak_frame();
         return Err(error);
     }
     // SAFETY: the root PML4 was cleared and verified above. Callers either
     // release a never-activated construction root with no private child tables,
     // or call only after switching away and completing inactive-root teardown.
-    release_frame(unsafe { root.into_frame() })
+    let result = release_frame(unsafe { root.into_frame() });
+    if result.is_ok() {
+        // A released frame can be reused as data. Remove it from the root-frame
+        // registry only after the allocator accepted it; a failed release keeps
+        // the conservative reservation in place.
+        super::paging::unregister_address_space_root(root_physical);
+    }
+    result
 }
 
 fn clear_root_entries(
