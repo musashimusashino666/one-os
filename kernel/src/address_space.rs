@@ -20,7 +20,8 @@ use oneos_core::{
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, validate_kernel_root_activation_state,
     ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
-    AddressSpaceRootInitializationError, PagingPreconditionError, PAGE_SIZE,
+    AddressSpaceRootInitializationError, PagingPreconditionError, UserPageMappingRegistry, ZeroedFrame,
+    PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
@@ -55,6 +56,7 @@ pub enum AddressSpaceError {
     RootZeroizationFailed { index: usize },
     KernelMappingNotInUpperHalf,
     PagingPrecondition(PagingPreconditionError),
+    PagingIntegrationFailed,
     RootActivationFailed,
 }
 
@@ -148,6 +150,9 @@ impl AddressSpaceError {
                 b"Kernel code, stack, boot metadata, and physical-memory alias must use upper-half mappings before activation\n"
             }
             Self::PagingPrecondition(error) => error.message(),
+            Self::PagingIntegrationFailed => {
+                b"Inactive user-page lifecycle smoke test failed\\n"
+            }
             Self::RootActivationFailed => {
                 b"CR3 did not report the newly activated address-space root\n"
             }
@@ -256,6 +261,7 @@ pub fn verify_root_initialization_smoke_test(
             kernel_root_physical,
             usize::from(recursive_index),
             root_recursive_index,
+            false,
         )
     } else {
         Ok(())
@@ -343,6 +349,7 @@ fn create_inactive_address_space_root(
         kernel_root_physical,
         usize::from(recursive_index),
         root_recursive_index,
+        false,
     ) {
         clear_and_release_root(root, &mut editor, root_physical)?;
         return Err(error);
@@ -351,20 +358,39 @@ fn create_inactive_address_space_root(
     Ok(root)
 }
 
-/// Switches between two validated roots while preserving their ownership tokens.
+/// Switches between validated roots that have no private user mappings.
 ///
 /// This is limited to the existing single-CPU, maskable-interrupts-disabled
-/// kernel contract. Clearing CR4.PGE flushes global translations; the subsequent
-/// CR3 write flushes non-global translations because PCID is rejected by the
-/// paging precondition validator. A failed or ambiguous switch must stop the
-/// caller; the root tokens are never returned to the allocator on an error.
-///
-/// This function does not implement user-page teardown, scheduling, or SMP.
+/// kernel contract. A failed or ambiguous switch must stop the caller; the root
+/// tokens are never returned to the allocator on an error.
 #[inline(never)]
 fn switch_address_space(
     current: ActiveAddressSpaceRoot,
     next: AddressSpaceRoot,
     boot_info: &BootInfo,
+) -> Result<(AddressSpaceRoot, ActiveAddressSpaceRoot), AddressSpaceError> {
+    switch_address_space_inner(current, next, boot_info, false)
+}
+
+/// Switches to a root with registered user mappings after a complete kernel-side
+/// preflight of its private lower-half page-table tree.
+fn switch_address_space_with_user_pages<const CAPACITY: usize>(
+    current: ActiveAddressSpaceRoot,
+    next: AddressSpaceRoot,
+    boot_info: &BootInfo,
+    registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
+) -> Result<(AddressSpaceRoot, ActiveAddressSpaceRoot), AddressSpaceError> {
+    super::paging::validate_inactive_user_address_space(boot_info, &next, &current, registry)
+        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    switch_address_space_inner(current, next, boot_info, true)
+}
+
+#[inline(never)]
+fn switch_address_space_inner(
+    current: ActiveAddressSpaceRoot,
+    next: AddressSpaceRoot,
+    boot_info: &BootInfo,
+    allow_user_mappings: bool,
 ) -> Result<(AddressSpaceRoot, ActiveAddressSpaceRoot), AddressSpaceError> {
     const CR4_PGE: u64 = 1 << 7;
 
@@ -411,6 +437,7 @@ fn switch_address_space(
         current_physical,
         usize::from(current_recursive_index),
         usize::from(next_recursive_index),
+        allow_user_mappings,
     )?;
 
     // Use the same explicit CR4.PGE -> CR3 -> CR4 sequence that the optimized
@@ -475,13 +502,12 @@ fn switch_address_space(
     Ok((previous_inactive, next_active))
 }
 
-/// Exercises A -> B -> A switching during normal boot.
+/// Exercises A -> B -> A switching with a real, inactive user data mapping.
 ///
-/// B contains only shared supervisor-only kernel mappings and its own PML4 root;
-/// no user page or private lower-level table is allocated. After switching back
-/// to A, B's root is cleared and its owned root frame is released only after the
-/// second CR3/TLB transition completed. This is a switch smoke test, not a
-/// general address-space teardown implementation.
+/// The test writes a sentinel through B's lower-half user mapping at CPL 0,
+/// switches away, tears down the private user mapping and all owned lower-level
+/// tables, re-zeroes the returned frame, and then releases B's empty root. This
+/// does not enter Ring 3 or establish process isolation.
 pub fn verify_runtime_address_space_switch_smoke_test(
     boot_info: &BootInfo,
     active_root: ActiveAddressSpaceRoot,
@@ -495,18 +521,35 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         .ok_or(AddressSpaceError::RootActivationFailed)?;
 
     if second_physical == original_physical || second_recursive_index == original_recursive_index {
-        // Both frame allocations remain reserved because their ownership wrappers
-        // do not free allocator entries when dropped.
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    let (original_inactive, second_active) =
-        switch_address_space(active_root, second_root, boot_info)?;
+    let mut user_registry =
+        super::paging::map_test_user_page_for_teardown(boot_info, &second_root, &active_root)
+            .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
+    let (original_inactive, second_active) = switch_address_space_with_user_pages(
+        active_root,
+        second_root,
+        boot_info,
+        &user_registry,
+    )?;
     if second_active.physical_address() != second_physical
         || second_active.recursive_index() != second_recursive_index
     {
-        // Neither root is returned to the allocator on this failure path.
         return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    const USER_PAGE_SENTINEL: u64 = 0x4f4e_455f_5553_4552;
+    let user_page = 0x4000usize as *mut u64;
+    // SAFETY: page 0x4000 was just installed as an owned, writable, user-data
+    // mapping in second_active. Maskable interrupts and preemption are disabled,
+    // and the page is currently mapped to the exact owned frame in user_registry.
+    unsafe { ptr::write_volatile(user_page, USER_PAGE_SENTINEL) };
+    // SAFETY: same validated mapping and lifetime conditions as the preceding write.
+    let observed = unsafe { ptr::read_volatile(user_page) };
+    if observed != USER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
     let (second_inactive, restored_active) =
@@ -515,9 +558,16 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         || restored_active.recursive_index() != original_recursive_index
         || second_inactive.physical_address() != second_physical
     {
-        // Both root-frame allocator entries remain allocated on failure.
         return Err(AddressSpaceError::RootActivationFailed);
     }
+
+    super::paging::teardown_inactive_user_address_space(
+        boot_info,
+        &second_inactive,
+        &restored_active,
+        &mut user_registry,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
     let (physical_address_bits, physical_memory_offset) =
         validate_runtime_root_context(boot_info, &restored_active)?;
@@ -826,6 +876,7 @@ pub fn activate_supervisor_kernel_root(
         kernel_root_physical,
         usize::from(recursive_index),
         root_recursive_index,
+        false,
     ) {
         clear_and_release_root(root, &mut editor, root_physical)?;
         return Err(error);
@@ -893,10 +944,13 @@ fn verify_initialized_entries(
     kernel_root_physical: u64,
     kernel_recursive_index: usize,
     root_recursive_index: usize,
+    allow_user_mappings: bool,
 ) -> Result<(), AddressSpaceError> {
-    for index in 0..LOWER_HALF_PML4_ENTRIES {
-        if editor.read_entry(root_physical, index, 4) != Some(0) {
-            return Err(AddressSpaceError::RootVerificationFailed { index });
+    if !allow_user_mappings {
+        for index in 0..LOWER_HALF_PML4_ENTRIES {
+            if editor.read_entry(root_physical, index, 4) != Some(0) {
+                return Err(AddressSpaceError::RootVerificationFailed { index });
+            }
         }
     }
 
