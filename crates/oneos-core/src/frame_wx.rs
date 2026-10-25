@@ -82,9 +82,9 @@ impl AliasRecord {
         self.physical_start + self.length
     }
 
-    fn virtual_end(self) -> u64 {
-        // Ranges are checked and stored only by reserve_alias_range.
-        self.virtual_start + self.length
+    fn virtual_end(self) -> u128 {
+        // A valid range may end exactly at 2^64; u128 stores that exclusive end.
+        u128::from(self.virtual_start) + u128::from(self.length)
     }
 
     fn is_occupied(self) -> bool {
@@ -280,7 +280,8 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
         }
 
         let physical_end = physical_start + length;
-        let virtual_end = virtual_start + length;
+        let virtual_start_wide = u128::from(virtual_start);
+        let virtual_end = virtual_start_wide + u128::from(length);
         for record in self
             .slots
             .iter()
@@ -289,9 +290,9 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
         {
             if record.root_physical == root_physical
                 && ranges_overlap(
-                    virtual_start,
+                    virtual_start_wide,
                     virtual_end,
-                    record.virtual_start,
+                    u128::from(record.virtual_start),
                     record.virtual_end(),
                 )
             {
@@ -299,10 +300,10 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
             }
 
             let physical_overlap = ranges_overlap(
-                physical_start,
-                physical_end,
-                record.physical_start,
-                record.physical_end(),
+                u128::from(physical_start),
+                u128::from(physical_end),
+                u128::from(record.physical_start),
+                u128::from(record.physical_end()),
             );
             let wx_conflict = (permissions.writable && record.permissions.executable)
                 || (permissions.executable && record.permissions.writable);
@@ -571,12 +572,14 @@ fn validate_virtual_range(virtual_start: u64, length: u64) -> Result<(), FrameWx
     if virtual_start & (PAGE_SIZE - 1) != 0 || length == 0 || length & (PAGE_SIZE - 1) != 0 {
         return Err(FrameWxError::InvalidVirtualRange);
     }
-    let end = virtual_start
-        .checked_add(length)
-        .ok_or(FrameWxError::InvalidVirtualRange)?;
-    let last = end
-        .checked_sub(1)
-        .ok_or(FrameWxError::InvalidVirtualRange)?;
+    // The exclusive end can be exactly 2^64 for the highest canonical page.
+    // Reject ranges extending beyond the 64-bit virtual-address space.
+    let end = u128::from(virtual_start) + u128::from(length);
+    let address_space_end = 1u128 << 64;
+    if end > address_space_end {
+        return Err(FrameWxError::InvalidVirtualRange);
+    }
+    let last = u64::try_from(end - 1).map_err(|_| FrameWxError::InvalidVirtualRange)?;
     if !is_canonical_4level(virtual_start) || !is_canonical_4level(last) {
         return Err(FrameWxError::InvalidVirtualRange);
     }
@@ -592,7 +595,7 @@ fn validate_virtual_range(virtual_start: u64, length: u64) -> Result<(), FrameWx
     Ok(())
 }
 
-fn ranges_overlap(first_start: u64, first_end: u64, second_start: u64, second_end: u64) -> bool {
+fn ranges_overlap(first_start: u128, first_end: u128, second_start: u128, second_end: u128) -> bool {
     first_start < second_end && second_start < first_end
 }
 
@@ -1046,6 +1049,34 @@ mod tests {
         );
         assert!(registry.frame_has_executable_alias(FRAME_A).unwrap());
         assert!(!registry.frame_has_writable_alias(FRAME_A).unwrap());
+    }
+
+    #[test]
+    fn registers_the_highest_canonical_page_and_detects_overlap() {
+        let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
+        let highest_page = u64::MAX & !(PAGE_SIZE - 1);
+        add(
+            &mut registry,
+            ROOT_A,
+            highest_page,
+            FRAME_A,
+            PAGE_SIZE,
+            FrameWxPermissions::new(false, true),
+        );
+        assert_eq!(registry.occupied_slots(), 1);
+
+        assert_eq!(
+            registry
+                .reserve_alias_range(
+                    ROOT_A,
+                    highest_page,
+                    FRAME_B,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, false),
+                )
+                .unwrap_err(),
+            FrameWxError::VirtualAliasConflict
+        );
     }
 
     #[test]
