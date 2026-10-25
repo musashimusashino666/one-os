@@ -947,7 +947,9 @@ mod tests {
         assert!(inactive.is_initialized());
         assert_eq!(allocator.stats().allocated_frames, 2);
 
-        allocator.free_frame(take_test_root_frame(inactive)).unwrap();
+        allocator
+            .free_frame(take_test_root_frame(inactive))
+            .unwrap();
         allocator.free_frame(kernel_frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
