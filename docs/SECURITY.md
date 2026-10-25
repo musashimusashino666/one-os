@@ -115,10 +115,14 @@ expected physical address and must be writable, supervisor-only, and non-executa
 The supervisor-write-protection sentinel is data and is mapped NX. New executable
 mappings through the kernel editor currently fail closed because the persistent
 writable physical-memory alias cannot yet be removed or downgraded with complete
-reverse-alias accounting. This does **not** establish frame-wide W^X for all existing
-boot mappings; executable user pages remain unsupported until every writable alias
-(including kernel/direct-map and large-page aliases) can be accounted for and
-permission transitions are synchronized with TLB invalidation.
+reverse-alias accounting. The host-testable `FrameWxRegistry` now provides bounded
+range-overlap checks, pending reservations, publication state, and a retirement phase
+that continues to block conflicting permissions until the caller confirms TLB
+invalidation. The registry is not yet wired into the kernel mapping paths and does not
+discover existing aliases automatically. This does **not** establish frame-wide W^X
+for all existing boot mappings; executable user pages remain unsupported until every
+writable alias (including kernel/direct-map and large-page aliases) can be accounted
+for and permission transitions are synchronized with TLB invalidation.
 
 ## Capability reference model
 
