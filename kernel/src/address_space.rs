@@ -565,12 +565,8 @@ pub fn verify_runtime_address_space_switch_smoke_test(
 
     // Confirm that the peer root independently supports the same VA before
     // tearing down the first root. The physical frames must be distinct.
-    let (original_inactive_for_peer, peer_active) = activate_preflighted_user_root(
-        restored_active,
-        third_root,
-        boot_info,
-        &peer_registry,
-    )?;
+    let (original_inactive_for_peer, peer_active) =
+        activate_preflighted_user_root(restored_active, third_root, boot_info, &peer_registry)?;
     if peer_active.physical_address() != third_physical {
         return Err(AddressSpaceError::RootActivationFailed);
     }
@@ -618,12 +614,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // Re-enter the peer after the first root has been fully torn down and its
     // private tables reclaimed. Its same-VA mapping and data must be unchanged.
     let (original_inactive_for_peer_check, peer_active_check) =
-        activate_preflighted_user_root(
-            restored_active,
-            peer_inactive,
-            boot_info,
-            &peer_registry,
-        )?;
+        activate_preflighted_user_root(restored_active, peer_inactive, boot_info, &peer_registry)?;
     if peer_active_check.physical_address() != third_physical {
         return Err(AddressSpaceError::RootActivationFailed);
     }
