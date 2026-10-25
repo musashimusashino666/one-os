@@ -103,8 +103,12 @@ impl FrameAllocatorError {
             Self::Exhausted => b"No free physical frames remain\n",
             Self::ForeignFrame => b"Frame token belongs to another allocator\n",
             Self::FrameNotAllocated => b"Frame token is not currently allocated\n",
-            Self::ReservationAfterAllocation => b"Kernel frame reservations must precede all allocations\n",
-            Self::InvalidReservationAddress => b"Cannot reserve an invalid physical frame address\n",
+            Self::ReservationAfterAllocation => {
+                b"Kernel frame reservations must precede all allocations\n"
+            }
+            Self::InvalidReservationAddress => {
+                b"Cannot reserve an invalid physical frame address\n"
+            }
         }
     }
 }
@@ -254,10 +258,7 @@ impl<'a> FrameAllocator<'a> {
     /// The reservation carries no releasable Frame token. Reservations must be
     /// completed before the first allocation attempt; duplicate reservations are
     /// idempotent. Returns false when the address is outside managed Usable frames.
-    pub fn reserve_frame(
-        &mut self,
-        physical_address: u64,
-    ) -> Result<bool, FrameAllocatorError> {
+    pub fn reserve_frame(&mut self, physical_address: u64) -> Result<bool, FrameAllocatorError> {
         if self.allocation_started {
             return Err(FrameAllocatorError::ReservationAfterAllocation);
         }
@@ -351,10 +352,8 @@ impl<'a> FrameAllocator<'a> {
                 continue;
             }
 
-            let frame_offset = usize::try_from(
-                (physical_address - segment.physical_start) / PAGE_SIZE,
-            )
-            .ok()?;
+            let frame_offset =
+                usize::try_from((physical_address - segment.physical_start) / PAGE_SIZE).ok()?;
             let index = segment.bitmap_start.checked_add(frame_offset)?;
             return (index < self.total_frames).then_some(index);
         }
