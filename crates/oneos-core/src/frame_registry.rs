@@ -277,6 +277,43 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             .count())
     }
 
+    /// Returns a root-owned page-table token by zero-based registry order.
+    ///
+    /// The snapshot deliberately includes inconsistent publication or level
+    /// metadata so teardown preflight can fail closed instead of silently
+    /// skipping a token whose ownership record is malformed.
+    ///
+    /// The tuple contains (physical address, table level, published, detached).
+    pub fn root_owned_table_at(
+        &self,
+        root_physical: u64,
+        ordinal: usize,
+    ) -> Option<(u64, Option<u8>, bool, bool)> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return None;
+        }
+
+        self.slots
+            .iter()
+            .filter_map(|slot| match slot {
+                FrameSlot::Owned {
+                    token,
+                    published,
+                    owner_root_physical: Some(owner),
+                    owner_table_level,
+                    detached,
+                    ..
+                } if *owner == root_physical => Some((
+                    token.frame_address(),
+                    *owner_table_level,
+                    *published,
+                    *detached,
+                )),
+                _ => None,
+            })
+            .nth(ordinal)
+    }
+
     /// Returns the paging level recorded for a root-private table frame.
     pub fn published_table_level_for_root(
         &self,
@@ -654,6 +691,40 @@ mod tests {
         fn frame_address(&self) -> u64 {
             self.address
         }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn root_owned_table_enumeration_includes_detached_pending_tokens() {
+        let mut registry = PageTableFrameRegistry::<TestFrame, 2>::new();
+        let first = registry.reserve_slot().unwrap();
+        registry
+            .install_reserved(first, TestFrame::new(0x8000, 1))
+            .unwrap();
+        let second = registry.reserve_slot().unwrap();
+        registry
+            .install_reserved(second, TestFrame::new(0x9000, 2))
+            .unwrap();
+
+        // SAFETY: this test models two allocator-owned private tables below one
+        // root. The detached second token is deliberately pending release.
+        unsafe { registry.mark_published_for_root(0x1000, 0x8000, 2) }.unwrap();
+        unsafe { registry.mark_published_for_root(0x1000, 0x9000, 1) }.unwrap();
+        unsafe {
+            registry.mark_published_table_detached_for_root(0x1000, 0x9000, 1)
+        }
+        .unwrap();
+
+        assert_eq!(
+            registry.root_owned_table_at(0x1000, 0),
+            Some((0x8000, Some(2), true, false))
+        );
+        assert_eq!(
+            registry.root_owned_table_at(0x1000, 1),
+            Some((0x9000, Some(1), true, true))
+        );
+        assert_eq!(registry.root_owned_table_at(0x1000, 2), None);
+        assert_eq!(registry.root_owned_table_at(0, 0), None);
     }
 
     #[test]
