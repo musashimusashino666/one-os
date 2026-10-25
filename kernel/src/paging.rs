@@ -586,10 +586,7 @@ fn reserve_table_frame_slot() -> Option<usize> {
 fn clear_reserved_table_frame_slot(index: usize) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    if TABLE_FRAMES.lock()
-        .cancel_reservation(index)
-        .is_err()
-    {
+    if TABLE_FRAMES.lock().cancel_reservation(index).is_err() {
         panic!("page-table frame registry reservation invariant violated");
     }
 }
@@ -597,9 +594,7 @@ fn clear_reserved_table_frame_slot(index: usize) {
 fn install_table_frame(index: usize, frame: Frame) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    if let Err((_error, _frame)) =
-        TABLE_FRAMES.lock().install_reserved(index, frame)
-    {
+    if let Err((_error, _frame)) = TABLE_FRAMES.lock().install_reserved(index, frame) {
         panic!("page-table frame registry reservation invariant violated");
     }
 }
@@ -628,11 +623,9 @@ fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64
     // interrupts-disabled bootstrap precondition. The caller has just published
     // this table at the indicated level in the root's private lower-half tree.
     match unsafe {
-        TABLE_FRAMES.lock().mark_published_for_root(
-            root_physical,
-            physical_address,
-            table_level,
-        )
+        TABLE_FRAMES
+            .lock()
+            .mark_published_for_root(root_physical, physical_address, table_level)
     } {
         Ok(()) => {}
         Err(FrameRegistryError::FrameNotFound) => {
@@ -653,8 +646,7 @@ fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64
 fn release_registered_table_frame(physical_address: u64) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    let frame =
-        match TABLE_FRAMES.lock().take_unpublished(physical_address) {
+    let frame = match TABLE_FRAMES.lock().take_unpublished(physical_address) {
             Ok(frame) => frame,
             Err(FrameRegistryError::PublishedFrame) => {
                 panic!("attempted to release a published page-table frame")
@@ -1216,7 +1208,8 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
     fn is_private_table(&self, physical_address: u64, table_level: u8) -> bool {
         // SAFETY: registry reads and writes share the single-CPU,
         // interrupts-disabled mutation contract.
-        TABLE_FRAMES.lock()
+        TABLE_FRAMES
+            .lock()
             .published_table_level_for_root(self.target_root_physical, physical_address)
             == Some(table_level)
     }
@@ -1281,7 +1274,8 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         // root's private lower-half PML4 entry, and each child was allocated by
         // this editor, zeroed before publication, and reached through that tree.
         if unsafe {
-            TABLE_FRAMES.lock()
+            TABLE_FRAMES
+                .lock()
                 .mark_published_for_root(self.target_root_physical, table_physical, table_level)
                 .is_err()
         } {
@@ -1749,12 +1743,18 @@ fn reclaim_pending_detached_private_tables<E>(
         // A release failure restores the token as detached. On a subsequent
         // teardown attempt there is no parent entry to rediscover it, so consume
         // this root-scoped pending list before deciding the root is reclaimable.
-        let pending =
-            TABLE_FRAMES.lock().detached_table_for_root(root_physical, 0);
+        let pending = TABLE_FRAMES
+            .lock()
+            .detached_table_for_root(root_physical, 0);
         let Some((physical_address, table_level)) = pending else {
             return Ok(());
         };
-        release_pending_detached_private_table(physical_address, table_level, editor, release_table_frame)?;
+        release_pending_detached_private_table(
+            physical_address,
+            table_level,
+            editor,
+            release_table_frame,
+        )?;
     }
 }
 
@@ -2059,13 +2059,18 @@ pub(super) fn teardown_inactive_user_address_space_with_table_release<const CAPA
     }
 
     reclaim_private_user_tables(root.physical_address(), &mut editor, release_table_frame)?;
-    reclaim_pending_detached_private_tables(root.physical_address(), &mut editor, release_table_frame)?;
+    reclaim_pending_detached_private_tables(
+        root.physical_address(),
+        &mut editor,
+        release_table_frame,
+    )?;
 
     // Do not release the PML4 or allow its physical address to be reused while
     // the registry still holds private table ownership records for this root.
     // This detects orphaned table tokens left behind by an earlier partial
     // teardown or a structural mismatch that was not reachable from the tree.
-    let remaining_private_tables = TABLE_FRAMES.lock()
+    let remaining_private_tables = TABLE_FRAMES
+        .lock()
         .published_count_for_root(root.physical_address())
         .map_err(|_| PagingError::InactivePageTableOwnershipViolation)?;
     if remaining_private_tables != 0 {
@@ -2082,7 +2087,10 @@ pub(super) fn teardown_inactive_user_address_space_with_table_release<const CAPA
 /// Used by the normal-boot failure-injection smoke test to prove that a failed
 /// allocator release leaves the frame pending and non-reusable.
 pub(super) fn has_pending_detached_private_table(root_physical: u64) -> bool {
-    TABLE_FRAMES.lock().detached_table_for_root(root_physical, 0).is_some()
+    TABLE_FRAMES
+        .lock()
+        .detached_table_for_root(root_physical, 0)
+        .is_some()
 }
 
 /// Kernel implementation of the unsafe zero-before-publication contract.
