@@ -266,7 +266,12 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 published: true,
                 owner_root_physical: Some(owner),
             } if owner == root_physical => Ok(token),
-            _ => Err(FrameRegistryError::PublishedOwnerMismatch),
+            other => {
+                // Restore unexpected state rather than dropping a non-Copy
+                // ownership token on an invariant failure.
+                self.slots[index] = other;
+                Err(FrameRegistryError::PublishedOwnerMismatch)
+            }
         }
     }
 
@@ -461,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn published_private_tables_can_only_be_taken_for_their_recorded_root() {
         let mut registry = PageTableFrameRegistry::<TestFrame, 1>::new();
         let slot = registry.reserve_slot().unwrap();
@@ -494,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn published_frames_without_root_ownership_cannot_be_adopted_or_released() {
         let mut registry = PageTableFrameRegistry::<TestFrame, 1>::new();
         let slot = registry.reserve_slot().unwrap();
