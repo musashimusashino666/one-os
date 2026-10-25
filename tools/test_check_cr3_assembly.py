@@ -420,6 +420,33 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("must bind directly to in(reg) root_physical", message)
 
+    def test_cr3_anonymous_placeholder_uses_template_occurrence_order(self):
+        source = '''
+            asm!(
+                "mov rax, {}",
+                "mov cr3, {}",
+                in(reg) root_physical,
+                in(reg) unvalidated_root,
+                options(nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("must bind directly to in(reg) root_physical", message)
+
+    def test_cr3_later_anonymous_placeholder_accepts_matching_root_input(self):
+        source = '''
+            asm!(
+                "mov rax, {}",
+                "mov cr3, {}",
+                in(reg) unvalidated_root,
+                in(reg) root_physical,
+                options(nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertTrue(valid, message)
+
     def test_cr3_named_placeholder_maps_by_name_with_other_inputs_present(self):
         source = '''
             asm!(
