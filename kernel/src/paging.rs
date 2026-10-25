@@ -1967,11 +1967,8 @@ pub fn map_test_user_page_for_teardown(
     let mut initializer =
         unsafe { KernelUserFrameInitializer::new(boot_info, active_root.recursive_index()) };
     let mut release_frame = super::memory::free_frame;
-    let zeroed = initialize_user_frame_or_release_on_error(
-        frame,
-        &mut initializer,
-        &mut release_frame,
-    )?;
+    let zeroed =
+        initialize_user_frame_or_release_on_error(frame, &mut initializer, &mut release_frame)?;
 
     let mut registry = UserPageMappingRegistry::new(root);
     if let Err((error, zeroed)) =
@@ -2136,11 +2133,9 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
     // SAFETY: the orphan is an exclusively allocated, zeroed table frame. This
     // injected bad state exists only to test that preflight rejects it.
     if unsafe {
-        TABLE_FRAMES.lock().mark_published_for_root(
-            root_physical,
-            orphan_table_physical,
-            1,
-        )
+        TABLE_FRAMES
+            .lock()
+            .mark_published_for_root(root_physical, orphan_table_physical, 1)
     }
     .is_err()
     {
@@ -2156,13 +2151,11 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
     // reclaimed by the same production release transaction used by teardown.
     // SAFETY: this injected frame has no parent entry, is zeroed and unreachable.
     unsafe {
-        TABLE_FRAMES
-            .lock()
-            .mark_published_table_detached_for_root(
-                root_physical,
-                orphan_table_physical,
-                1,
-            )
+        TABLE_FRAMES.lock().mark_published_table_detached_for_root(
+            root_physical,
+            orphan_table_physical,
+            1,
+        )
     }
     .map_err(|_| PagingError::InactivePageTableOwnershipViolation)?;
     if !editor.remove_staged_table(orphan_table_physical) {
