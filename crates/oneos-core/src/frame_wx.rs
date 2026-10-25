@@ -595,7 +595,12 @@ fn validate_virtual_range(virtual_start: u64, length: u64) -> Result<(), FrameWx
     Ok(())
 }
 
-fn ranges_overlap(first_start: u128, first_end: u128, second_start: u128, second_end: u128) -> bool {
+fn ranges_overlap(
+    first_start: u128,
+    first_end: u128,
+    second_start: u128,
+    second_end: u128,
+) -> bool {
     first_start < second_end && second_start < first_end
 }
 
