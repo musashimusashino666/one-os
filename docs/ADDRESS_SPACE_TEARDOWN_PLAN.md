@@ -4,6 +4,8 @@
 
 This document is the implementation contract for the first kernel-backed teardown increment. It is not evidence that the teardown path is implemented. The current `unmap_all_user_data_pages` implementation is host-testable core code; it is not yet wired to a kernel editor for arbitrary inactive address-space page tables.
 
+Current groundwork in this draft: `PageTableFrameRegistry` can record a private table's owning root, reject root-owner mismatches, and expose an unsafe release transition that requires the caller to prove the published table is fully detached and unreachable. The active mapping path records root ownership for lower-half tables. This metadata does not yet provide a safe editor for an inactive root or implement subtree reclamation.
+
 Keep Roadmap M2 incomplete until the implementation and acceptance tests below pass on the exact reviewed PR head.
 
 ## Scope
