@@ -37,6 +37,19 @@ pub enum FrameRegistryError {
     NotDetached,
 }
 
+/// Error returned by a root-scoped page-table frame release transaction.
+pub enum PublishedFrameReleaseError<E, T> {
+    /// The registry did not contain the expected detached root-owned frame.
+    Registry(FrameRegistryError),
+    /// The allocator refused to release the frame; the token has been restored.
+    Release(E),
+    /// Restoration violated a registry invariant; the caller still owns this token.
+    Restore {
+        error: FrameRegistryError,
+        token: T,
+    },
+}
+
 /// Fixed-capacity storage for reserved and owned page-table frame tokens.
 ///
 /// A reservation consumes metadata capacity before allocation. install_reserved
@@ -511,6 +524,51 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         }
     }
 
+    /// Releases one detached table through a fallible allocator operation.
+    ///
+    /// If the allocator rejects the token and returns it, this method restores
+    /// the root/level/detached registry record before returning the allocator
+    /// error. A subsequent teardown can discover and retry the detached frame.
+    ///
+    /// # Safety
+    ///
+    /// The frame must already be marked detached because its parent entry is
+    /// clear, the frame is empty and unreachable from every root, and the
+    /// required inactive-root/TLB transition is complete. The release callback
+    /// must return the original token on failure rather than dropping it.
+    #[allow(unsafe_code)]
+    pub unsafe fn release_published_for_root_with<E>(
+        &mut self,
+        root_physical: u64,
+        physical_address: u64,
+        table_level: u8,
+        release: impl FnOnce(T) -> Result<(), (E, T)>,
+    ) -> Result<(), PublishedFrameReleaseError<E, T>> {
+        // SAFETY: the caller's contract above establishes detachment and TLB safety.
+        let token = unsafe {
+            self.take_published_for_root(root_physical, physical_address, table_level)
+        }
+        .map_err(PublishedFrameReleaseError::Registry)?;
+
+        match release(token) {
+            Ok(()) => Ok(()),
+            Err((error, token)) => {
+                // SAFETY: release returned the exact token taken above, and no
+                // other registry operation can adopt it while this transaction
+                // is serialized by the caller.
+                match unsafe {
+                    self.restore_detached_published_for_root(token, root_physical, table_level)
+                } {
+                    Ok(()) => Err(PublishedFrameReleaseError::Release(error)),
+                    Err((restore_error, token)) => Err(PublishedFrameReleaseError::Restore {
+                        error: restore_error,
+                        token,
+                    }),
+                }
+            }
+        }
+    }
+
     /// Removes and returns an unpublished token, freeing its registry slot.
     ///
     /// Published frames are deliberately retained; callers must not use unmap
@@ -786,28 +844,36 @@ mod tests {
         // empty, and the target root being inactive.
         unsafe { registry.mark_published_table_detached_for_root(0x3000, 0xA000, 1) }.unwrap();
 
-        let token = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
-        assert!(!registry.contains(0xA000));
-        assert_eq!(registry.available_slots(), 1);
-
-        // Inject allocator release failure: the token is returned intact.
-        let token = match injected_free_frame_failure(token) {
-            Ok(()) => panic!("injected allocator failure unexpectedly succeeded"),
-            Err((_error, token)) => token,
+        // Inject the same fallible release contract used by free_frame().
+        // The production registry transaction must restore the original token.
+        let first = unsafe {
+            registry.release_published_for_root_with(
+                0x3000,
+                0xA000,
+                1,
+                injected_free_frame_failure::<TestFrame>,
+            )
         };
-        // SAFETY: token is exactly the detached token removed above after the
-        // simulated free_frame failure. No allocation or adoption happened.
-        unsafe { registry.restore_detached_published_for_root(token, 0x3000, 1) }.unwrap();
+        assert!(matches!(
+            first,
+            Err(super::PublishedFrameReleaseError::Release(()))
+        ));
         assert!(registry.contains(0xA000));
         assert_eq!(registry.published_count_for_root(0x3000), Ok(1));
         assert_eq!(
             registry.detached_table_for_root(0x3000, 0),
             Some((0xA000, 1))
         );
+        assert_eq!(registry.available_slots(), 0);
 
-        // Retry after the injected failure: the detached token remains releasable.
-        let retry = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
-        assert_eq!(retry, TestFrame::new(0xA000, 93));
+        // Retry the same root-owned detached frame with a successful allocator.
+        let second = unsafe {
+            registry.release_published_for_root_with(0x3000, 0xA000, 1, |token| {
+                assert_eq!(token, TestFrame::new(0xA000, 93));
+                Ok(())
+            })
+        };
+        assert!(second.is_ok());
         assert!(!registry.contains(0xA000));
         assert_eq!(registry.published_count_for_root(0x3000), Ok(0));
         assert_eq!(registry.available_slots(), 1);
