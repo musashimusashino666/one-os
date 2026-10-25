@@ -406,7 +406,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     ///
     /// This is an accounting query only; it does not discover unregistered aliases.
     pub fn frame_has_executable_alias(&self, physical_frame: u64) -> bool {
-        if physical_frame == 0 || physical_frame & (PAGE_SIZE - 1) != 0 {
+        if physical_frame & (PAGE_SIZE - 1) != 0 {
             return false;
         }
         self.slots.iter().any(|record| {
