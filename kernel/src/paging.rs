@@ -555,6 +555,9 @@ fn validate_elf_load_mappings(
 
         let mut virtual_page = first_virtual_page;
         loop {
+            let elf_virtual_page = virtual_page
+                .checked_sub(boot_info.kernel_image_offset)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
             let translation = translate_virtual_address(
                 virtual_page,
                 root_table_physical,
@@ -568,7 +571,7 @@ fn validate_elf_load_mappings(
                 || translation.user_accessible
                 || translation.writable
                     != (segment.writable()
-                        && !image.page_is_read_only_after_relocation(virtual_page))
+                        && !image.page_is_read_only_after_relocation(elf_virtual_page))
                 || translation.executable != segment.executable()
             {
                 return Err(PagingError::InvalidKernelLoadMapping);
