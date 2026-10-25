@@ -489,6 +489,8 @@ mod tests {
     fn rejects_incompatible_page_offsets_and_bad_alignment() {
         let (header, mut program_headers) = valid_image();
         program_header(&mut program_headers, 0, 0x5, 0x1001, 0x1000, 0x800, 0x800);
+        // Make p_align permissive so this case reaches the page-offset check.
+        write_u64(&mut program_headers, 48, 1);
         assert_eq!(
             parse_elf64_load_segments(&header, &program_headers, FILE_LEN),
             Err(Elf64Error::IncompatiblePageOffsets)
