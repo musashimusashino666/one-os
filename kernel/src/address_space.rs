@@ -235,7 +235,7 @@ pub fn verify_root_initialization_smoke_test(
         } else {
             // The destination frame could not be safely accessed for zeroization.
             // Keep it allocated rather than recycle potentially stale contents.
-            let _unreleased_frame = root.into_frame();
+            core::mem::forget(root);
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -321,7 +321,7 @@ fn create_inactive_address_space_root(
         } else {
             // Do not recycle a frame whose contents could not be validated and
             // cleared through the checked physical-memory-offset alias.
-            let _unreleased_frame = root.into_frame();
+            core::mem::forget(root);
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -987,7 +987,7 @@ pub fn activate_supervisor_kernel_root(
         } else {
             // Keep an inaccessible allocation reserved rather than recycling
             // memory whose contents could not be safely zeroed.
-            let _unreleased_frame = root.into_frame();
+            core::mem::forget(root);
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -1068,7 +1068,7 @@ pub fn activate_supervisor_kernel_root(
     if active_root_table_physical() != root_physical {
         // The root may already be active. Never recycle its frame after a
         // switch attempt whose observed result is uncertain.
-        let _unreleased_frame = root.into_frame();
+        core::mem::forget(root);
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -1135,10 +1135,13 @@ fn clear_and_release_root(
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
-        let _unreleased_frame = root.into_frame();
+        core::mem::forget(root);
         return Err(error);
     }
-    release_frame(root.into_frame())
+    // SAFETY: the root PML4 was cleared and verified above. Callers either
+    // release a never-activated construction root with no private child tables,
+    // or call only after switching away and completing inactive-root teardown.
+    release_frame(unsafe { root.into_frame() })
 }
 
 fn clear_root_entries(
