@@ -33,6 +33,8 @@ pub enum FrameRegistryError {
     PublishedOwnerMismatch,
     /// The frame is not currently published.
     NotPublished,
+    /// The frame has not been marked detached before release.
+    NotDetached,
 }
 
 /// Fixed-capacity storage for reserved and owned page-table frame tokens.
@@ -52,6 +54,7 @@ enum FrameSlot<T> {
         published: bool,
         owner_root_physical: Option<u64>,
         owner_table_level: Option<u8>,
+        detached: bool,
     },
 }
 
@@ -110,6 +113,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             published: false,
             owner_root_physical: None,
             owner_table_level: None,
+            detached: false,
         };
         Ok(())
     }
@@ -190,6 +194,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 published,
                 owner_root_physical,
                 owner_table_level,
+                detached,
                 ..
             } = slot
             {
@@ -200,6 +205,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 if *published {
                     return if *owner_root_physical == Some(root_physical)
                         && *owner_table_level == Some(table_level)
+                        && !*detached
                     {
                         Ok(())
                     } else {
@@ -210,6 +216,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 *published = true;
                 *owner_root_physical = Some(root_physical);
                 *owner_table_level = Some(table_level);
+                *detached = false;
                 return Ok(());
             }
         }
@@ -263,6 +270,8 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 published: true,
                 owner_root_physical: Some(owner),
                 owner_table_level: Some(level),
+                detached: false,
+                ..
             } if token.frame_address() == physical_address && *owner == root_physical => {
                 Some(*level)
             }
@@ -287,6 +296,137 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 } if token.frame_address() == physical_address && *owner == root_physical
             )
         })
+    }
+
+    /// Marks a root-private published table as detached and safe to release.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have cleared the table's only parent entry, proved the
+    /// table is empty and unreachable from every root, and completed the required
+    /// inactive-root/TLB transition. This function records that proof; it does
+    /// not inspect hardware page-table reachability.
+    #[allow(unsafe_code)]
+    pub unsafe fn mark_published_table_detached_for_root(
+        &mut self,
+        root_physical: u64,
+        physical_address: u64,
+        table_level: u8,
+    ) -> Result<(), FrameRegistryError> {
+        if root_physical == 0
+            || root_physical & (crate::PAGE_SIZE - 1) != 0
+            || !(1..=3).contains(&table_level)
+        {
+            return Err(FrameRegistryError::InvalidOwnerRoot);
+        }
+
+        let Some(slot) = self.slots.iter_mut().find(|slot| {
+            matches!(
+                slot,
+                FrameSlot::Owned { token, .. } if token.frame_address() == physical_address
+            )
+        }) else {
+            return Err(FrameRegistryError::FrameNotFound);
+        };
+
+        match slot {
+            FrameSlot::Owned {
+                published: true,
+                owner_root_physical: Some(owner),
+                owner_table_level: Some(level),
+                detached,
+                ..
+            } if *owner == root_physical && *level == table_level && !*detached => {
+                *detached = true;
+                Ok(())
+            }
+            FrameSlot::Owned {
+                published: true,
+                owner_root_physical: Some(owner),
+                owner_table_level: Some(level),
+                detached: true,
+                ..
+            } if *owner == root_physical && *level == table_level => {
+                Err(FrameRegistryError::NotDetached)
+            }
+            FrameSlot::Owned {
+                published: false, ..
+            } => Err(FrameRegistryError::NotPublished),
+            _ => Err(FrameRegistryError::PublishedOwnerMismatch),
+        }
+    }
+
+    /// Returns the physical address and paging level of the nth detached table
+    /// awaiting release for this root.
+    ///
+    /// This includes detached tokens restored after allocator release failure,
+    /// allowing a later teardown retry to reclaim them without a live parent entry.
+    pub fn detached_table_for_root(&self, root_physical: u64, ordinal: usize) -> Option<(u64, u8)> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return None;
+        }
+
+        self.slots
+            .iter()
+            .filter_map(|slot| match slot {
+                FrameSlot::Owned {
+                    token,
+                    published: true,
+                    owner_root_physical: Some(owner),
+                    owner_table_level: Some(level),
+                    detached: true,
+                    ..
+                } if *owner == root_physical => Some((token.frame_address(), *level)),
+                _ => None,
+            })
+            .nth(ordinal)
+    }
+
+    /// Restores a detached table token after the physical allocator refused to
+    /// release it. The token remains owned by the registry and is eligible for
+    /// a later retry even though its parent entry is already clear.
+    ///
+    /// # Safety
+    ///
+    /// token must be the allocator-issued token previously removed from this
+    /// registry for this exact root and table level after detachment. The caller
+    /// must not use this API to adopt an unrelated frame.
+    #[allow(unsafe_code)]
+    pub unsafe fn restore_detached_published_for_root(
+        &mut self,
+        token: T,
+        root_physical: u64,
+        table_level: u8,
+    ) -> Result<(), (FrameRegistryError, T)> {
+        if root_physical == 0
+            || root_physical & (crate::PAGE_SIZE - 1) != 0
+            || !(1..=3).contains(&table_level)
+        {
+            return Err((FrameRegistryError::InvalidOwnerRoot, token));
+        }
+
+        if self.slots.iter().any(|slot| {
+            matches!(
+                slot,
+                FrameSlot::Owned { token: existing, .. }
+                    if existing.frame_address() == token.frame_address()
+            )
+        }) {
+            return Err((FrameRegistryError::DuplicateFrameAddress, token));
+        }
+
+        let Some(index) = self.slots.iter().position(|slot| matches!(slot, FrameSlot::Empty)) else {
+            return Err((FrameRegistryError::InvalidReservation, token));
+        };
+
+        self.slots[index] = FrameSlot::Owned {
+            token,
+            published: true,
+            owner_root_physical: Some(root_physical),
+            owner_table_level: Some(table_level),
+            detached: true,
+        };
+        Ok(())
     }
 
     /// Returns and removes a published page-table frame recorded as private to
@@ -326,8 +466,18 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 published: true,
                 owner_root_physical: Some(owner),
                 owner_table_level: Some(level),
+                detached: true,
                 ..
             } if *owner == root_physical && *level == table_level => {}
+            FrameSlot::Owned {
+                published: true,
+                owner_root_physical: Some(owner),
+                owner_table_level: Some(level),
+                detached: false,
+                ..
+            } if *owner == root_physical && *level == table_level => {
+                return Err(FrameRegistryError::NotDetached)
+            }
             FrameSlot::Owned {
                 published: true, ..
             } => return Err(FrameRegistryError::PublishedOwnerMismatch),
@@ -346,6 +496,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 published: true,
                 owner_root_physical: Some(owner),
                 owner_table_level: Some(level),
+                detached: true,
             } if owner == root_physical && level == table_level => Ok(token),
             other => {
                 // Restore unexpected state rather than dropping a non-Copy
@@ -597,10 +748,55 @@ mod tests {
             registry.published_table_level_for_root(0x2000, 0x8000),
             None
         );
+        assert_eq!(
+            // SAFETY: the test models the caller's proof that the table was detached.
+            unsafe { registry.mark_published_table_detached_for_root(0x1000, 0x8000, 2) },
+            Ok(())
+        );
+        assert_eq!(registry.detached_table_for_root(0x1000, 0), Some((0x8000, 2)));
         let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert_eq!(frame, TestFrame::new(0x8000, 91));
         assert!(!registry.contains(0x8000));
         assert_eq!(registry.published_count_for_root(0x1000), Ok(0));
+        assert_eq!(registry.available_slots(), 1);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn detached_table_token_is_restored_after_injected_release_failure_and_can_be_retried() {
+        let mut registry = PageTableFrameRegistry::<TestFrame, 1>::new();
+        let slot = registry.reserve_slot().unwrap();
+        registry
+            .install_reserved(slot, TestFrame::new(0xA000, 93))
+            .unwrap();
+        // SAFETY: this test models publication beneath one exclusive root.
+        unsafe { registry.mark_published_for_root(0x3000, 0xA000, 1) }.unwrap();
+        // SAFETY: model the parent entry being cleared, the table verified
+        // empty, and the target root being inactive.
+        unsafe { registry.mark_published_table_detached_for_root(0x3000, 0xA000, 1) }
+            .unwrap();
+
+        let token = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
+        assert!(!registry.contains(0xA000));
+        assert_eq!(registry.available_slots(), 1);
+
+        // Inject allocator release failure: the token is returned intact.
+        let token = match Err::<(), ((), TestFrame)>(((), token)) {
+            Ok(()) => unreachable!(),
+            Err((_error, token)) => token,
+        };
+        // SAFETY: token is exactly the detached token removed above after the
+        // simulated free_frame failure. No allocation or adoption happened.
+        unsafe { registry.restore_detached_published_for_root(token, 0x3000, 1) }.unwrap();
+        assert!(registry.contains(0xA000));
+        assert_eq!(registry.published_count_for_root(0x3000), Ok(1));
+        assert_eq!(registry.detached_table_for_root(0x3000, 0), Some((0xA000, 1)));
+
+        // Retry after the injected failure: the detached token remains releasable.
+        let retry = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
+        assert_eq!(retry, TestFrame::new(0xA000, 93));
+        assert!(!registry.contains(0xA000));
+        assert_eq!(registry.published_count_for_root(0x3000), Ok(0));
         assert_eq!(registry.available_slots(), 1);
     }
 
