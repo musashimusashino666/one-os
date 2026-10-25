@@ -2,11 +2,13 @@
 
 ## Status
 
-This document is the implementation contract for the first kernel-backed teardown increment. It is not evidence that the teardown path is implemented. The current `unmap_all_user_data_pages` implementation is host-testable core code; it is not yet wired to a kernel editor for arbitrary inactive address-space page tables.
+This Draft PR now contains an initial kernel integration slice in addition to the contract below. `KernelInactiveAddressSpaceEditor` is bound to one initialized, inactive root, accesses frames through a validated active-root physical-memory-offset alias, and accepts private child tables only when the registry records the exact root and paging level. The normal-boot A -> B -> A smoke path maps a test user-data page, switches to B after a full lower-half preflight, writes/reads a sentinel, switches back to A, tears down B's user mapping, re-zeroes the data frame, and reclaims private intermediate tables bottom-up.
 
-Current groundwork in this draft: `PageTableFrameRegistry` can record a private table's owning root, reject root-owner mismatches, and expose an unsafe release transition that requires the caller to prove the published table is fully detached and unreachable. The active mapping path records root ownership for lower-half tables. This metadata does not yet provide a safe editor for an inactive root or implement subtree reclamation.
+This is implementation-in-progress, not a completed acceptance result: the latest PR HEAD must pass the optimized CR3 assembly validator and all M1/QEMU tests, and the new teardown path still needs review against its failure/recovery cases. The smoke path exercises CPL 0 mapping management; it does not enter Ring 3 or establish process isolation.
 
-Keep Roadmap M2 incomplete until the implementation and acceptance tests below pass on the exact reviewed PR head.
+`PageTableFrameRegistry` records both the root and paging level for private tables. A root-owned table can only be reclaimed through an unsafe transition whose caller proves that the parent entry has been cleared, the table is empty and unreachable, and the inactive-root/TLB precondition holds. The registry records ownership; it does not independently prove hardware reachability.
+
+Keep Roadmap M2 incomplete until the exact reviewed PR HEAD passes the implementation and acceptance tests below.
 
 ## Scope
 
