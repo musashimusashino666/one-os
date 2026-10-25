@@ -360,7 +360,7 @@ fn create_inactive_address_space_root(
 
 /// Switches to a root with registered user mappings after a complete kernel-side
 /// preflight of its private lower-half page-table tree.
-fn switch_address_space_with_user_pages<const CAPACITY: usize>(
+fn activate_preflighted_user_root<const CAPACITY: usize>(
     current: ActiveAddressSpaceRoot,
     next: AddressSpaceRoot,
     boot_info: &BootInfo,
@@ -535,7 +535,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     }
 
     let (original_inactive, second_active) =
-        switch_address_space_with_user_pages(active_root, second_root, boot_info, &user_registry)?;
+        activate_preflighted_user_root(active_root, second_root, boot_info, &user_registry)?;
     if second_active.physical_address() != second_physical
         || second_active.recursive_index() != second_recursive_index
     {
@@ -565,7 +565,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
 
     // Confirm that the peer root independently supports the same VA before
     // tearing down the first root. The physical frames must be distinct.
-    let (original_inactive_for_peer, peer_active) = switch_address_space_with_user_pages(
+    let (original_inactive_for_peer, peer_active) = activate_preflighted_user_root(
         restored_active,
         third_root,
         boot_info,
@@ -618,7 +618,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // Re-enter the peer after the first root has been fully torn down and its
     // private tables reclaimed. Its same-VA mapping and data must be unchanged.
     let (original_inactive_for_peer_check, peer_active_check) =
-        switch_address_space_with_user_pages(
+        activate_preflighted_user_root(
             restored_active,
             peer_inactive,
             boot_info,
