@@ -29,7 +29,7 @@ pub enum FrameRegistryError {
     PublishedFrame,
     /// The supplied owner root is zero, unaligned, or otherwise invalid.
     InvalidOwnerRoot,
-    /// The frame is published for a different root or has no recorded private owner.
+    /// The frame is published for a different root/level or has no private owner.
     PublishedOwnerMismatch,
     /// The frame is not currently published.
     NotPublished,
@@ -158,9 +158,9 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
 
     /// Marks a page-table frame as published in one private address-space tree.
     ///
-    /// Calling this repeatedly for the same (root, frame) is idempotent. A frame
-    /// already published without an owner, or owned by another root, is rejected
-    /// instead of being silently adopted.
+    /// Calling this repeatedly for the same (root, frame, level) is idempotent.
+    /// A frame already published without an owner, or owned by another root or
+    /// paging level, is rejected instead of being silently adopted.
     ///
     /// # Safety
     ///
@@ -168,7 +168,8 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     /// allocator-issued page-table frame and is being published only beneath the
     /// supplied root's private lower-half mapping tree. The frame must not be
     /// shared with another root or reachable through an unrelated page-table
-    /// tree. The registry records this assertion; it does not verify reachability.
+    /// tree at `table_level`. The registry records this assertion; it does not
+    /// verify reachability or the actual hardware table depth.
     #[allow(unsafe_code)]
     pub unsafe fn mark_published_for_root(
         &mut self,
@@ -570,6 +571,17 @@ mod tests {
             unsafe { registry.mark_published_for_root(0x2000, 0x8000, 2) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
+        assert_eq!(
+            // SAFETY: the registry must reject changing the recorded paging level.
+            unsafe { registry.mark_published_for_root(0x1000, 0x8000, 1) },
+            Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert_eq!(
+            // SAFETY: a wrong-level release must be rejected before token removal.
+            unsafe { registry.take_published_for_root(0x1000, 0x8000, 1) },
+            Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert!(registry.contains(0x8000));
         assert_eq!(
             registry.take_unpublished(0x8000),
             Err(FrameRegistryError::PublishedFrame)
