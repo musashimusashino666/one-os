@@ -872,7 +872,7 @@ mod tests {
         let second = unsafe {
             registry.release_published_for_root_with(0x3000, 0xA000, 1, |token| {
                 assert_eq!(token, TestFrame::new(0xA000, 93));
-                Ok(())
+                Ok::<(), ((), TestFrame)>(())
             })
         };
         assert!(second.is_ok());
