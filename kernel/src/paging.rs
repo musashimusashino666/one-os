@@ -48,6 +48,8 @@ const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
+// Refuse malformed BootInfo ranges that would make bootstrap page auditing unbounded.
+const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
@@ -521,6 +523,16 @@ fn validate_bootstrap_data_mapping_range(
         .filter(|_| length != 0)
         .ok_or(mapping_error)?;
     if !canonical_range_stays_in_one_half(virtual_start, virtual_end) {
+        return Err(mapping_error);
+    }
+
+    let first_page_index = virtual_start / PAGE_SIZE;
+    let last_page_index = (virtual_end - 1) / PAGE_SIZE;
+    let page_count = last_page_index
+        .checked_sub(first_page_index)
+        .and_then(|count| count.checked_add(1))
+        .ok_or(mapping_error)?;
+    if page_count > MAX_BOOTSTRAP_MAPPING_PAGES {
         return Err(mapping_error);
     }
 
