@@ -193,6 +193,19 @@ The optimized assembly check is an all-path invariant, not an existential patter
 - Include exact commands and results when reporting validation.
 
 
+### Batch user-page teardown
+
+The core crate exposes unmap_all_user_data_pages for an initialized inactive
+address-space root and its matching UserPageMappingRegistry. The operation
+preflights every registered user-data leaf before the first mutation, invalidates
+each removed translation before returning that page's frame token, and reports
+completed frame tokens explicitly if an unexpected post-preflight error causes
+partial progress. A preflight failure must leave all mappings intact. The caller
+must retain and release every returned token, retry any still-registered mapping,
+and keep the root/table frames alive until separate table-reclamation logic has
+completed. This helper deliberately does not reclaim intermediate page tables,
+switch CR3, provide remote TLB shootdowns, or establish process isolation.
+
 ### Page-table ownership registry validation
 
 The core crate exposes a fixed-capacity page-table frame ownership registry used by the kernel editor. Host tests cover reservation before allocation, capacity exhaustion without allocation, ownership-token retention, exactly-once release of unpublished frames, retention of published frames, duplicate-address rejection, invalid or foreign releases, slot reuse, rollback, and leaf-unmap ownership. Host-testable paging-precondition validators cover extended CPUID leaf availability, NX support, physical-address width, CR0.WP, and EFER.NXE. Required QEMU cases exercise the concrete editor's checked physical-memory-offset alias and zero-before-publication behavior. The latest revision-specific result is available in the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml); any subsequent change must pass the required check on its exact PR candidate.
