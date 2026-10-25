@@ -15,19 +15,19 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
-    is_safe_recursive_mapping_index, map_supervisor_4k, parse_elf64_load_segments,
-    map_user_data_page, physical_page_is_in_allowed_region, recursive_entry_is_valid_kernel_root,
-    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level, unmap_4k,
-    unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
-    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
-    AddressSpaceRoot, Elf64LoadImage, Frame, FrameRegistryError, PagePermissions,
-    PageTableEditor, PageTableError,
+    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    parse_elf64_load_segments, physical_page_is_in_allowed_region,
+    recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, unmap_all_user_data_pages,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot, Elf64LoadImage,
+    Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
     ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
     PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
-};
+}
 
 const CR0_WP: u64 = 1 << 16;
 const CR4_LA57: u64 = 1 << 12;
@@ -309,12 +309,8 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         recursive_index,
         regions,
     )?;
-    let load_image = parse_elf64_load_segments(
-        &elf_header,
-        program_headers,
-        boot_info.kernel_len,
-    )
-    .map_err(|_| PagingError::InvalidKernelElf)?;
+    let load_image = parse_elf64_load_segments(&elf_header, program_headers, boot_info.kernel_len)
+        .map_err(|_| PagingError::InvalidKernelElf)?;
     let validated_load_pages = validate_elf_load_mappings(
         &load_image,
         boot_info,
@@ -379,7 +375,6 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         validated_mappings: validated_load_pages.saturating_add(3),
     })
 }
-
 
 /// Copies a small metadata range from the bootloader-owned in-memory ELF image.
 ///
@@ -556,9 +551,13 @@ fn validate_elf_load_mappings(
 
         let mut virtual_page = first_virtual_page;
         loop {
-            let translation =
-                translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
-                    .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+            let translation = translate_virtual_address(
+                virtual_page,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )
+            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
             if translation.page_size != PAGE_SIZE
                 || translation.physical_address & (PAGE_SIZE - 1) != 0
                 || !is_kernel_backed_page(regions, translation.physical_address)

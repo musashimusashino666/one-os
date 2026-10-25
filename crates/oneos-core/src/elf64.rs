@@ -114,15 +114,21 @@ struct ParsedHeader {
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(offset..offset.checked_add(8)?)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset.checked_add(8)?)?.try_into().ok()?,
+    ))
 }
 
 fn parse_header(header: &[u8], file_len: u64) -> Result<ParsedHeader, Elf64Error> {
@@ -192,7 +198,10 @@ pub fn elf64_program_header_table_range(
     file_len: u64,
 ) -> Result<(u64, usize), Elf64Error> {
     let parsed = parse_header(header, file_len)?;
-    Ok((parsed.program_header_offset, parsed.program_header_table_size))
+    Ok((
+        parsed.program_header_offset,
+        parsed.program_header_table_size,
+    ))
 }
 
 /// Parses every PT_LOAD header without allocating. The caller must separately
@@ -223,8 +232,8 @@ pub fn parse_elf64_load_segments(
             continue;
         }
 
-        let flags = read_u32(program_headers, offset + 4)
-            .ok_or(Elf64Error::TruncatedProgramHeaders)?;
+        let flags =
+            read_u32(program_headers, offset + 4).ok_or(Elf64Error::TruncatedProgramHeaders)?;
         let segment = Elf64LoadSegment {
             offset: read_u64(program_headers, offset + 8)
                 .ok_or(Elf64Error::TruncatedProgramHeaders)?,
@@ -269,9 +278,7 @@ pub fn parse_elf64_load_segments(
         {
             return Err(Elf64Error::InvalidAlignment);
         }
-        if segment.offset & (PAGE_SIZE - 1)
-            != segment.virtual_address & (PAGE_SIZE - 1)
-        {
+        if segment.offset & (PAGE_SIZE - 1) != segment.virtual_address & (PAGE_SIZE - 1) {
             return Err(Elf64Error::IncompatiblePageOffsets);
         }
 
@@ -287,9 +294,7 @@ pub fn parse_elf64_load_segments(
                 .virtual_address
                 .checked_add(previous.memory_size)
                 .ok_or(Elf64Error::VirtualRangeOverflow)?;
-            if segment.virtual_address < previous_end
-                && previous.virtual_address < virtual_end
-            {
+            if segment.virtual_address < previous_end && previous.virtual_address < virtual_end {
                 return Err(Elf64Error::OverlappingLoadSegments);
             }
         }
@@ -304,10 +309,7 @@ pub fn parse_elf64_load_segments(
     if !image.load_segments().iter().any(|segment| {
         segment.executable()
             && image.entry_point >= segment.virtual_address
-            && image.entry_point
-                < segment
-                    .virtual_address
-                    .saturating_add(segment.memory_size)
+            && image.entry_point < segment.virtual_address.saturating_add(segment.memory_size)
     }) {
         return Err(Elf64Error::EntryPointNotExecutable);
     }
@@ -318,8 +320,8 @@ pub fn parse_elf64_load_segments(
 #[cfg(test)]
 mod tests {
     use super::{
-        elf64_program_header_table_range, parse_elf64_load_segments, Elf64Error,
-        ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
+        elf64_program_header_table_range, parse_elf64_load_segments, Elf64Error, ELF64_HEADER_SIZE,
+        ELF64_PROGRAM_HEADER_SIZE,
     };
 
     const FILE_LEN: u64 = 0x4000;

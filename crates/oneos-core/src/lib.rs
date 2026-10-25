@@ -32,8 +32,8 @@ pub use address_space::{
 };
 pub use elf64::{
     elf64_program_header_table_range, parse_elf64_load_segments, Elf64Error, Elf64LoadImage,
-    Elf64LoadSegment, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
-    MAX_ELF64_PROGRAM_HEADERS, MAX_ELF64_TOTAL_LOAD_BYTES,
+    Elf64LoadSegment, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
+    MAX_ELF64_TOTAL_LOAD_BYTES,
 };
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
