@@ -357,7 +357,19 @@ pub(crate) fn map_4k<E: PageTableEditor>(
 /// `user_accessible = true`. User-visible mappings must use the `ZeroedFrame`
 /// ownership API so that an arbitrary physical address cannot bypass frame
 /// initialization.
-pub fn map_supervisor_4k<E: PageTableEditor>(
+///
+/// # Safety
+///
+/// The caller must retain an exclusive ownership token for `physical_address`
+/// and must keep the frame allocated for as long as this mapping exists. This
+/// function cannot encode that lifetime in the type system: freeing the frame
+/// while the mapping is live can let the allocator reuse it as a page table or
+/// another subsystem's data, leaving a writable supervisor alias to unrelated
+/// memory. The caller must also ensure the editor's allocation and page-table
+/// access contracts hold, and must unmap the address before returning the frame
+/// to its allocator.
+#[allow(unsafe_code)]
+pub unsafe fn map_supervisor_4k<E: PageTableEditor>(
     root_table_physical: u64,
     virtual_address: u64,
     physical_address: u64,
@@ -757,19 +769,25 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn public_supervisor_mapper_rejects_user_permissions_before_mutation() {
         let root = 0x1000;
         let virtual_address = 0x4000;
         let mut tables = TestTables::new(root);
 
+        // SAFETY: this test owns the TestTables model and checks the API rejection
+        // path before any mapping is published; the physical frame lifetime is
+        // entirely represented by the in-memory test model.
         assert_eq!(
-            map_supervisor_4k(
-                root,
-                virtual_address,
-                0x8000,
-                PagePermissions::new(true, true, false),
-                &mut tables,
-            ),
+            unsafe {
+                map_supervisor_4k(
+                    root,
+                    virtual_address,
+                    0x8000,
+                    PagePermissions::new(true, true, false),
+                    &mut tables,
+                )
+            },
             Err(PageTableMutationError::UserMappingRequiresZeroedFrame)
         );
         assert_eq!(tables.pages.len(), 1);

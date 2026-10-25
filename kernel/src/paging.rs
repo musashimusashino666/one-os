@@ -9,7 +9,7 @@ use core::arch::asm;
 use core::arch::x86_64::__cpuid;
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
@@ -44,6 +44,7 @@ const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const TABLE_FRAME_CAPACITY: usize = 512;
+const ADDRESS_SPACE_ROOT_CAPACITY: usize = 16;
 const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
@@ -340,28 +341,46 @@ fn translation_preserves_page_offset(virtual_address: u64, translation: PageTran
 /// mapping is requested, the reported index maps the active PML4 frame back into itself.
 /// This check catches a readable but inconsistent entry; it cannot make an absent or broken
 /// recursive virtual mapping safe to probe without potentially taking a page fault.
-fn validate_recursive_mapping_entry(recursive_index: u16, root_table_physical: u64) -> bool {
-    let Some(table_virtual) = recursive_table_page_virtual_address(recursive_index, 0, 4) else {
-        return false;
-    };
-    let Some(entry_offset) = u64::from(recursive_index).checked_mul(8) else {
-        return false;
-    };
-    let Some(entry_virtual) = table_virtual.checked_add(entry_offset) else {
-        return false;
-    };
+fn read_recursive_mapping_entry(recursive_index: u16) -> Option<u64> {
+    let table_virtual = recursive_table_page_virtual_address(recursive_index, 0, 4)?;
+    let entry_offset = u64::from(recursive_index).checked_mul(8)?;
+    let entry_virtual = table_virtual.checked_add(entry_offset)?;
     if !is_canonical_4level(entry_virtual) || entry_virtual & 7 != 0 {
-        return false;
+        return None;
     }
-    let Ok(entry_pointer) = usize::try_from(entry_virtual) else {
-        return false;
-    };
+    let entry_pointer = usize::try_from(entry_virtual).ok()?;
 
     // SAFETY: this access depends on the bootloader API's recursive-index guarantee,
     // and the physical CR3 frame was already confirmed to be a full Bootloader-owned page.
     // The value read is then checked against the physical CR3 root frame.
-    let entry = unsafe { ptr::read_volatile(entry_pointer as *const u64) };
-    recursive_entry_matches_root(entry, root_table_physical)
+    Some(unsafe { ptr::read_volatile(entry_pointer as *const u64) })
+}
+
+fn validate_recursive_mapping_entry(recursive_index: u16, root_table_physical: u64) -> bool {
+    read_recursive_mapping_entry(recursive_index)
+        .is_some_and(|entry| recursive_entry_matches_root(entry, root_table_physical))
+}
+
+/// Validates the recursive self-reference used by a mapping editor.
+///
+/// A bootloader-owned source root may predate the kernel's stricter flags and is
+/// checked for identity by the legacy validator. Once the root is allocator-owned
+/// and kernel-created, the recursive alias gives access to page-table frames, so
+/// it must also be supervisor-only, writable, non-executable, and free of unsupported
+/// protection-key bits.
+fn validate_editor_recursive_mapping_entry(
+    recursive_index: u16,
+    root_table_physical: u64,
+    root_is_allocator_owned: bool,
+) -> bool {
+    let Some(entry) = read_recursive_mapping_entry(recursive_index) else {
+        return false;
+    };
+    if root_is_allocator_owned {
+        recursive_entry_is_valid_kernel_root(entry, root_table_physical)
+    } else {
+        recursive_entry_matches_root(entry, root_table_physical)
+    }
 }
 
 fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
@@ -577,6 +596,60 @@ impl TableFrameRegistry {
 
 static TABLE_FRAMES: TableFrameRegistry = TableFrameRegistry::new();
 
+// Address-space roots are page tables too, but their ownership is held by
+// AddressSpaceRoot/ActiveAddressSpaceRoot rather than TABLE_FRAMES. Track every
+// live kernel-created root frame so leaf mapping and user-frame zeroing reject
+// roots that are not the current CR3 or the editor's immediate target.
+//
+// Zero is never a valid root physical address and is used as the empty marker.
+// The kernel runs single-CPU with maskable interrupts disabled during these
+// operations; atomics keep the individual slot operations race-free if that
+// contract is later tightened.
+static ADDRESS_SPACE_ROOT_FRAMES: [AtomicU64; ADDRESS_SPACE_ROOT_CAPACITY] =
+    [const { AtomicU64::new(0) }; ADDRESS_SPACE_ROOT_CAPACITY];
+
+/// Records one live kernel-created address-space root frame.
+///
+/// Returns false when the registry is full. Duplicate registration is
+/// idempotent so a caller that already owns a root can safely revalidate it.
+pub(super) fn register_address_space_root(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        if slot.load(Ordering::Acquire) == physical_address {
+            return true;
+        }
+    }
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        if slot
+            .compare_exchange(0, physical_address, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Removes one released address-space root frame from the registry.
+///
+/// A missing entry is intentionally ignored: cleanup paths may run after a
+/// failed registration or after a conservative leak decision.
+pub(super) fn unregister_address_space_root(physical_address: u64) {
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        let _ = slot.compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+/// Returns whether this frame is a live kernel-created address-space root.
+fn is_address_space_root_frame(physical_address: u64) -> bool {
+    physical_address != 0
+        && ADDRESS_SPACE_ROOT_FRAMES
+            .iter()
+            .any(|slot| slot.load(Ordering::Acquire) == physical_address)
+}
+
 fn reserve_table_frame_slot() -> Option<usize> {
     // SAFETY: this mutation is only used in the single-core, interrupts-disabled
     // bootstrap mapping path, before SMP is introduced.
@@ -743,7 +816,11 @@ impl<'a> KernelPageTableEditor<'a> {
         if !valid_physical_page(root_table_physical, physical_address_bits) {
             return Err(PagingError::InvalidRootTable);
         }
-        if !validate_recursive_mapping_entry(recursive_index, root_table_physical) {
+        if !validate_editor_recursive_mapping_entry(
+            recursive_index,
+            root_table_physical,
+            root_is_allocator_owned,
+        ) {
             return Err(PagingError::InvalidRecursiveMapping);
         }
 
@@ -946,9 +1023,11 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
 
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
         // Only allocator-eligible Usable frames may be mapped as ordinary data.
-        // Bootloader-owned, unknown/reserved, and registered page-table frames
-        // must never be accepted as leaf targets.
-        !self.is_usable_frame(physical_address) || self.is_table_frame(physical_address)
+        // Bootloader-owned, unknown/reserved, registered page-table frames, and
+        // every live address-space root must never be accepted as leaf targets.
+        !self.is_usable_frame(physical_address)
+            || self.is_table_frame(physical_address)
+            || is_address_space_root_frame(physical_address)
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {
@@ -1339,7 +1418,11 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
     }
 
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
-        !self.is_usable_frame(physical_address) || registered_table_frame(physical_address)
+        !self.is_usable_frame(physical_address)
+            || registered_table_frame(physical_address)
+            || physical_address == self.active_root_physical
+            || physical_address == self.target_root_physical
+            || is_address_space_root_frame(physical_address)
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {
@@ -2011,6 +2094,15 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
 ) -> Result<(), PagingError> {
     const TEST_VA: u64 = 0x4000;
     let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
+    // The editor-level predicate must fail closed for every live address-space
+    // root, not only for the mapping editor's immediate target. This is checked
+    // independently of the teardown preflight, which also validates leaf ownership.
+    if !editor.is_page_table_or_reserved_frame(root.physical_address())
+        || !editor.is_page_table_or_reserved_frame(active_root.physical_address())
+        || !editor.is_page_table_or_reserved_frame(foreign_root_physical)
+    {
+        return Err(PagingError::InactivePageTableOwnershipViolation);
+    }
     verify_user_frame_initialization_failure_releases_frame_for_smoke()?;
     let root_physical = root.physical_address();
     let pml4_index = ((TEST_VA >> 39) & 0x1ff) as usize;
@@ -2343,6 +2435,7 @@ unsafe impl UserFrameInitializer for KernelUserFrameInitializer<'_> {
             || !super::memory::is_frame_allocated(physical_address).unwrap_or(false)
             || registered_table_frame(physical_address)
             || unpublished_table_frame(physical_address)
+            || is_address_space_root_frame(physical_address)
         {
             return Err(UserFrameInitializationError::InitializationFailed);
         }
@@ -2636,13 +2729,17 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 return Err(error);
             }
         };
-        match map_supervisor_4k(
-            root_table_physical,
-            candidate,
-            data_physical,
-            permissions,
-            &mut editor,
-        ) {
+        // SAFETY: data_frame remains owned through the map/access/unmap smoke
+        // cycle and is released only after this mapping has been removed.
+        match unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                candidate,
+                data_physical,
+                permissions,
+                &mut editor,
+            )
+        } {
             Ok(()) => {
                 invalidate_local_tlb(candidate);
                 // SAFETY: map_supervisor_4k installed a writable, supervisor-only mapping to
@@ -2911,13 +3008,17 @@ fn prepare_protection_test_mapping(
             }
         }
 
-        match map_supervisor_4k(
-            root_table_physical,
-            candidate,
-            physical_address,
-            protected_permissions,
-            &mut editor,
-        ) {
+        // SAFETY: frame_guard retains the frame token until the test mapping is
+        // explicitly unmapped and the frame is released by the guard.
+        match unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                candidate,
+                physical_address,
+                protected_permissions,
+                &mut editor,
+            )
+        } {
             Ok(()) => frame_guard.mark_mapped(candidate),
             Err(error) if error.is_retryable_for_mapping_candidate() => continue,
             Err(error) => return Err(PagingError::MappingMutation(error)),
@@ -3207,13 +3308,17 @@ impl MappingTransitionTest {
         unsafe {
             ptr::write_volatile(direct_alias.cast::<u64>(), TRANSITION_SECOND_SENTINEL);
         }
-        map_supervisor_4k(
-            root_table_physical,
-            self.virtual_address,
-            self.second_physical_address,
-            PagePermissions::new(true, false, false),
-            &mut editor,
-        )
+        // SAFETY: MappingTransitionTest retains both frame tokens until after
+        // the corresponding mappings are removed and the test is finished.
+        unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                self.virtual_address,
+                self.second_physical_address,
+                PagePermissions::new(true, false, false),
+                &mut editor,
+            )
+        }
         .map_err(PagingError::MappingMutation)?;
         invalidate_local_tlb(self.virtual_address);
         self.state = TransitionTestState::SecondMapped;
@@ -3257,13 +3362,17 @@ impl MappingTransitionTest {
     ) -> Result<(), PagingError> {
         let root_table_physical = active_root_table_physical();
         let mut editor = KernelPageTableEditor::new(boot_info, self.virtual_address)?;
-        map_supervisor_4k(
-            root_table_physical,
-            self.virtual_address,
-            physical_address,
-            PagePermissions::new(true, false, false),
-            &mut editor,
-        )
+        // SAFETY: MappingTransitionTest retains the frame token until the
+        // corresponding mapping is removed and the test is finished.
+        unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                self.virtual_address,
+                physical_address,
+                PagePermissions::new(true, false, false),
+                &mut editor,
+            )
+        }
         .map_err(PagingError::MappingMutation)?;
         invalidate_local_tlb(self.virtual_address);
         Ok(())

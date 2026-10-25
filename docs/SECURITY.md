@@ -51,15 +51,23 @@ token. The type now provides an unsafe `into_inactive_after_switch` transition
 that rejects a CR3 readback which still names the root being demoted. Its safety
 contract requires the caller to have completed the actual switch and all required
 TLB invalidation; the API cannot prove those hardware conditions itself. The
-transition does not unmap user pages or reclaim lower-level tables. Dropping the
-active handle still leaks the frame allocation rather than recycling a frame that
-hardware may use. This is an ownership primitive, not a full address-space
-lifecycle: the kernel has not implemented runtime user-root switching or teardown.
+transition itself does not unmap user pages or reclaim lower-level tables;
+those operations are performed by the separate inactive-root teardown path.
+Dropping the active handle still leaks the frame allocation rather than recycling
+a frame that hardware may use. Runtime address-space switching and inactive-root
+teardown are implemented under the existing single-CPU, maskable-interrupts-disabled
+contract. Ring 3 entry, live process teardown, SMP synchronization, and remote TLB
+shootdowns are not implemented. The kernel also tracks live address-space root
+frames separately from ordinary page-table frames so mapping and user-frame
+zeroing paths reject roots even when they are not the current CR3 root.
 
 The raw `map_4k` primitive is crate-private and is not exported from `oneos-core`;
 external callers cannot request user-accessible leaf mappings by supplying arbitrary
 physical addresses and permission flags. Public user-data mappings go through the
-`ZeroedFrame` API.
+`ZeroedFrame` API. The public supervisor-only mapper is an unsafe operation: the
+caller must retain the frame token and keep the physical frame allocated for the
+entire lifetime of the mapping. Releasing a mapped frame could otherwise let the
+allocator reuse it as a page table beneath a stale writable alias.
 
 The safe `oneos-core` user-data mapping helper now accepts only `ZeroedFrame`.
 `initialize_user_frame` produces that token only after the supplied initializer
