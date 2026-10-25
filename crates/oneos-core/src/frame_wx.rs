@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn registers_the_highest_canonical_page_and_detects_overlap() {
         let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
-        let highest_page = u64::MAX & !(PAGE_SIZE - 1);
+        let highest_page = !(PAGE_SIZE - 1);
         add(
             &mut registry,
             ROOT_A,
