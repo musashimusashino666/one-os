@@ -21,8 +21,8 @@ use oneos_core::{
     AddressSpaceRoot, Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, ZeroedFrame, PAGE_SIZE,
-    USER_VIRTUAL_ADDRESS_LIMIT,
+    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -1769,6 +1769,24 @@ pub fn validate_inactive_user_address_space<const CAPACITY: usize>(
     preflight_private_user_tree(root.physical_address(), registry, &mut editor)
 }
 
+/// Failure from kernel-backed inactive address-space teardown.
+///
+/// A user-page mutation failure retains its partial result and the remaining
+/// registry entries so a caller can decide whether to retry or fail-stop without
+/// losing ownership of frames already removed. Do not free, reactivate, or reuse
+/// the root merely because this error is returned.
+#[derive(Debug)]
+pub enum InactiveAddressSpaceTeardownError<const CAPACITY: usize> {
+    Kernel(PagingError),
+    UserPages(UserPageTeardownFailure<CAPACITY>),
+}
+
+impl<const CAPACITY: usize> From<PagingError> for InactiveAddressSpaceTeardownError<CAPACITY> {
+    fn from(error: PagingError) -> Self {
+        Self::Kernel(error)
+    }
+}
+
 /// Tears down every registered user page in one inactive root, then reclaims
 /// its private lower-half intermediate tables bottom-up.
 ///
@@ -1780,19 +1798,15 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
     root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
     registry: &mut UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
-) -> Result<(), PagingError> {
+) -> Result<(), InactiveAddressSpaceTeardownError<CAPACITY>> {
     let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
     preflight_private_user_tree(root.physical_address(), registry, &mut editor)?;
 
     let mut teardown = match unmap_all_user_data_pages(root, registry, &mut editor) {
         Ok(result) => result,
-        Err(failure) => {
-            // Unexpected failures after mutation starts are fail-stop. The
-            // failure retains any completed frame tokens; do not free or reuse
-            // those tokens after an uncertain teardown.
-            let _error = failure.error();
-            return Err(PagingError::UserPageTeardownFailed);
-        }
+        // Preserve the error value so its partial result retains every frame
+        // token already detached and invalidated by the batch operation.
+        Err(failure) => return Err(InactiveAddressSpaceTeardownError::UserPages(failure)),
     };
 
     let mut initializer =
