@@ -475,21 +475,141 @@ def _asm_blocks_writing_control_register(
     return blocks
 
 
+def _split_top_level_commas(source: str) -> list[str]:
+    """Split a Rust macro argument list without splitting nested expressions."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(source):
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(source[start:index].strip())
+            start = index + 1
+    parts.append(source[start:].strip())
+    return parts
+
+
+def _asm_operand_bindings(
+    block: str,
+) -> tuple[list[tuple[str, str | None, str | None]], dict[str, tuple[str, str | None, str | None]]] | None:
+    """Map Rust asm! operand names and positions to their declared input values.
+
+    Each operand tuple is (kind, register class, expression). Unsupported operand
+    declarations are rejected conservatively so they cannot shift positional
+    placeholders past an operand the checker did not understand.
+    """
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    body = string_pattern.sub(" ", block)
+    body = re.sub(r"//[^\\n]*", "", body)
+    body = re.sub(r"/\\*.*?\\*/", "", body, flags=re.DOTALL)
+    positional: list[tuple[str, str | None, str | None]] = []
+    named: dict[str, tuple[str, str | None, str | None]] = {}
+
+    operand_pattern = re.compile(
+        r"(?:(?P<name>[A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*)?"
+        r"(?P<kind>inlateout|lateout|inout|in|out|const|sym)\\b(?P<tail>.*)",
+        re.DOTALL,
+    )
+    register_operand_pattern = re.compile(
+        r"\\s*\\(\\s*(?P<register_class>[^()]+?)\\s*\\)\\s*"
+        r"(?P<expression>.+?)\\s*",
+        re.DOTALL,
+    )
+
+    for argument in _split_top_level_commas(body):
+        if not argument or re.match(r"^(?:options|clobber_abi)\\s*\\(", argument):
+            continue
+        match = operand_pattern.fullmatch(argument)
+        if match is None:
+            return None
+
+        kind = match.group("kind")
+        tail = match.group("tail")
+        register_class: str | None = None
+        expression: str | None = None
+        if kind in {"in", "out", "inout", "lateout", "inlateout"}:
+            register_match = register_operand_pattern.fullmatch(tail)
+            if register_match is not None:
+                register_class = register_match.group("register_class").strip()
+                expression = register_match.group("expression").strip()
+        else:
+            expression = tail.strip() or None
+
+        operand = (kind, register_class, expression)
+        name = match.group("name")
+        if name is None:
+            positional.append(operand)
+        elif name in named:
+            return None
+        else:
+            named[name] = operand
+
+    return positional, named
+
+
+def _cr3_template_sources(block: str) -> list[str]:
+    """Return source tokens for CR3 writes found in asm! string templates."""
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    sources: list[str] = []
+    for template in string_pattern.findall(block):
+        for line in template.splitlines():
+            match = re.search(
+                r"\\bmov(?:q)?\\s+cr3\\s*,\\s*([^\\s,;]+)",
+                line,
+                re.IGNORECASE,
+            )
+            if match is not None:
+                sources.append(match.group(1))
+    return sources
+
+
+def _cr3_source_is_validated_root(
+    block: str, source_token: str
+) -> bool:
+    """Require a CR3 template placeholder bound directly to in(reg) root_physical."""
+    placeholder = re.fullmatch(r"\\{([A-Za-z_][A-Za-z0-9_]*|[0-9]*)\\}", source_token)
+    if placeholder is None:
+        return False
+
+    parsed = _asm_operand_bindings(block)
+    if parsed is None:
+        return False
+    positional, named = parsed
+    key = placeholder.group(1)
+    if key == "":
+        operand = positional[0] if positional else None
+    elif key.isdigit():
+        position = int(key)
+        operand = positional[position] if position < len(positional) else None
+    else:
+        operand = named.get(key)
+
+    return operand == ("in", "reg", "root_physical")
+
+
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
-    """Ensure every CR3 inline-asm block retains the compiler memory barrier."""
+    """Ensure CR3 asm preserves memory order and writes the validated root input."""
     blocks = _asm_blocks_writing_control_register(source, "cr3")
     if not blocks:
         return False, "could not locate any asm! block writing CR3 in address_space.rs"
 
     for index, block in enumerate(blocks, start=1):
-        if re.search(r"\bnomem\b", block):
+        if re.search(r"\\bnomem\\b", block):
             return False, f"CR3 inline asm block {index} must not specify nomem"
-        if not re.search(r"\bin\(\s*reg\s*\)\s+root_physical\b", block):
-            return False, (
-                f"CR3 inline asm block {index} no longer uses the validated "
-                "root_physical operand"
-            )
-    return True, f"all {len(blocks)} CR3 asm blocks preserve the compiler memory-ordering boundary"
+
+        sources = _cr3_template_sources(block)
+        if not sources:
+            return False, f"CR3 inline asm block {index} has no parseable CR3 source operand"
+        for source_token in sources:
+            if not _cr3_source_is_validated_root(block, source_token):
+                return False, (
+                    f"CR3 inline asm block {index} writes CR3 from {source_token!r}; "
+                    "the template operand must bind directly to in(reg) root_physical"
+                )
+    return True, f"all {len(blocks)} CR3 asm blocks preserve compiler ordering and use the validated root"
 
 
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
