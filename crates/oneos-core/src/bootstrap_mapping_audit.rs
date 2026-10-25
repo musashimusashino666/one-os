@@ -174,7 +174,7 @@ mod tests {
         // A memory-region array may start near a page end and continue over
         // several pages. Count first and last partial pages too.
         let start = 0x4000_0ff0;
-        let length = PAGE_SIZE * 2 + 0x20;
+        let length = PAGE_SIZE + 0x20;
         assert_eq!(bootstrap_mapping_page_count(start, length, 4096), Ok(3));
     }
 
