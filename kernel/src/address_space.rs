@@ -20,8 +20,8 @@ use oneos_core::{
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
     recursive_table_page_virtual_address, translate_4level, validate_kernel_root_activation_state,
     ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootEditor, AddressSpaceRootError,
-    AddressSpaceRootInitializationError, PagingPreconditionError, UserPageMappingRegistry, ZeroedFrame,
-    PAGE_SIZE,
+    AddressSpaceRootInitializationError, PagingPreconditionError, UserPageMappingRegistry,
+    ZeroedFrame, PAGE_SIZE,
 };
 
 const PRESENT: u64 = 1;
@@ -528,12 +528,8 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         super::paging::map_test_user_page_for_teardown(boot_info, &second_root, &active_root)
             .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
-    let (original_inactive, second_active) = switch_address_space_with_user_pages(
-        active_root,
-        second_root,
-        boot_info,
-        &user_registry,
-    )?;
+    let (original_inactive, second_active) =
+        switch_address_space_with_user_pages(active_root, second_root, boot_info, &user_registry)?;
     if second_active.physical_address() != second_physical
         || second_active.recursive_index() != second_recursive_index
     {
