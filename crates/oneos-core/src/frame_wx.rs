@@ -391,7 +391,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     ///
     /// This is an accounting query only; it does not discover unregistered aliases.
     pub fn frame_has_writable_alias(&self, physical_frame: u64) -> bool {
-        if physical_frame == 0 || physical_frame & (PAGE_SIZE - 1) != 0 {
+        if physical_frame & (PAGE_SIZE - 1) != 0 {
             return false;
         }
         self.slots.iter().any(|record| {
@@ -457,8 +457,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
         length: u64,
     ) -> Result<(), FrameWxError> {
         let maximum_address = 1u64 << self.physical_address_bits;
-        if physical_start == 0
-            || physical_start & (PAGE_SIZE - 1) != 0
+        if physical_start & (PAGE_SIZE - 1) != 0
             || length == 0
             || length & (PAGE_SIZE - 1) != 0
             || physical_start
@@ -656,6 +655,57 @@ mod tests {
             large_physical + TWO_MIB,
             PAGE_SIZE,
             FrameWxPermissions::new(false, true),
+        );
+    }
+
+    #[test]
+    fn tracks_physical_frame_zero_and_enforces_wx_in_both_orders() {
+        let mut writable_first = FrameWxRegistry::<4>::new(48).unwrap();
+        add(
+            &mut writable_first,
+            ROOT_A,
+            VA_A,
+            0,
+            PAGE_SIZE,
+            FrameWxPermissions::new(true, false),
+        );
+        assert!(writable_first.frame_has_writable_alias(0));
+        assert!(!writable_first.frame_has_executable_alias(0));
+        assert_eq!(
+            writable_first
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    0,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
+            FrameWxError::PhysicalAliasWxConflict
+        );
+
+        let mut executable_first = FrameWxRegistry::<4>::new(48).unwrap();
+        add(
+            &mut executable_first,
+            ROOT_A,
+            VA_A,
+            0,
+            PAGE_SIZE,
+            FrameWxPermissions::new(false, true),
+        );
+        assert!(executable_first.frame_has_executable_alias(0));
+        assert!(!executable_first.frame_has_writable_alias(0));
+        assert_eq!(
+            executable_first
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    0,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(true, false),
+                )
+                .unwrap_err(),
+            FrameWxError::PhysicalAliasWxConflict
         );
     }
 
@@ -946,7 +996,6 @@ mod tests {
             );
         }
         for (physical, len) in [
-            (0, PAGE_SIZE),
             (FRAME_A + 1, PAGE_SIZE),
             ((1u64 << 48) - PAGE_SIZE, 2 * PAGE_SIZE),
         ] {
