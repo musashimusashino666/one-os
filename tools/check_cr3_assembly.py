@@ -630,7 +630,6 @@ def _cr3_template_sources(
 
 def _cr3_source_is_validated_root(
     block: str,
-    source_token: str,
     placeholder_key: str | None,
     positional_index: int | None,
 ) -> bool:
@@ -675,7 +674,7 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
             return False, f"CR3 inline asm block {index} has no parseable CR3 source operand"
         for source_token, placeholder_key, positional_index in sources:
             if not _cr3_source_is_validated_root(
-                block, source_token, placeholder_key, positional_index
+                block, placeholder_key, positional_index
             ):
                 return False, (
                     f"CR3 inline asm block {index} writes CR3 from {source_token!r}; "
