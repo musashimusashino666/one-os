@@ -40,6 +40,10 @@ PR-context check on the exact latest HEAD before merging. Revisit the approval
 threshold only after an independent reviewer is available; do not present native
 review approval as enforced while its count is zero.
 
+## Address-space teardown work
+
+The current batch user-page teardown API in `oneos-core` is host-testable, but the kernel integration must still provide checked access to private page-table frames belonging to an inactive root and reclaim those tables only after detachment. Follow [the kernel-backed teardown contract](ADDRESS_SPACE_TEARDOWN_PLAN.md) for the required invariants, failure semantics, and QEMU acceptance tests. Do not describe core-only teardown as complete runtime process teardown.
+
 ## Build a BIOS image
 
 Run:
