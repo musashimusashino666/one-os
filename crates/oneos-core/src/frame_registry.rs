@@ -205,6 +205,36 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         Err(FrameRegistryError::FrameNotFound)
     }
 
+    /// Counts published page-table frames whose private owner is this root.
+    ///
+    /// Teardown uses this after walking and reclaiming the reachable private
+    /// tree. A non-zero count means that root-owned table tokens remain tracked
+    /// (for example after an earlier partial failure), so the root must not be
+    /// released and its physical address reused as a new ownership identity.
+    pub fn published_count_for_root(
+        &self,
+        root_physical: u64,
+    ) -> Result<usize, FrameRegistryError> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return Err(FrameRegistryError::InvalidOwnerRoot);
+        }
+
+        Ok(self
+            .slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                    slot,
+                    FrameSlot::Owned {
+                        published: true,
+                        owner_root_physical: Some(owner),
+                        ..
+                    } if *owner == root_physical
+                )
+            })
+            .count())
+    }
+
     /// Returns whether a published frame is recorded as private to this root.
     pub fn contains_published_for_root(&self, root_physical: u64, physical_address: u64) -> bool {
         if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
@@ -491,6 +521,7 @@ mod tests {
         // SAFETY: this test models publication under one exclusive private root.
         unsafe { registry.mark_published_for_root(0x1000, 0x8000) }.unwrap();
         assert!(registry.contains_published_for_root(0x1000, 0x8000));
+        assert_eq!(registry.published_count_for_root(0x1000), Ok(1));
         assert!(!registry.contains_published_for_root(0x2000, 0x8000));
         assert!(!registry.contains_published_for_root(0, 0x8000));
         assert_eq!(
@@ -508,6 +539,7 @@ mod tests {
         let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000) }.unwrap();
         assert_eq!(frame, TestFrame::new(0x8000, 91));
         assert!(!registry.contains(0x8000));
+        assert_eq!(registry.published_count_for_root(0x1000), Ok(0));
         assert_eq!(registry.available_slots(), 1);
     }
 
