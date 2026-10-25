@@ -44,10 +44,7 @@ pub enum PublishedFrameReleaseError<E, T> {
     /// The allocator refused to release the frame; the token has been restored.
     Release(E),
     /// Restoration violated a registry invariant; the caller still owns this token.
-    Restore {
-        error: FrameRegistryError,
-        token: T,
-    },
+    Restore { error: FrameRegistryError, token: T },
 }
 
 /// Fixed-capacity storage for reserved and owned page-table frame tokens.
@@ -545,10 +542,9 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         release: impl FnOnce(T) -> Result<(), (E, T)>,
     ) -> Result<(), PublishedFrameReleaseError<E, T>> {
         // SAFETY: the caller's contract above establishes detachment and TLB safety.
-        let token = unsafe {
-            self.take_published_for_root(root_physical, physical_address, table_level)
-        }
-        .map_err(PublishedFrameReleaseError::Registry)?;
+        let token =
+            unsafe { self.take_published_for_root(root_physical, physical_address, table_level) }
+                .map_err(PublishedFrameReleaseError::Registry)?;
 
         match release(token) {
             Ok(()) => Ok(()),
