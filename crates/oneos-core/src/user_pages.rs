@@ -1059,6 +1059,15 @@ mod tests {
         }
     }
 
+    // The test editor models page tables in ordinary host memory; no test root
+    // is activated in hardware CR3. Production callers must use the unsafe API
+    // only after establishing the root lifetime and TLB invariants.
+    #[allow(unsafe_code)]
+    fn take_test_root_frame(root: AddressSpaceRoot) -> Frame {
+        // SAFETY: this module's mock editor never installs these roots in CR3.
+        unsafe { root.into_frame() }
+    }
+
     #[test]
     fn batch_teardown_unmaps_all_pages_and_returns_owned_frames_after_invalidation() {
         let mut slots = [FrameSegment::EMPTY; 1];
@@ -1121,7 +1130,7 @@ mod tests {
 
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1186,7 +1195,7 @@ mod tests {
 
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1252,7 +1261,7 @@ mod tests {
 
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1278,7 +1287,7 @@ mod tests {
         allocator.free_frame(zeroed.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1301,7 +1310,7 @@ mod tests {
         allocator.free_frame(returned).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1384,8 +1393,8 @@ mod tests {
         disconnect_test_address_space(&root_a, &mut editor);
         disconnect_test_address_space(&root_b, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root_a.into_frame()).unwrap();
-        allocator.free_frame(root_b.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root_a)).unwrap();
+        allocator.free_frame(take_test_root_frame(root_b)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1430,7 +1439,7 @@ mod tests {
         allocator.free_frame(returned_frame).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1467,7 +1476,7 @@ mod tests {
         allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1509,7 +1518,7 @@ mod tests {
         allocator.free_frame(first_frame).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1550,7 +1559,7 @@ mod tests {
         allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1583,7 +1592,7 @@ mod tests {
         allocator.free_frame(returned_frame.into_frame()).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1606,7 +1615,7 @@ mod tests {
         allocator.free_frame(frame).unwrap();
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
@@ -1698,8 +1707,8 @@ mod tests {
         disconnect_test_address_space(&root_a, &mut editor);
         disconnect_test_address_space(&root_b, &mut editor);
         release_test_page_tables(&mut editor);
-        allocator.free_frame(root_a.into_frame()).unwrap();
-        allocator.free_frame(root_b.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root_a)).unwrap();
+        allocator.free_frame(take_test_root_frame(root_b)).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
 }
