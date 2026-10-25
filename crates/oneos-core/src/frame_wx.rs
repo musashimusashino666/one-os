@@ -104,6 +104,8 @@ pub enum FrameWxError {
     InvalidVirtualRange,
     /// A physical range is empty, unaligned, overflowing, or outside MAXPHYADDR.
     InvalidPhysicalRange,
+    /// A queried physical frame is unaligned or lies outside MAXPHYADDR.
+    InvalidPhysicalFrameAddress,
     /// One alias itself requests both writable and executable permissions.
     WritableExecutableAlias,
     /// The root already has an overlapping virtual mapping in the registry.
@@ -134,6 +136,9 @@ impl FrameWxError {
             Self::InvalidRootAddress => b"W^X registry rejected an invalid root address\n",
             Self::InvalidVirtualRange => b"W^X registry rejected an invalid virtual range\n",
             Self::InvalidPhysicalRange => b"W^X registry rejected an invalid physical range\n",
+            Self::InvalidPhysicalFrameAddress => {
+                b"W^X registry rejected an invalid physical frame query\n"
+            }
             Self::WritableExecutableAlias => b"W^X registry rejected a writable executable alias\n",
             Self::VirtualAliasConflict => b"W^X registry rejected overlapping virtual aliases\n",
             Self::PhysicalAliasWxConflict => {
@@ -166,6 +171,49 @@ pub struct FrameWxRemoval {
     registry_id: u64,
     slot: usize,
     generation: u64,
+}
+
+/// A failed reservation operation that retains ownership of the reservation token.
+///
+/// The token can be recovered with into_parts and passed to the registry that
+/// originally issued it, so a wrong-registry call does not strand a reserved slot.
+#[must_use = "recover the reservation token from this error before retrying or cancelling"]
+#[derive(Debug)]
+pub struct FrameWxReservationError {
+    error: FrameWxError,
+    reservation: FrameWxReservation,
+}
+
+impl FrameWxReservationError {
+    /// Returns the failure reason without consuming the token.
+    pub const fn error(&self) -> FrameWxError {
+        self.error
+    }
+
+    /// Returns both the failure reason and the original reservation token.
+    pub fn into_parts(self) -> (FrameWxError, FrameWxReservation) {
+        (self.error, self.reservation)
+    }
+}
+
+/// A failed removal operation that retains ownership of the removal token.
+#[must_use = "recover the removal token from this error before retrying or restoring"]
+#[derive(Debug)]
+pub struct FrameWxRemovalError {
+    error: FrameWxError,
+    removal: FrameWxRemoval,
+}
+
+impl FrameWxRemovalError {
+    /// Returns the failure reason without consuming the token.
+    pub const fn error(&self) -> FrameWxError {
+        self.error
+    }
+
+    /// Returns both the failure reason and the original removal token.
+    pub fn into_parts(self) -> (FrameWxError, FrameWxRemoval) {
+        (self.error, self.removal)
+    }
 }
 
 /// Fixed-capacity registry of physical aliases used to enforce frame-wide W^X.
@@ -292,13 +340,21 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Commits a reservation after the corresponding PTE/range is published.
-    pub fn commit_alias(&mut self, reservation: FrameWxReservation) -> Result<(), FrameWxError> {
-        let record = self.validate_token(
+    ///
+    /// On failure, the error retains the token so the issuing registry can retry.
+    pub fn commit_alias(
+        &mut self,
+        reservation: FrameWxReservation,
+    ) -> Result<(), FrameWxReservationError> {
+        let record = match self.validate_token(
             reservation.registry_id,
             reservation.slot,
             reservation.generation,
             SlotState::Reserved,
-        )?;
+        ) {
+            Ok(record) => record,
+            Err(error) => return Err(FrameWxReservationError { error, reservation }),
+        };
         self.slots[reservation.slot] = AliasRecord {
             state: SlotState::Published,
             ..record
@@ -307,13 +363,20 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Cancels a reservation only when the corresponding alias was not published.
-    pub fn cancel_alias(&mut self, reservation: FrameWxReservation) -> Result<(), FrameWxError> {
-        self.validate_token(
+    ///
+    /// On failure, the error retains the token so the issuing registry can retry.
+    pub fn cancel_alias(
+        &mut self,
+        reservation: FrameWxReservation,
+    ) -> Result<(), FrameWxReservationError> {
+        if let Err(error) = self.validate_token(
             reservation.registry_id,
             reservation.slot,
             reservation.generation,
             SlotState::Reserved,
-        )?;
+        ) {
+            return Err(FrameWxReservationError { error, reservation });
+        }
         self.slots[reservation.slot] = AliasRecord::EMPTY;
         Ok(())
     }
@@ -361,13 +424,21 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Restores a retiring alias when the corresponding unmap operation failed.
-    pub fn cancel_removal(&mut self, removal: FrameWxRemoval) -> Result<(), FrameWxError> {
-        let record = self.validate_token(
+    ///
+    /// On failure, the error retains the token so the issuing registry can retry.
+    pub fn cancel_removal(
+        &mut self,
+        removal: FrameWxRemoval,
+    ) -> Result<(), FrameWxRemovalError> {
+        let record = match self.validate_token(
             removal.registry_id,
             removal.slot,
             removal.generation,
             SlotState::Retiring,
-        )?;
+        ) {
+            Ok(record) => record,
+            Err(error) => return Err(FrameWxRemovalError { error, removal }),
+        };
         self.slots[removal.slot] = AliasRecord {
             state: SlotState::Published,
             ..record
@@ -376,45 +447,54 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Removes a retiring alias after PTE detachment and TLB invalidation complete.
-    pub fn complete_removal(&mut self, removal: FrameWxRemoval) -> Result<(), FrameWxError> {
-        self.validate_token(
+    ///
+    /// On failure, the error retains the token so the issuing registry can retry.
+    pub fn complete_removal(
+        &mut self,
+        removal: FrameWxRemoval,
+    ) -> Result<(), FrameWxRemovalError> {
+        if let Err(error) = self.validate_token(
             removal.registry_id,
             removal.slot,
             removal.generation,
             SlotState::Retiring,
-        )?;
+        ) {
+            return Err(FrameWxRemovalError { error, removal });
+        }
         self.slots[removal.slot] = AliasRecord::EMPTY;
         Ok(())
     }
 
-    /// Returns true when any registered alias overlapping this frame is writable.
+    /// Returns whether a registered alias overlapping this frame is writable.
     ///
-    /// This is an accounting query only; it does not discover unregistered aliases.
-    pub fn frame_has_writable_alias(&self, physical_frame: u64) -> bool {
-        if physical_frame & (PAGE_SIZE - 1) != 0 {
-            return false;
-        }
-        self.slots.iter().any(|record| {
+    /// Rejects invalid query input rather than conflating it with a valid no-alias result.
+    pub fn frame_has_writable_alias(
+        &self,
+        physical_frame: u64,
+    ) -> Result<bool, FrameWxError> {
+        self.validate_physical_frame(physical_frame)?;
+        Ok(self.slots.iter().any(|record| {
             record.is_occupied()
                 && record.permissions.writable
                 && physical_frame >= record.physical_start
                 && physical_frame < record.physical_end()
-        })
+        }))
     }
 
-    /// Returns true when any registered alias overlapping this frame is executable.
+    /// Returns whether a registered alias overlapping this frame is executable.
     ///
-    /// This is an accounting query only; it does not discover unregistered aliases.
-    pub fn frame_has_executable_alias(&self, physical_frame: u64) -> bool {
-        if physical_frame & (PAGE_SIZE - 1) != 0 {
-            return false;
-        }
-        self.slots.iter().any(|record| {
+    /// Rejects invalid query input rather than conflating it with a valid no-alias result.
+    pub fn frame_has_executable_alias(
+        &self,
+        physical_frame: u64,
+    ) -> Result<bool, FrameWxError> {
+        self.validate_physical_frame(physical_frame)?;
+        Ok(self.slots.iter().any(|record| {
             record.is_occupied()
                 && record.permissions.executable
                 && physical_frame >= record.physical_start
                 && physical_frame < record.physical_end()
-        })
+        }))
     }
 
     /// Number of occupied records, including reservations and retiring aliases.
@@ -438,6 +518,14 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
         self.slots
             .iter()
             .any(|record| record.state == SlotState::Reserved)
+    }
+
+    fn validate_physical_frame(&self, physical_frame: u64) -> Result<(), FrameWxError> {
+        let maximum_address = 1u64 << self.physical_address_bits;
+        if physical_frame & (PAGE_SIZE - 1) != 0 || physical_frame >= maximum_address {
+            return Err(FrameWxError::InvalidPhysicalFrameAddress);
+        }
+        Ok(())
     }
 
     fn validate_root(&self, root_physical: u64) -> Result<(), FrameWxError> {
