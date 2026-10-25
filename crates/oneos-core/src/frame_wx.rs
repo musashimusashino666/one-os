@@ -757,8 +757,8 @@ mod tests {
             PAGE_SIZE,
             FrameWxPermissions::new(true, false),
         );
-        assert!(writable_first.frame_has_writable_alias(0));
-        assert!(!writable_first.frame_has_executable_alias(0));
+        assert!(writable_first.frame_has_writable_alias(0).unwrap());
+        assert!(!writable_first.frame_has_executable_alias(0).unwrap());
         assert_eq!(
             writable_first
                 .reserve_alias_range(
@@ -781,8 +781,8 @@ mod tests {
             PAGE_SIZE,
             FrameWxPermissions::new(false, true),
         );
-        assert!(executable_first.frame_has_executable_alias(0));
-        assert!(!executable_first.frame_has_writable_alias(0));
+        assert!(executable_first.frame_has_executable_alias(0).unwrap());
+        assert!(!executable_first.frame_has_writable_alias(0).unwrap());
         assert_eq!(
             executable_first
                 .reserve_alias_range(
@@ -795,6 +795,98 @@ mod tests {
                 .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
+    }
+
+    #[test]
+    fn alias_queries_reject_unaligned_and_out_of_range_frame_addresses() {
+        let registry = FrameWxRegistry::<4>::new(48).unwrap();
+        for physical_frame in [1, 1u64 << 48] {
+            assert_eq!(
+                registry.frame_has_writable_alias(physical_frame),
+                Err(FrameWxError::InvalidPhysicalFrameAddress)
+            );
+            assert_eq!(
+                registry.frame_has_executable_alias(physical_frame),
+                Err(FrameWxError::InvalidPhysicalFrameAddress)
+            );
+        }
+
+        assert_eq!(registry.frame_has_writable_alias(0), Ok(false));
+        assert_eq!(registry.frame_has_executable_alias(0), Ok(false));
+    }
+
+    #[test]
+    fn wrong_registry_reservation_errors_retain_the_token() {
+        let mut owner = FrameWxRegistry::<4>::new(48).unwrap();
+        let mut other = FrameWxRegistry::<4>::new(48).unwrap();
+
+        let reservation = owner
+            .reserve_alias_range(
+                ROOT_A,
+                VA_A,
+                FRAME_A,
+                PAGE_SIZE,
+                FrameWxPermissions::new(true, false),
+            )
+            .unwrap();
+        let error = other.commit_alias(reservation).unwrap_err();
+        assert_eq!(error.error(), FrameWxError::InvalidReservation);
+        assert_eq!(other.occupied_slots(), 0);
+        assert_eq!(owner.occupied_slots(), 1);
+        let (reason, reservation) = error.into_parts();
+        assert_eq!(reason, FrameWxError::InvalidReservation);
+        owner.commit_alias(reservation).unwrap();
+        assert_eq!(owner.published_aliases(), 1);
+
+        let reservation = owner
+            .reserve_alias_range(
+                ROOT_A,
+                VA_B,
+                FRAME_B,
+                PAGE_SIZE,
+                FrameWxPermissions::new(false, false),
+            )
+            .unwrap();
+        let error = other.cancel_alias(reservation).unwrap_err();
+        assert_eq!(error.error(), FrameWxError::InvalidReservation);
+        let (reason, reservation) = error.into_parts();
+        assert_eq!(reason, FrameWxError::InvalidReservation);
+        owner.cancel_alias(reservation).unwrap();
+        assert_eq!(owner.occupied_slots(), 1);
+        assert_eq!(other.occupied_slots(), 0);
+    }
+
+    #[test]
+    fn wrong_registry_removal_errors_retain_the_token() {
+        let mut owner = FrameWxRegistry::<4>::new(48).unwrap();
+        let mut other = FrameWxRegistry::<4>::new(48).unwrap();
+        add(
+            &mut owner,
+            ROOT_A,
+            VA_A,
+            FRAME_A,
+            PAGE_SIZE,
+            FrameWxPermissions::new(true, false),
+        );
+
+        let removal = owner.begin_removal(ROOT_A, VA_A).unwrap();
+        let error = other.cancel_removal(removal).unwrap_err();
+        assert_eq!(error.error(), FrameWxError::InvalidReservation);
+        assert_eq!(other.occupied_slots(), 0);
+        assert_eq!(owner.occupied_slots(), 1);
+        let (reason, removal) = error.into_parts();
+        assert_eq!(reason, FrameWxError::InvalidReservation);
+        owner.cancel_removal(removal).unwrap();
+        assert_eq!(owner.published_aliases(), 1);
+
+        let removal = owner.begin_removal(ROOT_A, VA_A).unwrap();
+        let error = other.complete_removal(removal).unwrap_err();
+        assert_eq!(error.error(), FrameWxError::InvalidReservation);
+        let (reason, removal) = error.into_parts();
+        assert_eq!(reason, FrameWxError::InvalidReservation);
+        owner.complete_removal(removal).unwrap();
+        assert_eq!(owner.occupied_slots(), 0);
+        assert_eq!(other.occupied_slots(), 0);
     }
 
     #[test]
@@ -908,7 +1000,7 @@ mod tests {
         registry.cancel_removal(removal).unwrap();
 
         assert_eq!(registry.published_aliases(), 1);
-        assert!(registry.frame_has_writable_alias(FRAME_A));
+        assert!(registry.frame_has_writable_alias(FRAME_A).unwrap());
         assert_eq!(
             registry
                 .reserve_alias_range(
@@ -942,8 +1034,8 @@ mod tests {
             PAGE_SIZE,
             FrameWxPermissions::new(true, false),
         );
-        assert!(registry.frame_has_writable_alias(FRAME_A));
-        assert!(!registry.frame_has_executable_alias(FRAME_A));
+        assert!(registry.frame_has_writable_alias(FRAME_A).unwrap());
+        assert!(!registry.frame_has_executable_alias(FRAME_A).unwrap());
 
         add(
             &mut registry,
@@ -964,8 +1056,8 @@ mod tests {
             PAGE_SIZE,
             FrameWxPermissions::new(false, true),
         );
-        assert!(registry.frame_has_executable_alias(FRAME_A));
-        assert!(!registry.frame_has_writable_alias(FRAME_A));
+        assert!(registry.frame_has_executable_alias(FRAME_A).unwrap());
+        assert!(!registry.frame_has_writable_alias(FRAME_A).unwrap());
     }
 
     #[test]
