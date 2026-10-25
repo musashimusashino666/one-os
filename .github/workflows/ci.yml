@@ -119,6 +119,25 @@ jobs:
               --exit-status "$status"
           done
 
+      - name: Verify uncertain-CR3 root token leak policy in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-root-leak-safety
+          log="$CARGO_TARGET_DIR/qemu-root-leak-safety.log"
+          set +e
+          timeout 10s qemu-system-x86_64 \
+            -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-root-leak-safety-test-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          grep -Fx "ONE OS ROOT LEAK SAFETY PASS" "$log"
+          python3 tools/check_qemu_serial.py \
+            --log "$log" \
+            --exit-status "$status"
+
       - name: Verify exception diagnostics in QEMU
         shell: bash
         run: |
