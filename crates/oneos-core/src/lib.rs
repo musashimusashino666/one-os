@@ -36,7 +36,8 @@ pub use frame_registry::{
     FrameRegistryError, FrameToken, PageTableFrameRegistry, PublishedFrameReleaseError,
 };
 pub use frame_wx::{
-    FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxReservation,
+    FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxRemovalError,
+    FrameWxReservation, FrameWxReservationError,
 };
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
