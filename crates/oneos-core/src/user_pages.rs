@@ -155,7 +155,6 @@ pub enum UserPageMappingError {
     Translation(PageTableError),
 }
 
-
 /// Completed progress for a batch of user-data page removals.
 ///
 /// Each returned frame has already been detached from its leaf mapping and its
@@ -561,7 +560,6 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     Ok((unmapped, frame))
 }
 
-
 /// Validates that one registry-owned virtual address still maps the exact
 /// writable, user-accessible, NX 4 KiB frame recorded by the ownership token.
 fn preflight_user_data_mapping<E: UserAddressSpaceEditor>(
@@ -679,9 +677,9 @@ pub fn unmap_all_user_data_pages<E: UserAddressSpaceEditor, const CAPACITY: usiz
 #[cfg(test)]
 mod tests {
     use super::{
-        initialize_user_frame, map_user_data_page, unmap_all_user_data_pages,
-        unmap_user_data_page, UserAddressSpaceEditor, UserFrameInitializationError,
-        UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, ZeroedFrame,
+        initialize_user_frame, map_user_data_page, unmap_all_user_data_pages, unmap_user_data_page,
+        UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+        UserPageMappingError, UserPageMappingRegistry, ZeroedFrame,
     };
     use crate::{
         map_4k, unmap_4k, AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator,
@@ -771,7 +769,10 @@ mod tests {
                 return;
             }
             let slot = self.data_frame_count;
-            assert!(slot < self.data_frames.len(), "test frame registry capacity exceeded");
+            assert!(
+                slot < self.data_frames.len(),
+                "test frame registry capacity exceeded"
+            );
             self.data_frames[slot] = physical_address;
             self.data_frame_count += 1;
             self.ensure_frame_memory(physical_address)
@@ -1095,13 +1096,15 @@ mod tests {
             .expect_err("batch teardown must reject a registry/table mismatch");
         assert!(matches!(
             failure.error(),
-            UserPageMappingError::Translation(_)
-                | UserPageMappingError::MappingInvariantViolation
+            UserPageMappingError::Translation(_) | UserPageMappingError::MappingInvariantViolation
         ));
         assert_eq!(failure.completed_pages(), 0);
         assert!(registry.is_mapped(0x4000));
         assert!(registry.is_mapped(0x8000));
-        assert_eq!(editor.invalidations, 2, "preflight must not invalidate or mutate");
+        assert_eq!(
+            editor.invalidations, 2,
+            "preflight must not invalidate or mutate"
+        );
 
         editor.set_entry(
             0x4000,
