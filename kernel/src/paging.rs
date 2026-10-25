@@ -598,6 +598,7 @@ fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64
             FrameRegistryError::InvalidOwnerRoot
             | FrameRegistryError::PublishedOwnerMismatch
             | FrameRegistryError::NotPublished
+            | FrameRegistryError::NotDetached
             | FrameRegistryError::InvalidReservation
             | FrameRegistryError::DuplicateFrameAddress
             | FrameRegistryError::PublishedFrame,
@@ -622,7 +623,8 @@ fn release_registered_table_frame(physical_address: u64) {
                 | FrameRegistryError::DuplicateFrameAddress
                 | FrameRegistryError::InvalidOwnerRoot
                 | FrameRegistryError::PublishedOwnerMismatch
-                | FrameRegistryError::NotPublished,
+                | FrameRegistryError::NotPublished
+                | FrameRegistryError::NotDetached,
             ) => {
                 panic!("page-table frame registry state is invalid")
             }
@@ -1606,6 +1608,65 @@ fn verify_private_table_empty(
     Ok(())
 }
 
+fn release_pending_detached_private_table(
+    table_physical: u64,
+    table_level: u8,
+    editor: &mut KernelInactiveAddressSpaceEditor<'_>,
+) -> Result<(), PagingError> {
+    // A previously attempted release may have left this frame detached and
+    // registry-owned. It is no longer accepted by table_pointer(), so validate
+    // its exact physical-memory-offset alias directly before retrying release.
+    let alias = editor
+        .active_offset_alias(table_physical)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    let entries = alias.cast::<u64>();
+    for index in 0..PML4_ENTRY_COUNT {
+        // SAFETY: active_offset_alias validates a writable alias to the entire
+        // allocated 4 KiB frame. Every word must remain zero while detached.
+        if unsafe { ptr::read_volatile(entries.add(index)) } != 0 {
+            return Err(PagingError::PageTableFrameReleaseFailed);
+        }
+    }
+
+    // SAFETY: the frame was marked detached only after its parent entry was
+    // cleared, the table was emptied, and the inactive-root/TLB contract held.
+    let frame = unsafe {
+        (&mut *TABLE_FRAMES.registry.get()).take_published_for_root(
+            editor.target_root_physical,
+            table_physical,
+            table_level,
+        )
+    }
+    .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
+
+    match super::memory::free_frame(frame) {
+        Ok(()) => Ok(()),
+        Err((_error, frame)) => {
+            // The allocator explicitly returned ownership of the still-allocated
+            // frame. Restore the detached record so a later teardown retry can
+            // find it without a parent entry. Single-core execution with maskable
+            // interrupts disabled guarantees the just-vacated registry slot remains
+            // available unless an invariant has already been violated.
+            match unsafe {
+                (&mut *TABLE_FRAMES.registry.get()).restore_detached_published_for_root(
+                    frame,
+                    editor.target_root_physical,
+                    table_level,
+                )
+            } {
+                Ok(()) => Err(PagingError::PageTableFrameReleaseFailed),
+                Err((_restore_error, frame)) => {
+                    // Restoration can fail only after an ownership/registry
+                    // invariant violation. Fail-stop rather than continue with an
+                    // allocator-owned frame that no longer has a registry record.
+                    core::mem::forget(frame);
+                    panic!("failed to restore detached page-table ownership after free failure");
+                }
+            }
+        }
+    }
+}
+
 fn release_detached_private_table(
     table_physical: u64,
     table_level: u8,
@@ -1628,19 +1689,35 @@ fn release_detached_private_table(
         }
     }
 
-    // SAFETY: the caller detached this table from its only private parent,
-    // recursively removed all descendants, and proved no target-root translation
-    // remains. Registry ownership alone is not being treated as reachability proof.
-    let frame = unsafe {
-        (&mut *TABLE_FRAMES.registry.get()).take_published_for_root(
+    // SAFETY: the parent entry is already clear, the table is empty, and the
+    // target root is inactive with the required translation flush completed.
+    unsafe {
+        (&mut *TABLE_FRAMES.registry.get()).mark_published_table_detached_for_root(
             editor.target_root_physical,
             table_physical,
             table_level,
         )
     }
     .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
-    super::memory::free_frame(frame)
-        .map_err(|(_error, _frame)| PagingError::PageTableFrameReleaseFailed)
+
+    release_pending_detached_private_table(table_physical, table_level, editor)
+}
+
+fn reclaim_pending_detached_private_tables(
+    root_physical: u64,
+    editor: &mut KernelInactiveAddressSpaceEditor<'_>,
+) -> Result<(), PagingError> {
+    loop {
+        // A release failure restores the token as detached. On a subsequent
+        // teardown attempt there is no parent entry to rediscover it, so consume
+        // this root-scoped pending list before deciding the root is reclaimable.
+        let pending = unsafe { &*TABLE_FRAMES.registry.get() }
+            .detached_table_for_root(root_physical, 0);
+        let Some((physical_address, table_level)) = pending else {
+            return Ok(());
+        };
+        release_pending_detached_private_table(physical_address, table_level, editor)?;
+    }
 }
 
 fn reclaim_private_pd(
@@ -1830,6 +1907,7 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
     }
 
     reclaim_private_user_tables(root.physical_address(), &mut editor)?;
+    reclaim_pending_detached_private_tables(root.physical_address(), &mut editor)?;
 
     // Do not release the PML4 or allow its physical address to be reused while
     // the registry still holds private table ownership records for this root.
