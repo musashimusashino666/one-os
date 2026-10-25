@@ -358,20 +358,6 @@ fn create_inactive_address_space_root(
     Ok(root)
 }
 
-/// Switches between validated roots that have no private user mappings.
-///
-/// This is limited to the existing single-CPU, maskable-interrupts-disabled
-/// kernel contract. A failed or ambiguous switch must stop the caller; the root
-/// tokens are never returned to the allocator on an error.
-#[inline(never)]
-fn switch_address_space(
-    current: ActiveAddressSpaceRoot,
-    next: AddressSpaceRoot,
-    boot_info: &BootInfo,
-) -> Result<(AddressSpaceRoot, ActiveAddressSpaceRoot), AddressSpaceError> {
-    switch_address_space_inner(current, next, boot_info, false)
-}
-
 /// Switches to a root with registered user mappings after a complete kernel-side
 /// preflight of its private lower-half page-table tree.
 fn switch_address_space_with_user_pages<const CAPACITY: usize>(
@@ -382,11 +368,11 @@ fn switch_address_space_with_user_pages<const CAPACITY: usize>(
 ) -> Result<(AddressSpaceRoot, ActiveAddressSpaceRoot), AddressSpaceError> {
     super::paging::validate_inactive_user_address_space(boot_info, &next, &current, registry)
         .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-    switch_address_space_inner(current, next, boot_info, true)
+    switch_address_space(current, next, boot_info, true)
 }
 
 #[inline(never)]
-fn switch_address_space_inner(
+fn switch_address_space(
     current: ActiveAddressSpaceRoot,
     next: AddressSpaceRoot,
     boot_info: &BootInfo,
@@ -549,7 +535,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     }
 
     let (second_inactive, restored_active) =
-        switch_address_space(second_active, original_inactive, boot_info)?;
+        switch_address_space(second_active, original_inactive, boot_info, false)?;
     if restored_active.physical_address() != original_physical
         || restored_active.recursive_index() != original_recursive_index
         || second_inactive.physical_address() != second_physical
