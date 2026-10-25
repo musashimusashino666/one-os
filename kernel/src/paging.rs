@@ -31,10 +31,6 @@ const EFER_NXE: u64 = 1 << 11;
 const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
 const CPUID_PHYSICAL_ADDRESS_WIDTH: u32 = 0x8000_0008;
 const WRITABLE: u64 = 1 << 1;
-#[cfg(any(
-    feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
-))]
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
@@ -46,6 +42,8 @@ const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const TABLE_FRAME_CAPACITY: usize = 512;
+const PML4_ENTRY_COUNT: usize = 512;
+const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
 
@@ -1030,7 +1028,6 @@ struct KernelInactiveAddressSpaceEditor<'a> {
     active_root_physical: u64,
     active_recursive_index: u16,
     target_root_physical: u64,
-    target_recursive_index: u16,
     physical_address_bits: u8,
     staged_frames: [Option<u64>; 3],
 }
@@ -1105,7 +1102,6 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
             active_root_physical,
             active_recursive_index,
             target_root_physical,
-            target_recursive_index,
             physical_address_bits,
             staged_frames: [None; 3],
         };
@@ -1596,11 +1592,12 @@ fn preflight_private_pt<const CAPACITY: usize>(
 
 fn verify_private_table_empty(
     table_physical: u64,
+    table_level: u8,
     editor: &mut KernelInactiveAddressSpaceEditor<'_>,
 ) -> Result<(), PagingError> {
     for index in 0..PML4_ENTRY_COUNT {
         let entry = editor
-            .read_entry(table_physical, index, 1)
+            .read_entry(table_physical, index, table_level)
             .ok_or(PagingError::InactivePageTableUnavailable)?;
         if entry != 0 {
             return Err(PagingError::InactivePageTableMalformed);
@@ -1616,7 +1613,7 @@ fn release_detached_private_table(
     let pointer = editor
         .table_pointer(table_physical)
         .ok_or(PagingError::InactivePageTableUnavailable)?;
-    verify_private_table_empty(table_physical, editor)?;
+    verify_private_table_empty(table_physical, 1, editor)?;
 
     // The parent entry was cleared before this function was entered; the table
     // is empty and the target root is inactive under the validated TLB contract.
@@ -1664,11 +1661,11 @@ fn reclaim_private_pd(
         if !editor.is_private_table(pt_physical) {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
-        verify_private_table_empty(pt_physical, editor)?;
+        verify_private_table_empty(pt_physical, 1, editor)?;
         editor.write_entry(pd_physical, pd_index, 2, 0);
         release_detached_private_table(pt_physical, editor)?;
     }
-    verify_private_table_empty(pd_physical, editor)
+    verify_private_table_empty(pd_physical, 2, editor)
 }
 
 fn reclaim_private_pdpt(
@@ -1696,7 +1693,7 @@ fn reclaim_private_pdpt(
         editor.write_entry(pdpt_physical, pdpt_index, 3, 0);
         release_detached_private_table(pd_physical, editor)?;
     }
-    verify_private_table_empty(pdpt_physical, editor)
+    verify_private_table_empty(pdpt_physical, 3, editor)
 }
 
 fn reclaim_private_user_tables(
