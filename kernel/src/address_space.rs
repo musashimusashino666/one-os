@@ -371,6 +371,12 @@ fn switch_address_space_with_user_pages<const CAPACITY: usize>(
     switch_address_space(current, next, boot_info, true)
 }
 
+/// Performs the validated hardware CR3 transition.
+///
+/// When `allow_user_mappings` is true, the caller must have just completed
+/// `validate_inactive_user_address_space` for this exact root and registry.
+/// Keep the actual CR4.PGE-disable, CR3-write, and CR4-restore sequence in this
+/// function so CI inspects the instructions that execute on the real path.
 #[inline(never)]
 fn switch_address_space(
     current: ActiveAddressSpaceRoot,
