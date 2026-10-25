@@ -565,7 +565,9 @@ pub fn verify_runtime_address_space_switch_smoke_test(
                 if failure.completed_pages() == 0 {
                     super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
                 } else {
-                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n");
+                    super::serial_write(
+                        b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
+                    );
                 }
             }
         }
