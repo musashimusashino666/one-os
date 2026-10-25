@@ -1087,8 +1087,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(registry.mapped_physical_address(0x4000), Some(first_physical));
-        assert_eq!(registry.mapped_physical_address(0x8000), Some(second_physical));
+        assert_eq!(
+            registry.mapped_physical_address(0x4000),
+            Some(first_physical)
+        );
+        assert_eq!(
+            registry.mapped_physical_address(0x8000),
+            Some(second_physical)
+        );
         assert_eq!(registry.mapped_physical_address(0xc000), None);
         assert_eq!(registry.mapped_entry_at(0), Some((0x4000, first_physical)));
         assert_eq!(registry.mapped_entry_at(1), Some((0x8000, second_physical)));
