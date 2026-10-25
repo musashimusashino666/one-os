@@ -1711,8 +1711,8 @@ fn reclaim_pending_detached_private_tables(
         // A release failure restores the token as detached. On a subsequent
         // teardown attempt there is no parent entry to rediscover it, so consume
         // this root-scoped pending list before deciding the root is reclaimable.
-        let pending = unsafe { &*TABLE_FRAMES.registry.get() }
-            .detached_table_for_root(root_physical, 0);
+        let pending =
+            unsafe { &*TABLE_FRAMES.registry.get() }.detached_table_for_root(root_physical, 0);
         let Some((physical_address, table_level)) = pending else {
             return Ok(());
         };
