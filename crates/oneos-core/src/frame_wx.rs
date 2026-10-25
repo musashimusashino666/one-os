@@ -426,10 +426,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     /// Restores a retiring alias when the corresponding unmap operation failed.
     ///
     /// On failure, the error retains the token so the issuing registry can retry.
-    pub fn cancel_removal(
-        &mut self,
-        removal: FrameWxRemoval,
-    ) -> Result<(), FrameWxRemovalError> {
+    pub fn cancel_removal(&mut self, removal: FrameWxRemoval) -> Result<(), FrameWxRemovalError> {
         let record = match self.validate_token(
             removal.registry_id,
             removal.slot,
@@ -449,10 +446,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     /// Removes a retiring alias after PTE detachment and TLB invalidation complete.
     ///
     /// On failure, the error retains the token so the issuing registry can retry.
-    pub fn complete_removal(
-        &mut self,
-        removal: FrameWxRemoval,
-    ) -> Result<(), FrameWxRemovalError> {
+    pub fn complete_removal(&mut self, removal: FrameWxRemoval) -> Result<(), FrameWxRemovalError> {
         if let Err(error) = self.validate_token(
             removal.registry_id,
             removal.slot,
@@ -468,10 +462,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     /// Returns whether a registered alias overlapping this frame is writable.
     ///
     /// Rejects invalid query input rather than conflating it with a valid no-alias result.
-    pub fn frame_has_writable_alias(
-        &self,
-        physical_frame: u64,
-    ) -> Result<bool, FrameWxError> {
+    pub fn frame_has_writable_alias(&self, physical_frame: u64) -> Result<bool, FrameWxError> {
         self.validate_physical_frame(physical_frame)?;
         Ok(self.slots.iter().any(|record| {
             record.is_occupied()
@@ -484,10 +475,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     /// Returns whether a registered alias overlapping this frame is executable.
     ///
     /// Rejects invalid query input rather than conflating it with a valid no-alias result.
-    pub fn frame_has_executable_alias(
-        &self,
-        physical_frame: u64,
-    ) -> Result<bool, FrameWxError> {
+    pub fn frame_has_executable_alias(&self, physical_frame: u64) -> Result<bool, FrameWxError> {
         self.validate_physical_frame(physical_frame)?;
         Ok(self.slots.iter().any(|record| {
             record.is_occupied()
