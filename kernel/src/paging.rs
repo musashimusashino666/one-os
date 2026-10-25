@@ -583,9 +583,12 @@ fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition. Lower-half page-table paths
     // are private to the root whose entry was just published.
-    match unsafe { &mut *TABLE_FRAMES.registry.get() }
-        .mark_published_for_root(root_physical, physical_address)
-    {
+    // SAFETY: the caller only records frames immediately after publishing
+    // them in the target root's exclusive lower-half page-table tree.
+    match unsafe {
+        (&mut *TABLE_FRAMES.registry.get())
+            .mark_published_for_root(root_physical, physical_address)
+    } {
         Ok(()) => {}
         Err(FrameRegistryError::FrameNotFound) => {
             panic!("private lower-half page table is missing from the frame registry")
@@ -1245,10 +1248,14 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         // SAFETY: the new intermediate table is being linked exclusively into
         // the supplied root's private lower-half subtree. The mapping engine
         // staged and zero-initialized it before publishing the first parent.
-        if unsafe { &mut *TABLE_FRAMES.registry.get() }
-            .mark_published_for_root(self.target_root_physical, table_physical)
-            .is_err()
-        {
+        // SAFETY: this subtree is being linked only beneath the target
+        // root's private lower-half PML4 entry, and each child was allocated by
+        // this editor, zeroed before publication, and reached through that tree.
+        if unsafe {
+            (&mut *TABLE_FRAMES.registry.get())
+                .mark_published_for_root(self.target_root_physical, table_physical)
+                .is_err()
+        } {
             panic!("private page-table root ownership invariant violated");
         }
         if !self.remove_staged_table(table_physical) {
