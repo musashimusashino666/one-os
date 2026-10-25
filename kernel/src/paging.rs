@@ -1223,7 +1223,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         Some(alias.cast::<u64>())
     }
 
-remove dead method    fn publish_staged_subtree(&mut self, table_physical: u64, table_level: u8) {
+fn publish_staged_subtree(&mut self, table_physical: u64, table_level: u8) {
         if !(1..=3).contains(&table_level) || !self.is_staged_table(table_physical) {
             panic!("attempted to publish an untracked private page-table frame");
         }
