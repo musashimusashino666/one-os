@@ -92,6 +92,67 @@ impl AliasRecord {
     }
 }
 
+/// Error returned by the physical-frame-wide W^X alias registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameWxError {
+    /// MAXPHYADDR is outside the kernel's supported 32..=52-bit range.
+    InvalidPhysicalAddressWidth,
+    /// A root physical address is zero, unaligned, or outside MAXPHYADDR.
+    InvalidRootAddress,
+    /// A virtual range is empty, unaligned, overflowing, non-canonical, or
+    /// crosses between the lower and upper canonical halves.
+    InvalidVirtualRange,
+    /// A physical range is empty, unaligned, overflowing, or outside MAXPHYADDR.
+    InvalidPhysicalRange,
+    /// One alias itself requests both writable and executable permissions.
+    WritableExecutableAlias,
+    /// The root already has an overlapping virtual mapping in the registry.
+    VirtualAliasConflict,
+    /// Another registered, reserved, or retiring alias has conflicting W^X rights.
+    PhysicalAliasWxConflict,
+    /// No empty registry slot is available.
+    CapacityExhausted,
+    /// A registry identity or reservation generation could not be advanced safely.
+    IdentifierExhausted,
+    /// The supplied token does not identify a live reservation in this registry.
+    InvalidReservation,
+    /// No published alias exists for the specified root and virtual start.
+    AliasNotFound,
+    /// The matching alias exists but has not been published.
+    AliasNotPublished,
+    /// The matching alias is already being retired.
+    AliasAlreadyRetiring,
+}
+
+impl FrameWxError {
+    /// Allocation-free diagnostic text for callers that need to report a denial.
+    pub const fn message(self) -> &'static [u8] {
+        match self {
+            Self::InvalidPhysicalAddressWidth => {
+                b"W^X registry received an unsupported physical-address width\n"
+            }
+            Self::InvalidRootAddress => b"W^X registry rejected an invalid root address\n",
+            Self::InvalidVirtualRange => b"W^X registry rejected an invalid virtual range\n",
+            Self::InvalidPhysicalRange => b"W^X registry rejected an invalid physical range\n",
+            Self::WritableExecutableAlias => {
+                b"W^X registry rejected a writable executable alias\n"
+            }
+            Self::VirtualAliasConflict => b"W^X registry rejected overlapping virtual aliases\n",
+            Self::PhysicalAliasWxConflict => {
+                b"W^X registry rejected conflicting physical aliases\n"
+            }
+            Self::CapacityExhausted => b"W^X alias registry capacity exhausted\n",
+            Self::IdentifierExhausted => b"W^X alias registry identifier exhausted\n",
+            Self::InvalidReservation => b"W^X alias registry reservation is invalid\n",
+            Self::AliasNotFound => b"W^X alias registry mapping was not found\n",
+            Self::AliasNotPublished => b"W^X alias registry mapping is not published\n",
+            Self::AliasAlreadyRetiring => {
+                b"W^X alias registry mapping is already retiring\n"
+            }
+        }
+    }
+}
+
 /// Token for a reserved alias. It is intentionally neither Copy nor Clone.
 #[must_use = "a W^X reservation must be committed or cancelled"]
 #[derive(Debug)]
