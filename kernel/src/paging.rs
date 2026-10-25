@@ -579,15 +579,17 @@ fn mark_table_frame_published(physical_address: u64) {
     let _ = unsafe { &mut *TABLE_FRAMES.registry.get() }.mark_published(physical_address);
 }
 
-fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64) {
+fn mark_table_frame_published_for_root(
+    root_physical: u64,
+    physical_address: u64,
+    table_level: u8,
+) {
     // SAFETY: registry mutations are serialized by the single-core,
-    // interrupts-disabled bootstrap precondition. Lower-half page-table paths
-    // are private to the root whose entry was just published.
-    // SAFETY: the caller only records frames immediately after publishing
-    // them in the target root's exclusive lower-half page-table tree.
+    // interrupts-disabled bootstrap precondition. The caller has just published
+    // this table at the indicated level in the root's private lower-half tree.
     match unsafe {
         (&mut *TABLE_FRAMES.registry.get())
-            .mark_published_for_root(root_physical, physical_address)
+            .mark_published_for_root(root_physical, physical_address, table_level)
     } {
         Ok(()) => {}
         Err(FrameRegistryError::FrameNotFound) => {
@@ -887,7 +889,11 @@ impl<'a> KernelPageTableEditor<'a> {
         for level in 1..=3 {
             if let Some(physical_address) = self.reachable_table_physical(level) {
                 if self.target_virtual_address < USER_VIRTUAL_ADDRESS_LIMIT {
-                    mark_table_frame_published_for_root(self.root_table_physical, physical_address);
+                    mark_table_frame_published_for_root(
+                        self.root_table_physical,
+                        physical_address,
+                        level,
+                    );
                 } else {
                     mark_table_frame_published(physical_address);
                 }
@@ -1111,7 +1117,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         };
 
         let root_pointer = editor
-            .table_pointer(target_root_physical)
+            .table_pointer(target_root_physical, 4)
             .ok_or(PagingError::InactivePageTableUnavailable)?;
         // SAFETY: table_pointer validated the full target root frame as an
         // allocator-owned Usable frame and verified its exact writable,
@@ -1162,15 +1168,12 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         }
     }
 
-    fn is_published_table_for_root(&self, physical_address: u64) -> bool {
+    fn is_private_table(&self, physical_address: u64, table_level: u8) -> bool {
         // SAFETY: registry reads and writes share the single-CPU,
         // interrupts-disabled mutation contract.
         unsafe { &*TABLE_FRAMES.registry.get() }
-            .contains_published_for_root(self.target_root_physical, physical_address)
-    }
-
-    fn is_private_table(&self, physical_address: u64) -> bool {
-        self.is_published_table_for_root(physical_address)
+            .published_table_level_for_root(self.target_root_physical, physical_address)
+            == Some(table_level)
     }
 
     /// Obtains a validated writable supervisor-only NX alias for one allocated
@@ -1201,7 +1204,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         active_editor.offset_alias(physical_address)
     }
 
-    fn table_pointer(&self, table_physical: u64) -> Option<*mut u64> {
+    fn table_pointer(&self, table_physical: u64, table_level: u8) -> Option<*mut u64> {
         if !valid_physical_page(table_physical, self.physical_address_bits)
             || !self.is_usable_frame(table_physical)
             || !matches!(super::memory::is_frame_allocated(table_physical), Ok(true))
@@ -1209,8 +1212,10 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
             return None;
         }
 
-        if table_physical != self.target_root_physical
-            && !self.is_private_table(table_physical)
+        let table_is_target_root =
+            table_physical == self.target_root_physical && table_level == 4;
+        if !table_is_target_root
+            && !self.is_private_table(table_physical, table_level)
             && !self.is_staged_table(table_physical)
         {
             return None;
@@ -1233,7 +1238,11 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         // this editor, zeroed before publication, and reached through that tree.
         if unsafe {
             (&mut *TABLE_FRAMES.registry.get())
-                .mark_published_for_root(self.target_root_physical, table_physical)
+                .mark_published_for_root(
+                    self.target_root_physical,
+                    table_physical,
+                    table_level,
+                )
                 .is_err()
         } {
             panic!("private page-table root ownership invariant violated");
@@ -1247,7 +1256,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         }
 
         let table = self
-            .table_pointer(table_physical)
+            .table_pointer(table_physical, table_level)
             .unwrap_or_else(|| panic!("published private table is not accessible"));
         for index in 0..PML4_ENTRY_COUNT {
             // SAFETY: table_pointer validated this complete table frame.
@@ -1269,13 +1278,14 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
     fn validate_private_child(
         &self,
         physical_address: u64,
+        expected_table_level: u8,
         visited: &[u64; TABLE_FRAME_CAPACITY],
         visited_count: usize,
     ) -> Result<(), PagingError> {
         if physical_address == 0
             || physical_address == self.target_root_physical
             || !valid_physical_page(physical_address, self.physical_address_bits)
-            || !self.is_private_table(physical_address)
+            || !self.is_private_table(physical_address, expected_table_level)
         {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
@@ -1314,7 +1324,7 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
         if index >= PML4_ENTRY_COUNT || !(1..=4).contains(&level) {
             return None;
         }
-        let table = self.table_pointer(table_physical)?;
+        let table = self.table_pointer(table_physical, level)?;
         // SAFETY: table_pointer validated ownership and the complete checked
         // supervisor-writable alias for this physical table frame.
         Some(unsafe { ptr::read_volatile(table.add(index)) })
@@ -1324,10 +1334,10 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
         if index >= PML4_ENTRY_COUNT || !(1..=4).contains(&level) {
             panic!("invalid inactive page-table write index or level");
         }
-        let is_reachable_parent = table_physical == self.target_root_physical
-            || self.is_published_table_for_root(table_physical);
+        let is_reachable_parent = (table_physical == self.target_root_physical && level == 4)
+            || self.is_private_table(table_physical, level);
         let table = self
-            .table_pointer(table_physical)
+            .table_pointer(table_physical, level)
             .unwrap_or_else(|| panic!("inactive page-table write destination failed preflight"));
         // SAFETY: all existing paths were validated before mutation; staged
         // table frames are private, allocated, zeroed, and accessed through the
@@ -1434,7 +1444,7 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pdpt_physical = entry & PHYSICAL_ADDRESS_MASK;
-        editor.validate_private_child(pdpt_physical, &visited, visited_count)?;
+        editor.validate_private_child(pdpt_physical, 3, &visited, visited_count)?;
         visited[visited_count] = pdpt_physical;
         visited_count += 1;
         preflight_private_pdpt(
@@ -1475,7 +1485,7 @@ fn preflight_private_pdpt<const CAPACITY: usize>(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pd_physical = entry & PHYSICAL_ADDRESS_MASK;
-        editor.validate_private_child(pd_physical, visited, *visited_count)?;
+        editor.validate_private_child(pd_physical, 2, visited, *visited_count)?;
         visited[*visited_count] = pd_physical;
         *visited_count += 1;
         preflight_private_pd(
@@ -1516,7 +1526,7 @@ fn preflight_private_pd<const CAPACITY: usize>(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pt_physical = entry & PHYSICAL_ADDRESS_MASK;
-        editor.validate_private_child(pt_physical, visited, *visited_count)?;
+        editor.validate_private_child(pt_physical, 1, visited, *visited_count)?;
         visited[*visited_count] = pt_physical;
         *visited_count += 1;
         preflight_private_pt(
@@ -1604,12 +1614,13 @@ fn verify_private_table_empty(
 
 fn release_detached_private_table(
     table_physical: u64,
+    table_level: u8,
     editor: &mut KernelInactiveAddressSpaceEditor<'_>,
 ) -> Result<(), PagingError> {
     let pointer = editor
-        .table_pointer(table_physical)
+        .table_pointer(table_physical, table_level)
         .ok_or(PagingError::InactivePageTableUnavailable)?;
-    verify_private_table_empty(table_physical, 1, editor)?;
+    verify_private_table_empty(table_physical, table_level, editor)?;
 
     // The parent entry was cleared before this function was entered; the table
     // is empty and the target root is inactive under the validated TLB contract.
@@ -1628,7 +1639,11 @@ fn release_detached_private_table(
     // remains. Registry ownership alone is not being treated as reachability proof.
     let frame = unsafe {
         (&mut *TABLE_FRAMES.registry.get())
-            .take_published_for_root(editor.target_root_physical, table_physical)
+            .take_published_for_root(
+                editor.target_root_physical,
+                table_physical,
+                table_level,
+            )
     }
     .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
     super::memory::free_frame(frame)
@@ -1651,12 +1666,12 @@ fn reclaim_private_pd(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pt_physical = entry & PHYSICAL_ADDRESS_MASK;
-        if !editor.is_private_table(pt_physical) {
+        if !editor.is_private_table(pt_physical, 1) {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         verify_private_table_empty(pt_physical, 1, editor)?;
         editor.write_entry(pd_physical, pd_index, 2, 0);
-        release_detached_private_table(pt_physical, editor)?;
+        release_detached_private_table(pt_physical, 1, editor)?;
     }
     verify_private_table_empty(pd_physical, 2, editor)
 }
@@ -1677,12 +1692,12 @@ fn reclaim_private_pdpt(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pd_physical = entry & PHYSICAL_ADDRESS_MASK;
-        if !editor.is_private_table(pd_physical) {
+        if !editor.is_private_table(pd_physical, 2) {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         reclaim_private_pd(pd_physical, editor)?;
         editor.write_entry(pdpt_physical, pdpt_index, 3, 0);
-        release_detached_private_table(pd_physical, editor)?;
+        release_detached_private_table(pd_physical, 2, editor)?;
     }
     verify_private_table_empty(pdpt_physical, 3, editor)
 }
@@ -1703,12 +1718,12 @@ fn reclaim_private_user_tables(
             return Err(PagingError::InactivePageTableMalformed);
         }
         let pdpt_physical = entry & PHYSICAL_ADDRESS_MASK;
-        if !editor.is_private_table(pdpt_physical) {
+        if !editor.is_private_table(pdpt_physical, 3) {
             return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         reclaim_private_pdpt(pdpt_physical, editor)?;
         editor.write_entry(root_physical, pml4_index, 4, 0);
-        release_detached_private_table(pdpt_physical, editor)?;
+        release_detached_private_table(pdpt_physical, 3, editor)?;
     }
     Ok(())
 }
