@@ -159,7 +159,16 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     /// Calling this repeatedly for the same (root, frame) is idempotent. A frame
     /// already published without an owner, or owned by another root, is rejected
     /// instead of being silently adopted.
-    pub fn mark_published_for_root(
+    ///
+    /// # Safety
+    ///
+    /// The caller must have established that the frame is an exclusively owned,
+    /// allocator-issued page-table frame and is being published only beneath the
+    /// supplied root's private lower-half mapping tree. The frame must not be
+    /// shared with another root or reachable through an unrelated page-table
+    /// tree. The registry records this assertion; it does not verify reachability.
+    #[allow(unsafe_code)]
+    pub unsafe fn mark_published_for_root(
         &mut self,
         root_physical: u64,
         physical_address: u64,
@@ -475,15 +484,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            registry.mark_published_for_root(0, 0x8000),
+            // SAFETY: the zero root is expected to be rejected before ownership changes.
+            unsafe { registry.mark_published_for_root(0, 0x8000) },
             Err(FrameRegistryError::InvalidOwnerRoot)
         );
-        registry.mark_published_for_root(0x1000, 0x8000).unwrap();
+        // SAFETY: this test models publication under one exclusive private root.
+        unsafe { registry.mark_published_for_root(0x1000, 0x8000) }.unwrap();
         assert!(registry.contains_published_for_root(0x1000, 0x8000));
         assert!(!registry.contains_published_for_root(0x2000, 0x8000));
         assert!(!registry.contains_published_for_root(0, 0x8000));
         assert_eq!(
-            registry.mark_published_for_root(0x2000, 0x8000),
+            // SAFETY: the registry must reject adopting a frame owned by a different root.
+            unsafe { registry.mark_published_for_root(0x2000, 0x8000) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
         assert_eq!(
@@ -510,7 +522,8 @@ mod tests {
         registry.mark_published(0x9000).unwrap();
 
         assert_eq!(
-            registry.mark_published_for_root(0x1000, 0x9000),
+            // SAFETY: a generically published frame must not be adopted as private.
+            unsafe { registry.mark_published_for_root(0x1000, 0x9000) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
         assert_eq!(
