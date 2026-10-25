@@ -14,19 +14,20 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
-    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    bootstrap_mapping_page_count, elf64_program_header_table_range, initialize_user_frame,
+    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, unmap_all_user_data_pages,
-    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
-    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot, Elf64LoadImage,
-    Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
-    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
-    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
-    PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    recursive_table_page_virtual_address, reserve_bootstrap_backing_frame, translate_4level,
+    unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
+    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
+    AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
+    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE,
+    USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -536,29 +537,14 @@ fn validate_bootstrap_data_mapping_range(
     regions: &[MemoryRegion],
     mapping_error: PagingError,
 ) -> Result<usize, PagingError> {
-    let virtual_end = virtual_start
-        .checked_add(length)
-        .filter(|_| length != 0)
-        .ok_or(mapping_error)?;
-    if !canonical_range_stays_in_one_half(virtual_start, virtual_end) {
-        return Err(mapping_error);
-    }
-
-    let first_page_index = virtual_start / PAGE_SIZE;
-    let last_page_index = (virtual_end - 1) / PAGE_SIZE;
-    let page_count = last_page_index
-        .checked_sub(first_page_index)
-        .and_then(|count| count.checked_add(1))
-        .ok_or(mapping_error)?;
-    if page_count > MAX_BOOTSTRAP_MAPPING_PAGES {
-        return Err(mapping_error);
-    }
-
+    // Shared host-tested preflight rejects overflow, non-canonical ranges, and
+    // excessive page counts before the hardware page-table walker is invoked.
+    let page_count =
+        bootstrap_mapping_page_count(virtual_start, length, MAX_BOOTSTRAP_MAPPING_PAGES)
+            .map_err(|_| mapping_error)?;
     let first_virtual_page = virtual_start & !(PAGE_SIZE - 1);
-    let last_virtual_page = (virtual_end - 1) & !(PAGE_SIZE - 1);
     let mut virtual_page = first_virtual_page;
-    let mut validated_pages = 0usize;
-    loop {
+    for page_index in 0..page_count {
         let translation =
             translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
                 .map_err(|_| mapping_error)?;
@@ -572,35 +558,32 @@ fn validate_bootstrap_data_mapping_range(
 
         let physical_page = translation.physical_address & !(PAGE_SIZE - 1);
         reserve_bootstrap_frame(regions, physical_page, mapping_error)?;
-        validated_pages = validated_pages.checked_add(1).ok_or(mapping_error)?;
-
-        if virtual_page == last_virtual_page {
-            break;
+        if page_index + 1 < page_count {
+            virtual_page = virtual_page.checked_add(PAGE_SIZE).ok_or(mapping_error)?;
         }
-        virtual_page = virtual_page.checked_add(PAGE_SIZE).ok_or(mapping_error)?;
     }
-    Ok(validated_pages)
+    Ok(page_count)
 }
 
 /// Accepts only fully backed Bootloader/Usable pages. Usable pages are pinned
-/// because the active stack and BootInfo must outlive the bootstrap allocator.
+/// because the active stack, BootInfo, and memory-map array must outlive the allocator.
 fn reserve_bootstrap_frame(
     regions: &[MemoryRegion],
     physical_page: u64,
     mapping_error: PagingError,
 ) -> Result<(), PagingError> {
-    match kernel_backing_region_kind(regions, physical_page) {
-        Some(MemoryRegionKind::Bootloader) => Ok(()),
-        Some(MemoryRegionKind::Usable) => {
-            let reserved = crate::memory::reserve_frame(physical_page)
-                .map_err(|_| PagingError::BootstrapFrameReservationFailed)?;
-            if reserved {
-                Ok(())
-            } else {
-                Err(PagingError::BootstrapFrameReservationFailed)
-            }
-        }
-        _ => Err(mapping_error),
+    let kind = match kernel_backing_region_kind(regions, physical_page) {
+        Some(MemoryRegionKind::Bootloader) => BootstrapBackingKind::Bootloader,
+        Some(MemoryRegionKind::Usable) => BootstrapBackingKind::Usable,
+        _ => BootstrapBackingKind::ReservedOrUnknown,
+    };
+    match reserve_bootstrap_backing_frame(kind, || crate::memory::reserve_frame(physical_page)) {
+        Ok(()) => Ok(()),
+        Err(BootstrapFrameReservationError::DisallowedRegion) => Err(mapping_error),
+        Err(
+            BootstrapFrameReservationError::FrameNotManaged
+            | BootstrapFrameReservationError::ReservationFailed(_),
+        ) => Err(PagingError::BootstrapFrameReservationFailed),
     }
 }
 
