@@ -27,7 +27,7 @@ use oneos_core::{
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
     ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
     PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
-}
+};
 
 const CR0_WP: u64 = 1 << 16;
 const CR4_LA57: u64 = 1 << 12;
