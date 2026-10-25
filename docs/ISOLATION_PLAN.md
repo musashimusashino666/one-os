@@ -8,6 +8,8 @@ The initial target remains x86_64 in the existing BIOS/QEMU environment with fou
 
 The existing capability types in `oneos-core` remain a host-testable reference authorization model. They must not be treated as an isolation boundary or trusted proof of provenance across process boundaries.
 
+A fixed-capacity `FrameWxRegistry` is being added as a host-testable primitive for range-based alias accounting, reservation-before-publication, and retention during unmap/TLB completion. It can detect overlap with registered 4 KiB, 2 MiB, or 1 GiB ranges, but it does not discover hardware aliases and is not yet integrated into the kernel mapping paths. The concrete kernel editor must continue to reject executable mappings until the direct-map, boot, kernel, and address-space alias inventory is complete and the registry is used transactionally by production mapping operations.
+
 Implementation changes must preserve the current rule that the M1 host tests, Clippy checks, build checks, boot smoke tests, exception tests, and dedicated QEMU memory-protection/TLB acceptance tests pass on the exact reviewed PR head. A passing build or boot is not proof of process isolation.
 
 
