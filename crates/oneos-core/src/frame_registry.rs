@@ -415,7 +415,11 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             return Err((FrameRegistryError::DuplicateFrameAddress, token));
         }
 
-        let Some(index) = self.slots.iter().position(|slot| matches!(slot, FrameSlot::Empty)) else {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| matches!(slot, FrameSlot::Empty))
+        else {
             return Err((FrameRegistryError::InvalidReservation, token));
         };
 
@@ -753,12 +757,19 @@ mod tests {
             unsafe { registry.mark_published_table_detached_for_root(0x1000, 0x8000, 2) },
             Ok(())
         );
-        assert_eq!(registry.detached_table_for_root(0x1000, 0), Some((0x8000, 2)));
+        assert_eq!(
+            registry.detached_table_for_root(0x1000, 0),
+            Some((0x8000, 2))
+        );
         let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert_eq!(frame, TestFrame::new(0x8000, 91));
         assert!(!registry.contains(0x8000));
         assert_eq!(registry.published_count_for_root(0x1000), Ok(0));
         assert_eq!(registry.available_slots(), 1);
+    }
+
+    fn injected_free_frame_failure<T>(token: T) -> Result<(), ((), T)> {
+        Err(((), token))
     }
 
     #[test]
@@ -773,16 +784,15 @@ mod tests {
         unsafe { registry.mark_published_for_root(0x3000, 0xA000, 1) }.unwrap();
         // SAFETY: model the parent entry being cleared, the table verified
         // empty, and the target root being inactive.
-        unsafe { registry.mark_published_table_detached_for_root(0x3000, 0xA000, 1) }
-            .unwrap();
+        unsafe { registry.mark_published_table_detached_for_root(0x3000, 0xA000, 1) }.unwrap();
 
         let token = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
         assert!(!registry.contains(0xA000));
         assert_eq!(registry.available_slots(), 1);
 
         // Inject allocator release failure: the token is returned intact.
-        let token = match Err::<(), ((), TestFrame)>(((), token)) {
-            Ok(()) => unreachable!(),
+        let token = match injected_free_frame_failure(token) {
+            Ok(()) => panic!("injected allocator failure unexpectedly succeeded"),
             Err((_error, token)) => token,
         };
         // SAFETY: token is exactly the detached token removed above after the
@@ -790,7 +800,10 @@ mod tests {
         unsafe { registry.restore_detached_published_for_root(token, 0x3000, 1) }.unwrap();
         assert!(registry.contains(0xA000));
         assert_eq!(registry.published_count_for_root(0x3000), Ok(1));
-        assert_eq!(registry.detached_table_for_root(0x3000, 0), Some((0xA000, 1)));
+        assert_eq!(
+            registry.detached_table_for_root(0x3000, 0),
+            Some((0xA000, 1))
+        );
 
         // Retry after the injected failure: the detached token remains releasable.
         let retry = unsafe { registry.take_published_for_root(0x3000, 0xA000, 1) }.unwrap();
