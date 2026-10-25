@@ -550,42 +550,112 @@ def _asm_operand_bindings(
     return positional, named
 
 
-def _cr3_template_sources(block: str) -> list[str]:
-    """Return source tokens for CR3 writes found in asm! string templates."""
+def _template_placeholders(
+    template: str, first_positional_index: int
+) -> tuple[list[tuple[int, int, str, int | None]], int]:
+    """Return placeholder spans, keys and positional indexes in template order.
+
+    Anonymous placeholders consume positional operands in order of appearance.
+    Named placeholders resolve by name and do not consume a positional index.
+    Explicit numeric placeholders refer directly to their indexed operand.
+    Escaped braces are ignored.
+    """
+    placeholders: list[tuple[int, int, str, int | None]] = []
+    next_positional_index = first_positional_index
+    index = 0
+
+    while index < len(template):
+        if template.startswith(("{{", "}}"), index):
+            index += 2
+            continue
+        if template[index] != "{":
+            index += 1
+            continue
+
+        closing = template.find("}", index + 1)
+        if closing < 0:
+            index += 1
+            continue
+
+        key = template[index + 1 : closing].split(":", 1)[0]
+        if key == "":
+            placeholders.append((index, closing + 1, key, next_positional_index))
+            next_positional_index += 1
+        elif re.fullmatch(r"\d+|[A-Za-z_][A-Za-z0-9_]*", key):
+            placeholders.append((index, closing + 1, key, None))
+        index = closing + 1
+
+    return placeholders, next_positional_index
+
+
+def _cr3_template_sources(
+    block: str,
+) -> list[tuple[str, str | None, int | None]]:
+    """Return each CR3 source token and its exact template-placeholder binding."""
     string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
-    sources: list[str] = []
+    sources: list[tuple[str, str | None, int | None]] = []
+    next_positional_index = 0
+
     for template in string_pattern.findall(block):
-        for line in template.splitlines():
+        placeholders, next_positional_index = _template_placeholders(
+            template, next_positional_index
+        )
+        line_offset = 0
+        for line in template.splitlines(keepends=True):
             match = re.search(
                 r"\bmov(?:q)?\s+cr3\s*,\s*([^\s,;]+)",
                 line,
                 re.IGNORECASE,
             )
             if match is not None:
-                sources.append(match.group(1))
+                token_start = line_offset + match.start(1)
+                token_end = line_offset + match.end(1)
+                placeholder = next(
+                    (
+                        item
+                        for item in placeholders
+                        if item[0] == token_start and item[1] == token_end
+                    ),
+                    None,
+                )
+                if placeholder is None:
+                    sources.append((match.group(1), None, None))
+                else:
+                    _, _, key, positional_index = placeholder
+                    sources.append((match.group(1), key, positional_index))
+            line_offset += len(line)
+
     return sources
 
 
 def _cr3_source_is_validated_root(
-    block: str, source_token: str
+    block: str,
+    source_token: str,
+    placeholder_key: str | None,
+    positional_index: int | None,
 ) -> bool:
-    """Require a CR3 template placeholder bound directly to in(reg) root_physical."""
-    placeholder = re.fullmatch(r"\{([A-Za-z_][A-Za-z0-9_]*|[0-9]*)\}", source_token)
-    if placeholder is None:
+    """Require the CR3 placeholder to bind directly to in(reg) root_physical."""
+    if placeholder_key is None:
         return False
 
     parsed = _asm_operand_bindings(block)
     if parsed is None:
         return False
     positional, named = parsed
-    key = placeholder.group(1)
-    if key == "":
-        operand = positional[0] if positional else None
-    elif key.isdigit():
-        position = int(key)
+
+    if placeholder_key == "":
+        if positional_index is None:
+            return False
+        operand = (
+            positional[positional_index]
+            if positional_index < len(positional)
+            else None
+        )
+    elif placeholder_key.isdigit():
+        position = int(placeholder_key)
         operand = positional[position] if position < len(positional) else None
     else:
-        operand = named.get(key)
+        operand = named.get(placeholder_key)
 
     return operand == ("in", "reg", "root_physical")
 
@@ -603,8 +673,10 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
         sources = _cr3_template_sources(block)
         if not sources:
             return False, f"CR3 inline asm block {index} has no parseable CR3 source operand"
-        for source_token in sources:
-            if not _cr3_source_is_validated_root(block, source_token):
+        for source_token, placeholder_key, positional_index in sources:
+            if not _cr3_source_is_validated_root(
+                block, source_token, placeholder_key, positional_index
+            ):
                 return False, (
                     f"CR3 inline asm block {index} writes CR3 from {source_token!r}; "
                     "the template operand must bind directly to in(reg) root_physical"
