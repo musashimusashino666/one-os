@@ -1281,9 +1281,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
             || !valid_physical_page(physical_address, self.physical_address_bits)
             || !self.is_private_table(physical_address, expected_table_level)
         {
-            return Err(InactiveAddressSpaceTeardownError::Kernel(
-            PagingError::InactivePageTableOwnershipViolation,
-        ));
+            return Err(PagingError::InactivePageTableOwnershipViolation);
         }
         if visited[..visited_count].contains(&physical_address) {
             return Err(PagingError::InactivePageTableMalformed);
@@ -1840,7 +1838,9 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
         .published_count_for_root(root.physical_address())
         .map_err(|_| PagingError::InactivePageTableOwnershipViolation)?;
     if remaining_private_tables != 0 {
-        return Err(PagingError::InactivePageTableOwnershipViolation);
+        return Err(InactiveAddressSpaceTeardownError::Kernel(
+            PagingError::InactivePageTableOwnershipViolation,
+        ));
     }
 
     Ok(())
