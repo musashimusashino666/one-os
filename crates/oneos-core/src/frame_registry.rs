@@ -51,6 +51,7 @@ enum FrameSlot<T> {
         token: T,
         published: bool,
         owner_root_physical: Option<u64>,
+        owner_table_level: Option<u8>,
     },
 }
 
@@ -108,6 +109,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             token,
             published: false,
             owner_root_physical: None,
+            owner_table_level: None,
         };
         Ok(())
     }
@@ -172,8 +174,12 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         &mut self,
         root_physical: u64,
         physical_address: u64,
+        table_level: u8,
     ) -> Result<(), FrameRegistryError> {
-        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+        if root_physical == 0
+            || root_physical & (crate::PAGE_SIZE - 1) != 0
+            || !(1..=3).contains(&table_level)
+        {
             return Err(FrameRegistryError::InvalidOwnerRoot);
         }
 
@@ -182,6 +188,8 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 token,
                 published,
                 owner_root_physical,
+                owner_table_level,
+                ..
             } = slot
             {
                 if token.frame_address() != physical_address {
@@ -189,7 +197,9 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 }
 
                 if *published {
-                    return if *owner_root_physical == Some(root_physical) {
+                    return if *owner_root_physical == Some(root_physical)
+                        && *owner_table_level == Some(table_level)
+                    {
                         Ok(())
                     } else {
                         Err(FrameRegistryError::PublishedOwnerMismatch)
@@ -198,6 +208,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
 
                 *published = true;
                 *owner_root_physical = Some(root_physical);
+                *owner_table_level = Some(table_level);
                 return Ok(());
             }
         }
@@ -235,6 +246,29 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             .count())
     }
 
+    /// Returns the paging level recorded for a root-private table frame.
+    pub fn published_table_level_for_root(
+        &self,
+        root_physical: u64,
+        physical_address: u64,
+    ) -> Option<u8> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return None;
+        }
+
+        self.slots.iter().find_map(|slot| match slot {
+            FrameSlot::Owned {
+                token,
+                published: true,
+                owner_root_physical: Some(owner),
+                owner_table_level: Some(level),
+            } if token.frame_address() == physical_address && *owner == root_physical => {
+                Some(*level)
+            }
+            _ => None,
+        })
+    }
+
     /// Returns whether a published frame is recorded as private to this root.
     pub fn contains_published_for_root(&self, root_physical: u64, physical_address: u64) -> bool {
         if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
@@ -267,8 +301,12 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         &mut self,
         root_physical: u64,
         physical_address: u64,
+        table_level: u8,
     ) -> Result<T, FrameRegistryError> {
-        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+        if root_physical == 0
+            || root_physical & (crate::PAGE_SIZE - 1) != 0
+            || !(1..=3).contains(&table_level)
+        {
             return Err(FrameRegistryError::InvalidOwnerRoot);
         }
 
@@ -285,8 +323,9 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             FrameSlot::Owned {
                 published: true,
                 owner_root_physical: Some(owner),
+                owner_table_level: Some(level),
                 ..
-            } if *owner == root_physical => {}
+            } if *owner == root_physical && *level == table_level => {}
             FrameSlot::Owned {
                 published: true, ..
             } => return Err(FrameRegistryError::PublishedOwnerMismatch),
@@ -304,7 +343,8 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 token,
                 published: true,
                 owner_root_physical: Some(owner),
-            } if owner == root_physical => Ok(token),
+                owner_table_level: Some(level),
+            } if owner == root_physical && level == table_level => Ok(token),
             other => {
                 // Restore unexpected state rather than dropping a non-Copy
                 // ownership token on an invariant failure.
@@ -515,18 +555,18 @@ mod tests {
 
         assert_eq!(
             // SAFETY: the zero root is expected to be rejected before ownership changes.
-            unsafe { registry.mark_published_for_root(0, 0x8000) },
+            unsafe { registry.mark_published_for_root(0, 0x8000, 2) },
             Err(FrameRegistryError::InvalidOwnerRoot)
         );
         // SAFETY: this test models publication under one exclusive private root.
-        unsafe { registry.mark_published_for_root(0x1000, 0x8000) }.unwrap();
+        unsafe { registry.mark_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert!(registry.contains_published_for_root(0x1000, 0x8000));
         assert_eq!(registry.published_count_for_root(0x1000), Ok(1));
         assert!(!registry.contains_published_for_root(0x2000, 0x8000));
         assert!(!registry.contains_published_for_root(0, 0x8000));
         assert_eq!(
             // SAFETY: the registry must reject adopting a frame owned by a different root.
-            unsafe { registry.mark_published_for_root(0x2000, 0x8000) },
+            unsafe { registry.mark_published_for_root(0x2000, 0x8000, 2) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
         assert_eq!(
@@ -536,7 +576,9 @@ mod tests {
 
         // SAFETY: this unit test models the caller's external proof that the
         // frame has been detached and is unreachable before releasing the token.
-        let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000) }.unwrap();
+        assert_eq!(registry.published_table_level_for_root(0x1000, 0x8000), Some(2));
+        assert_eq!(registry.published_table_level_for_root(0x2000, 0x8000), None);
+        let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert_eq!(frame, TestFrame::new(0x8000, 91));
         assert!(!registry.contains(0x8000));
         assert_eq!(registry.published_count_for_root(0x1000), Ok(0));
@@ -555,13 +597,13 @@ mod tests {
 
         assert_eq!(
             // SAFETY: a generically published frame must not be adopted as private.
-            unsafe { registry.mark_published_for_root(0x1000, 0x9000) },
+            unsafe { registry.mark_published_for_root(0x1000, 0x9000, 1) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
         assert_eq!(
             // SAFETY: no release proof is needed because the operation is
             // expected to reject the frame and leave registry ownership intact.
-            unsafe { registry.take_published_for_root(0x1000, 0x9000) },
+            unsafe { registry.take_published_for_root(0x1000, 0x9000, 1) },
             Err(FrameRegistryError::PublishedOwnerMismatch)
         );
         assert!(registry.contains(0x9000));
