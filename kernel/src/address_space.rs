@@ -710,6 +710,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         AddressSpaceError::PagingIntegrationFailed
     })?;
     release_inactive_address_space_root(boot_info, &final_active, peer_inactive)?;
+    #[cfg(feature = "test-root-leak-safety")]
     verify_root_leak_allocator_smoke_test(boot_info, &final_active)?;
     Ok(final_active)
 }
@@ -751,8 +752,9 @@ fn abandon_uncertain_root_activation(root: AddressSpaceRoot) -> AddressSpaceErro
 }
 
 /// Checks the real kernel allocator through the same conservative error handler
-/// used by a CR3 readback mismatch. It tests resource retention without pretending
-/// to inject a failed hardware switch while the kernel is executing on that CPU.
+/// used by a CR3 readback mismatch. This is compiled only into the dedicated QEMU
+/// acceptance image so normal boots do not permanently consume a test frame.
+#[cfg(feature = "test-root-leak-safety")]
 fn verify_root_leak_allocator_smoke_test(
     boot_info: &BootInfo,
     active_root: &ActiveAddressSpaceRoot,
@@ -765,7 +767,10 @@ fn verify_root_leak_allocator_smoke_test(
     }
 
     match super::memory::is_frame_allocated(root_physical) {
-        Ok(true) => Ok(()),
+        Ok(true) => {
+            super::serial_write(b"ONE OS ROOT LEAK SAFETY PASS\n");
+            Ok(())
+        }
         Ok(false) | Err(_) => Err(AddressSpaceError::RootLeakSafetyFailed),
     }
 }
