@@ -729,6 +729,8 @@ mod tests {
         successful_allocations: usize,
         invalidations: usize,
         last_invalidation: Option<(u64, u64)>,
+        fail_after_first_unmap: bool,
+        fail_read_at: Option<(u64, usize)>,
         frame_memory: [TestFrameMemory; TEST_FRAME_MEMORY_SLOTS],
         fail_zeroing: bool,
     }
@@ -754,6 +756,8 @@ mod tests {
                 successful_allocations: 0,
                 invalidations: 0,
                 last_invalidation: None,
+                fail_after_first_unmap: false,
+                fail_read_at: None,
                 frame_memory: [TestFrameMemory::EMPTY; TEST_FRAME_MEMORY_SLOTS],
                 fail_zeroing: false,
             };
@@ -888,6 +892,10 @@ mod tests {
         }
 
         fn read_entry(&mut self, table_physical: u64, index: usize, _level: u8) -> Option<u64> {
+            if self.fail_read_at == Some((table_physical, index)) {
+                self.fail_read_at = None;
+                return None;
+            }
             self.tables
                 .iter()
                 .find(|table| table.physical_address == table_physical && table.in_use)
@@ -969,6 +977,12 @@ mod tests {
 
     impl UserAddressSpaceEditor for TestEditor {
         fn invalidate_translation(&mut self, root_table_physical: u64, virtual_address: u64) {
+            // A test can arm one transient second-page read failure. Trigger it
+            // only after the first target page has been unmapped and invalidated.
+            if self.fail_after_first_unmap && virtual_address == 0x4000 {
+                self.fail_after_first_unmap = false;
+                self.fail_read_at = Some((0x4000, 8));
+            }
             self.invalidations += 1;
             self.last_invalidation = Some((root_table_physical, virtual_address));
         }
@@ -1054,6 +1068,71 @@ mod tests {
         assert!(result.take_frame(0).is_none());
         allocator.free_frame(returned_first).unwrap();
         allocator.free_frame(returned_second).unwrap();
+
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn batch_teardown_recovers_from_mid_batch_failure_and_retries_remaining_mapping() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, first_frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let first_physical = first_frame.physical_address();
+        let second_frame = allocator.allocate_frame().unwrap();
+        let second_physical = second_frame.physical_address();
+        editor.register_data_frame(second_physical);
+
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
+        map_user_data_page(
+            &root,
+            0x4000,
+            initialize_user_frame(first_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+        map_user_data_page(
+            &root,
+            0x8000,
+            initialize_user_frame(second_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+
+        // Trigger a one-shot table-reader error only after the first mapping
+        // has been removed and its translation invalidated.
+        editor.fail_after_first_unmap = true;
+        let failure = unmap_all_user_data_pages(&root, &mut registry, &mut editor)
+            .expect_err("the second page's transient read failure must stop the batch");
+        assert_eq!(failure.completed_pages(), 1);
+        assert!(!registry.is_mapped(0x4000));
+        assert!(registry.is_mapped(0x8000));
+        assert_eq!(editor.invalidations, 3);
+
+        // Completed frames are explicitly recoverable from the failure value
+        // and can be released after the successful leaf removal/invalidation.
+        let mut partial = failure.into_partial_result();
+        assert_eq!(partial.completed_pages(), 1);
+        let returned_first = partial.take_frame(0).unwrap();
+        assert_eq!(returned_first.physical_address(), first_physical);
+        assert!(partial.take_frame(0).is_none());
+        allocator.free_frame(returned_first).unwrap();
+
+        // The injected failure is one-shot. The remaining mapping and its frame
+        // token are still registered and can be removed on a later attempt.
+        let mut retry = unmap_all_user_data_pages(&root, &mut registry, &mut editor).unwrap();
+        assert_eq!(retry.completed_pages(), 1);
+        assert!(!registry.is_mapped(0x4000));
+        assert!(!registry.is_mapped(0x8000));
+        assert_eq!(registry.available_slots(), 2);
+        let returned_second = retry.take_frame(0).unwrap();
+        assert_eq!(returned_second.physical_address(), second_physical);
+        allocator.free_frame(returned_second).unwrap();
+        assert_eq!(editor.invalidations, 4);
 
         disconnect_test_address_space(&root, &mut editor);
         release_test_page_tables(&mut editor);
