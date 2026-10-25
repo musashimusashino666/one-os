@@ -1676,7 +1676,7 @@ fn release_pending_detached_private_table<E>(
             editor.target_root_physical,
             table_physical,
             table_level,
-            |frame| release_table_frame(frame),
+            release_table_frame,
         )
     } {
         Ok(()) => Ok(()),
