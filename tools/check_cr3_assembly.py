@@ -503,24 +503,24 @@ def _asm_operand_bindings(
     """
     string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     body = string_pattern.sub(" ", block)
-    body = re.sub(r"//[^\\n]*", "", body)
-    body = re.sub(r"/\\*.*?\\*/", "", body, flags=re.DOTALL)
+    body = re.sub(r"//[^\n]*", "", body)
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
     positional: list[tuple[str, str | None, str | None]] = []
     named: dict[str, tuple[str, str | None, str | None]] = {}
 
     operand_pattern = re.compile(
-        r"(?:(?P<name>[A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*)?"
-        r"(?P<kind>inlateout|lateout|inout|in|out|const|sym)\\b(?P<tail>.*)",
+        r"(?:(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?"
+        r"(?P<kind>inlateout|lateout|inout|in|out|const|sym)\b(?P<tail>.*)",
         re.DOTALL,
     )
     register_operand_pattern = re.compile(
-        r"\\s*\\(\\s*(?P<register_class>[^()]+?)\\s*\\)\\s*"
-        r"(?P<expression>.+?)\\s*",
+        r"\s*\(\s*(?P<register_class>[^()]+?)\s*\)\s*"
+        r"(?P<expression>.+?)\s*",
         re.DOTALL,
     )
 
     for argument in _split_top_level_commas(body):
-        if not argument or re.match(r"^(?:options|clobber_abi)\\s*\\(", argument):
+        if not argument or re.match(r"^(?:options|clobber_abi)\s*\(", argument):
             continue
         match = operand_pattern.fullmatch(argument)
         if match is None:
@@ -557,7 +557,7 @@ def _cr3_template_sources(block: str) -> list[str]:
     for template in string_pattern.findall(block):
         for line in template.splitlines():
             match = re.search(
-                r"\\bmov(?:q)?\\s+cr3\\s*,\\s*([^\\s,;]+)",
+                r"\bmov(?:q)?\s+cr3\s*,\s*([^\s,;]+)",
                 line,
                 re.IGNORECASE,
             )
@@ -570,7 +570,7 @@ def _cr3_source_is_validated_root(
     block: str, source_token: str
 ) -> bool:
     """Require a CR3 template placeholder bound directly to in(reg) root_physical."""
-    placeholder = re.fullmatch(r"\\{([A-Za-z_][A-Za-z0-9_]*|[0-9]*)\\}", source_token)
+    placeholder = re.fullmatch(r"\{([A-Za-z_][A-Za-z0-9_]*|[0-9]*)\}", source_token)
     if placeholder is None:
         return False
 
@@ -597,7 +597,7 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
         return False, "could not locate any asm! block writing CR3 in address_space.rs"
 
     for index, block in enumerate(blocks, start=1):
-        if re.search(r"\\bnomem\\b", block):
+        if re.search(r"\bnomem\b", block):
             return False, f"CR3 inline asm block {index} must not specify nomem"
 
         sources = _cr3_template_sources(block)
