@@ -511,14 +511,28 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     let second_recursive_index = second_root
         .recursive_index()
         .ok_or(AddressSpaceError::RootActivationFailed)?;
-
     if second_physical == original_physical || second_recursive_index == original_recursive_index {
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    let mut user_registry =
+    // Build a second independent user root before either root is activated.
+    // Both roots deliberately map the same VA to different, simultaneously
+    // allocated physical frames.
+    let third_root = create_inactive_address_space_root(boot_info, &active_root)?;
+    let third_physical = third_root.physical_address();
+    if third_physical == original_physical || third_physical == second_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    let (mut user_registry, user_frame_physical) =
         super::paging::map_test_user_page_for_teardown(boot_info, &second_root, &active_root)
             .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    let (mut peer_registry, peer_frame_physical) =
+        super::paging::map_test_user_page_for_teardown(boot_info, &third_root, &active_root)
+            .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    if user_frame_physical == peer_frame_physical {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
 
     let (original_inactive, second_active) =
         switch_address_space_with_user_pages(active_root, second_root, boot_info, &user_registry)?;
@@ -529,14 +543,14 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     }
 
     const USER_PAGE_SENTINEL: u64 = 0x4f4e_455f_5553_4552;
+    const PEER_PAGE_SENTINEL: u64 = 0x5045_4552_5f44_4154;
     let user_page = 0x4000usize as *mut u64;
-    // SAFETY: page 0x4000 was just installed as an owned, writable, user-data
-    // mapping in second_active. Maskable interrupts and preemption are disabled,
-    // and the page is currently mapped to the exact owned frame in user_registry.
+    // SAFETY: page 0x4000 is an owned writable user-data mapping in second_active.
+    // Maskable interrupts and preemption are disabled, and the registry retains
+    // the exact frame token until teardown completes.
     unsafe { ptr::write_volatile(user_page, USER_PAGE_SENTINEL) };
     // SAFETY: same validated mapping and lifetime conditions as the preceding write.
-    let observed = unsafe { ptr::read_volatile(user_page) };
-    if observed != USER_PAGE_SENTINEL {
+    if unsafe { ptr::read_volatile(user_page) } != USER_PAGE_SENTINEL {
         return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
@@ -545,6 +559,32 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     if restored_active.physical_address() != original_physical
         || restored_active.recursive_index() != original_recursive_index
         || second_inactive.physical_address() != second_physical
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    // Confirm that the peer root independently supports the same VA before
+    // tearing down the first root. The physical frames must be distinct.
+    let (original_inactive_for_peer, peer_active) = switch_address_space_with_user_pages(
+        restored_active,
+        third_root,
+        boot_info,
+        &peer_registry,
+    )?;
+    if peer_active.physical_address() != third_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+    let peer_page = 0x4000usize as *mut u64;
+    // SAFETY: page 0x4000 is the peer root's separately owned writable user page.
+    unsafe { ptr::write_volatile(peer_page, PEER_PAGE_SENTINEL) };
+    // SAFETY: the peer root remains active and the page is still registered.
+    if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+    let (peer_inactive, restored_active) =
+        switch_address_space(peer_active, original_inactive_for_peer, boot_info, false)?;
+    if restored_active.physical_address() != original_physical
+        || peer_inactive.physical_address() != third_physical
     {
         return Err(AddressSpaceError::RootActivationFailed);
     }
@@ -573,28 +613,92 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         }
         AddressSpaceError::PagingIntegrationFailed
     })?;
+    release_inactive_address_space_root(boot_info, &restored_active, second_inactive)?;
 
+    // Re-enter the peer after the first root has been fully torn down and its
+    // private tables reclaimed. Its same-VA mapping and data must be unchanged.
+    let (original_inactive_for_peer_check, peer_active_check) =
+        switch_address_space_with_user_pages(
+            restored_active,
+            peer_inactive,
+            boot_info,
+            &peer_registry,
+        )?;
+    if peer_active_check.physical_address() != third_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+    // SAFETY: this is the peer root's still-registered mapping at VA 0x4000.
+    if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+    let (peer_inactive, final_active) = switch_address_space(
+        peer_active_check,
+        original_inactive_for_peer_check,
+        boot_info,
+        false,
+    )?;
+    if final_active.physical_address() != original_physical
+        || final_active.recursive_index() != original_recursive_index
+        || peer_inactive.physical_address() != third_physical
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    super::paging::teardown_inactive_user_address_space(
+        boot_info,
+        &peer_inactive,
+        &final_active,
+        &mut peer_registry,
+    )
+    .map_err(|error| {
+        match error {
+            super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
+                super::serial_write(kernel_error.message());
+            }
+            super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
+                let _cause = failure.error();
+                if failure.completed_pages() == 0 {
+                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
+                } else {
+                    super::serial_write(
+                        b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
+                    );
+                }
+            }
+        }
+        AddressSpaceError::PagingIntegrationFailed
+    })?;
+    release_inactive_address_space_root(boot_info, &final_active, peer_inactive)?;
+    Ok(final_active)
+}
+
+/// Clears and releases one inactive root after its user mappings and private
+/// intermediate tables have already been removed by the root-scoped teardown.
+fn release_inactive_address_space_root(
+    boot_info: &BootInfo,
+    active_root: &ActiveAddressSpaceRoot,
+    root: AddressSpaceRoot,
+) -> Result<(), AddressSpaceError> {
+    let root_physical = root.physical_address();
     let (physical_address_bits, physical_memory_offset) =
-        validate_runtime_root_context(boot_info, &restored_active)?;
+        validate_runtime_root_context(boot_info, active_root)?;
     let mut editor = KernelAddressSpaceRootEditor {
         regions: &boot_info.memory_regions,
         physical_memory_offset,
-        kernel_root_physical: original_physical,
-        root_physical: second_physical,
-        recursive_index: restored_active.recursive_index(),
+        kernel_root_physical: active_root.physical_address(),
+        root_physical,
+        recursive_index: active_root.recursive_index(),
         physical_address_bits,
         kernel_root_is_owned: true,
         kernel_root_pointer: None,
         destination_root_pointer: None,
     };
-    if !editor.table_is_readable(original_physical)
-        || !editor.table_is_read_write_accessible(second_physical)
+    if !editor.table_is_readable(active_root.physical_address())
+        || !editor.table_is_read_write_accessible(root_physical)
     {
-        // The temporary root remains allocated; do not continue after failure.
         return Err(AddressSpaceError::RootTableUnavailable);
     }
-    clear_and_release_root(second_inactive, &mut editor, second_physical)?;
-    Ok(restored_active)
+    clear_and_release_root(root, &mut editor, root_physical)
 }
 
 /// Revalidates the live kernel context at the CR3-switch boundary.
