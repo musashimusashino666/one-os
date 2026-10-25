@@ -282,6 +282,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                     token,
                     published: true,
                     owner_root_physical: Some(owner),
+                    ..
                 } if token.frame_address() == physical_address && *owner == root_physical
             )
         })
