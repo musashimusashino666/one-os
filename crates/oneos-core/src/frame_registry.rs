@@ -27,6 +27,12 @@ pub enum FrameRegistryError {
     FrameNotFound,
     /// A published table frame must not be released through this registry.
     PublishedFrame,
+    /// The supplied owner root is zero, unaligned, or otherwise invalid.
+    InvalidOwnerRoot,
+    /// The frame is published for a different root or has no recorded private owner.
+    PublishedOwnerMismatch,
+    /// The frame is not currently published.
+    NotPublished,
 }
 
 /// Fixed-capacity storage for reserved and owned page-table frame tokens.
@@ -41,7 +47,11 @@ pub struct PageTableFrameRegistry<T: FrameToken, const CAPACITY: usize> {
 enum FrameSlot<T> {
     Empty,
     Reserved,
-    Owned { token: T, published: bool },
+    Owned {
+        token: T,
+        published: bool,
+        owner_root_physical: Option<u64>,
+    },
 }
 
 impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
@@ -97,6 +107,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         self.slots[index] = FrameSlot::Owned {
             token,
             published: false,
+            owner_root_physical: None,
         };
         Ok(())
     }
@@ -124,10 +135,12 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         })
     }
 
-    /// Marks an owned frame as published in the active page-table tree.
+    /// Marks a frame as published when the registry cannot establish a private
+    /// address-space owner. Such a frame remains non-releasable through
+    /// `take_unpublished`; it cannot be reclaimed by the root-scoped API.
     pub fn mark_published(&mut self, physical_address: u64) -> Result<(), FrameRegistryError> {
         for slot in &mut self.slots {
-            if let FrameSlot::Owned { token, published } = slot {
+            if let FrameSlot::Owned { token, published, .. } = slot {
                 if token.frame_address() == physical_address {
                     *published = true;
                     return Ok(());
@@ -135,6 +148,126 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             }
         }
         Err(FrameRegistryError::FrameNotFound)
+    }
+
+    /// Marks a page-table frame as published in one private address-space tree.
+    ///
+    /// Calling this repeatedly for the same (root, frame) is idempotent. A frame
+    /// already published without an owner, or owned by another root, is rejected
+    /// instead of being silently adopted.
+    pub fn mark_published_for_root(
+        &mut self,
+        root_physical: u64,
+        physical_address: u64,
+    ) -> Result<(), FrameRegistryError> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return Err(FrameRegistryError::InvalidOwnerRoot);
+        }
+
+        for slot in &mut self.slots {
+            if let FrameSlot::Owned {
+                token,
+                published,
+                owner_root_physical,
+            } = slot
+            {
+                if token.frame_address() != physical_address {
+                    continue;
+                }
+
+                if *published {
+                    return if *owner_root_physical == Some(root_physical) {
+                        Ok(())
+                    } else {
+                        Err(FrameRegistryError::PublishedOwnerMismatch)
+                    };
+                }
+
+                *published = true;
+                *owner_root_physical = Some(root_physical);
+                return Ok(());
+            }
+        }
+
+        Err(FrameRegistryError::FrameNotFound)
+    }
+
+    /// Returns whether a published frame is recorded as private to this root.
+    pub fn contains_published_for_root(
+        &self,
+        root_physical: u64,
+        physical_address: u64,
+    ) -> bool {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return false;
+        }
+
+        self.slots.iter().any(|slot| {
+            matches!(
+                slot,
+                FrameSlot::Owned {
+                    token,
+                    published: true,
+                    owner_root_physical: Some(owner),
+                } if token.frame_address() == physical_address && *owner == root_physical
+            )
+        })
+    }
+
+    /// Returns and removes a published page-table frame recorded as private to
+    /// the supplied root.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have proved that the frame is detached from every parent
+    /// entry, is unreachable from every address-space root, and cannot be used by
+    /// any stale translation or recursive alias. The registry records ownership;
+    /// it does not itself prove page-table reachability or TLB completion.
+    #[allow(unsafe_code)]
+    pub unsafe fn take_published_for_root(
+        &mut self,
+        root_physical: u64,
+        physical_address: u64,
+    ) -> Result<T, FrameRegistryError> {
+        if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
+            return Err(FrameRegistryError::InvalidOwnerRoot);
+        }
+
+        let Some(index) = self.slots.iter().position(|slot| {
+            matches!(
+                slot,
+                FrameSlot::Owned { token, .. } if token.frame_address() == physical_address
+            )
+        }) else {
+            return Err(FrameRegistryError::FrameNotFound);
+        };
+
+        match &self.slots[index] {
+            FrameSlot::Owned {
+                published: true,
+                owner_root_physical: Some(owner),
+                ..
+            } if *owner == root_physical => {}
+            FrameSlot::Owned {
+                published: true, ..
+            } => return Err(FrameRegistryError::PublishedOwnerMismatch),
+            FrameSlot::Owned {
+                published: false, ..
+            } => return Err(FrameRegistryError::NotPublished),
+            FrameSlot::Empty | FrameSlot::Reserved => {
+                return Err(FrameRegistryError::FrameNotFound);
+            }
+        }
+
+        let slot = core::mem::replace(&mut self.slots[index], FrameSlot::Empty);
+        match slot {
+            FrameSlot::Owned {
+                token,
+                published: true,
+                owner_root_physical: Some(owner),
+            } if owner == root_physical => Ok(token),
+            _ => Err(FrameRegistryError::PublishedOwnerMismatch),
+        }
     }
 
     /// Removes and returns an unpublished token, freeing its registry slot.
@@ -169,6 +302,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
             FrameSlot::Owned {
                 token,
                 published: false,
+                ..
             } => Ok(token),
             FrameSlot::Owned {
                 published: true, ..
@@ -324,6 +458,61 @@ mod tests {
         );
         assert!(registry.contains(0xb000));
         assert_eq!(registry.available_slots(), 0);
+    }
+
+    #[test]
+    fn published_private_tables_can_only_be_taken_for_their_recorded_root() {
+        let mut registry = PageTableFrameRegistry::<TestFrame, 1>::new();
+        let slot = registry.reserve_slot().unwrap();
+        registry
+            .install_reserved(slot, TestFrame::new(0x8000, 91))
+            .unwrap();
+
+        assert_eq!(
+            registry.mark_published_for_root(0, 0x8000),
+            Err(FrameRegistryError::InvalidOwnerRoot)
+        );
+        registry.mark_published_for_root(0x1000, 0x8000).unwrap();
+        assert!(registry.contains_published_for_root(0x1000, 0x8000));
+        assert!(!registry.contains_published_for_root(0x2000, 0x8000));
+        assert!(!registry.contains_published_for_root(0, 0x8000));
+        assert_eq!(
+            registry.mark_published_for_root(0x2000, 0x8000),
+            Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert_eq!(
+            registry.take_unpublished(0x8000),
+            Err(FrameRegistryError::PublishedFrame)
+        );
+
+        // SAFETY: this unit test models the caller's external proof that the
+        // frame has been detached and is unreachable before releasing the token.
+        let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000) }.unwrap();
+        assert_eq!(frame, TestFrame::new(0x8000, 91));
+        assert!(!registry.contains(0x8000));
+        assert_eq!(registry.available_slots(), 1);
+    }
+
+    #[test]
+    fn published_frames_without_root_ownership_cannot_be_adopted_or_released() {
+        let mut registry = PageTableFrameRegistry::<TestFrame, 1>::new();
+        let slot = registry.reserve_slot().unwrap();
+        registry
+            .install_reserved(slot, TestFrame::new(0x9000, 92))
+            .unwrap();
+        registry.mark_published(0x9000).unwrap();
+
+        assert_eq!(
+            registry.mark_published_for_root(0x1000, 0x9000),
+            Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert_eq!(
+            // SAFETY: no release proof is needed because the operation is
+            // expected to reject the frame and leave registry ownership intact.
+            unsafe { registry.take_published_for_root(0x1000, 0x9000) },
+            Err(FrameRegistryError::PublishedOwnerMismatch)
+        );
+        assert!(registry.contains(0x9000));
     }
 
     #[test]
