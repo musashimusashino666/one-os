@@ -534,6 +534,16 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
+    // Exercise real page-table corruption rejection before activating the root.
+    // The helper restores every injected entry and verifies the valid tree again.
+    super::paging::verify_teardown_corruption_preflight_for_smoke(
+        boot_info,
+        &second_root,
+        &active_root,
+        &user_registry,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
     let (original_inactive, second_active) =
         activate_preflighted_user_root(active_root, second_root, boot_info, &user_registry)?;
     if second_active.physical_address() != second_physical
@@ -583,6 +593,38 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         || peer_inactive.physical_address() != third_physical
     {
         return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    // Inject a one-shot allocator failure after the child table has been
+    // detached. The first attempt must retain the token as a pending frame;
+    // a normal second attempt must drain it and finish teardown safely.
+    let first_teardown_attempt = {
+        let mut fail_next_table_release = true;
+        let mut release_table_frame = |frame| {
+            if fail_next_table_release {
+                fail_next_table_release = false;
+                Err((super::memory::MemoryError::Busy, frame))
+            } else {
+                super::memory::free_frame(frame)
+            }
+        };
+        super::paging::teardown_inactive_user_address_space_with_table_release(
+            boot_info,
+            &second_inactive,
+            &restored_active,
+            &mut user_registry,
+            &mut release_table_frame,
+        )
+    };
+    if !matches!(
+        first_teardown_attempt,
+        Err(super::paging::InactiveAddressSpaceTeardownError::Kernel(
+            super::paging::PagingError::PageTableFrameReleaseFailed
+        ))
+    ) || !super::paging::has_pending_detached_private_table(second_physical)
+    {
+        super::serial_write(b"ONE OS DETACHED TABLE RELEASE RETRY FAILED\n");
+        return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
     super::paging::teardown_inactive_user_address_space(
