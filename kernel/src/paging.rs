@@ -541,13 +541,9 @@ fn validate_bootstrap_data_mapping_range(
     let mut virtual_page = first_virtual_page;
     let mut validated_pages = 0usize;
     loop {
-        let translation = translate_virtual_address(
-            virtual_page,
-            root_table_physical,
-            recursive_index,
-            regions,
-        )
-        .map_err(|_| mapping_error)?;
+        let translation =
+            translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
+                .map_err(|_| mapping_error)?;
         if !translation_preserves_page_offset(virtual_page, translation)
             || !translation.writable
             || translation.user_accessible
