@@ -579,17 +579,16 @@ fn mark_table_frame_published(physical_address: u64) {
     let _ = unsafe { &mut *TABLE_FRAMES.registry.get() }.mark_published(physical_address);
 }
 
-fn mark_table_frame_published_for_root(
-    root_physical: u64,
-    physical_address: u64,
-    table_level: u8,
-) {
+fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64, table_level: u8) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition. The caller has just published
     // this table at the indicated level in the root's private lower-half tree.
     match unsafe {
-        (&mut *TABLE_FRAMES.registry.get())
-            .mark_published_for_root(root_physical, physical_address, table_level)
+        (&mut *TABLE_FRAMES.registry.get()).mark_published_for_root(
+            root_physical,
+            physical_address,
+            table_level,
+        )
     } {
         Ok(()) => {}
         Err(FrameRegistryError::FrameNotFound) => {
@@ -1212,8 +1211,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
             return None;
         }
 
-        let table_is_target_root =
-            table_physical == self.target_root_physical && table_level == 4;
+        let table_is_target_root = table_physical == self.target_root_physical && table_level == 4;
         if !table_is_target_root
             && !self.is_private_table(table_physical, table_level)
             && !self.is_staged_table(table_physical)
@@ -1238,11 +1236,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         // this editor, zeroed before publication, and reached through that tree.
         if unsafe {
             (&mut *TABLE_FRAMES.registry.get())
-                .mark_published_for_root(
-                    self.target_root_physical,
-                    table_physical,
-                    table_level,
-                )
+                .mark_published_for_root(self.target_root_physical, table_physical, table_level)
                 .is_err()
         } {
             panic!("private page-table root ownership invariant violated");
@@ -1638,12 +1632,11 @@ fn release_detached_private_table(
     // recursively removed all descendants, and proved no target-root translation
     // remains. Registry ownership alone is not being treated as reachability proof.
     let frame = unsafe {
-        (&mut *TABLE_FRAMES.registry.get())
-            .take_published_for_root(
-                editor.target_root_physical,
-                table_physical,
-                table_level,
-            )
+        (&mut *TABLE_FRAMES.registry.get()).take_published_for_root(
+            editor.target_root_physical,
+            table_physical,
+            table_level,
+        )
     }
     .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
     super::memory::free_frame(frame)
