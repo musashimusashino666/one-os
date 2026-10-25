@@ -394,6 +394,44 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("block 2 must not specify nomem", message)
 
+    def test_cr3_named_placeholder_must_bind_validated_root_physical(self):
+        source = '''
+            asm!(
+                "mov cr3, {target}",
+                target = in(reg) unvalidated_root,
+                validated = in(reg) root_physical,
+                options(nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("must bind directly to in(reg) root_physical", message)
+
+    def test_cr3_positional_placeholder_must_bind_validated_root_physical(self):
+        source = '''
+            asm!(
+                "mov cr3, {}",
+                in(reg) unvalidated_root,
+                in(reg) root_physical,
+                options(nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("must bind directly to in(reg) root_physical", message)
+
+    def test_cr3_named_placeholder_maps_by_name_with_other_inputs_present(self):
+        source = '''
+            asm!(
+                "mov cr3, {root}",
+                root = in(reg) root_physical,
+                unrelated = in(reg) unvalidated_root,
+                options(nostack, preserves_flags)
+            );
+        '''
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertTrue(valid, message)
+
     def test_cr4_named_operand_template_is_supported(self):
         source = """
             let cr4_without_pge = cr4 & !CR4_PGE;
