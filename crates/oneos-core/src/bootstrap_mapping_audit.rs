@@ -180,29 +180,35 @@ mod tests {
 
     #[test]
     fn bootloader_backing_does_not_require_allocator_reservation() {
-        let result = reserve_bootstrap_backing_frame(BootstrapBackingKind::Bootloader, || {
-            panic!("Bootloader-owned frames must not be sent to the Usable allocator")
-        });
+        let result = reserve_bootstrap_backing_frame(
+            BootstrapBackingKind::Bootloader,
+            || -> Result<bool, ()> {
+                panic!("Bootloader-owned frames must not be sent to the Usable allocator")
+            },
+        );
         assert_eq!(result, Ok(()));
     }
 
     #[test]
     fn reserved_or_unknown_backing_is_rejected_without_reservation() {
         let result =
-            reserve_bootstrap_backing_frame(BootstrapBackingKind::ReservedOrUnknown, || {
-                panic!("reserved frames must fail before allocator reservation")
-            });
+            reserve_bootstrap_backing_frame(
+                BootstrapBackingKind::ReservedOrUnknown,
+                || -> Result<bool, ()> {
+                    panic!("reserved frames must fail before allocator reservation")
+                },
+            );
         assert_eq!(result, Err(ReservationError::DisallowedRegion));
     }
 
     #[test]
     fn usable_backing_requires_a_successful_reservation() {
         assert_eq!(
-            reserve_bootstrap_backing_frame(BootstrapBackingKind::Usable, || Ok(true)),
+            reserve_bootstrap_backing_frame(BootstrapBackingKind::Usable, || Ok::<bool, ()>(true)),
             Ok(())
         );
         assert_eq!(
-            reserve_bootstrap_backing_frame(BootstrapBackingKind::Usable, || Ok(false)),
+            reserve_bootstrap_backing_frame(BootstrapBackingKind::Usable, || Ok::<bool, ()>(false)),
             Err(ReservationError::FrameNotManaged)
         );
         assert_eq!(
