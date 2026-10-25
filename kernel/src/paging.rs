@@ -1804,7 +1804,20 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
         return Err(PagingError::UserPageTeardownFailed);
     }
 
-    reclaim_private_user_tables(root.physical_address(), &mut editor)
+    reclaim_private_user_tables(root.physical_address(), &mut editor)?;
+
+    // Do not release the PML4 or allow its physical address to be reused while
+    // the registry still holds private table ownership records for this root.
+    // This detects orphaned table tokens left behind by an earlier partial
+    // teardown or a structural mismatch that was not reachable from the tree.
+    let remaining_private_tables = unsafe { &*TABLE_FRAMES.registry.get() }
+        .published_count_for_root(root.physical_address())
+        .map_err(|_| PagingError::InactivePageTableOwnershipViolation)?;
+    if remaining_private_tables != 0 {
+        return Err(PagingError::InactivePageTableOwnershipViolation);
+    }
+
+    Ok(())
 }
 
 /// Kernel implementation of the unsafe zero-before-publication contract.
