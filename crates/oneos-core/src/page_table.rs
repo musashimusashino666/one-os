@@ -12,6 +12,7 @@ const USER_ACCESSIBLE: u64 = 1 << 2;
 const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const PAGE_SIZE_2M: u64 = 1 << 21;
 const PAGE_SIZE_1G: u64 = 1 << 30;
 
@@ -128,6 +129,18 @@ pub const fn recursive_entry_matches_root(entry: u64, root_table_physical: u64) 
         && entry & PRESENT != 0
         && entry & LARGE_PAGE == 0
         && entry & PHYSICAL_ADDRESS_MASK == root_table_physical
+}
+
+/// Returns whether a recursive PML4 entry is a valid kernel self-mapping.
+///
+/// In addition to referencing the root frame, the entry must be writable,
+/// supervisor-only, non-executable, and must not carry a protection key.
+pub const fn recursive_entry_is_valid_kernel_root(entry: u64, root_table_physical: u64) -> bool {
+    recursive_entry_matches_root(entry, root_table_physical)
+        && entry & WRITABLE != 0
+        && entry & USER_ACCESSIBLE == 0
+        && entry & NO_EXECUTE != 0
+        && entry & PROTECTION_KEY_FIELD_MASK == 0
 }
 
 /// Returns whether a complete 4 KiB physical page is contained in one allowed region.
@@ -277,8 +290,8 @@ fn next_table(entry: u64, level: u8) -> Result<u64, PageTableError> {
 mod tests {
     use super::{
         is_canonical_4level, is_safe_recursive_mapping_index, physical_page_is_in_allowed_region,
-        recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level,
-        PageTableError, PageTranslation,
+        recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
+        recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
     };
     use crate::PAGE_SIZE;
 
@@ -413,6 +426,29 @@ mod tests {
         assert!(!recursive_entry_matches_root(root | 1 | (1 << 7), root));
         assert!(!recursive_entry_matches_root(valid_entry, 0));
         assert!(!recursive_entry_matches_root(valid_entry, root + 1));
+    }
+
+    #[test]
+    fn kernel_recursive_root_must_be_writable_supervisor_and_nx() {
+        let root = 0x1234_5000;
+        let valid_entry = root | 1 | (1 << 1) | (1 << 63);
+        assert!(recursive_entry_is_valid_kernel_root(valid_entry, root));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry & !(1 << 63),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry | (1 << 2),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry & !(1 << 1),
+            root
+        ));
+        assert!(!recursive_entry_is_valid_kernel_root(
+            valid_entry | (1 << 59),
+            root
+        ));
     }
 
     #[test]

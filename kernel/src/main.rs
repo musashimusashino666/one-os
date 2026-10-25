@@ -620,7 +620,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // Only the normal boot path activates a second root. All existing
         // mutation/protection acceptance images retain the bootloader root so
         // their diagnostics continue to exercise the same source mapping.
-        let _active_root = match address_space::activate_supervisor_kernel_root(boot_info) {
+        let active_root = match address_space::activate_supervisor_kernel_root(boot_info) {
             Ok(root) => root,
             Err(error) => {
                 serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATION FAILED\n");
@@ -629,6 +629,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         };
         serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATED\n");
+
+        let _active_root = match address_space::verify_runtime_address_space_switch_smoke_test(
+            boot_info,
+            active_root,
+        ) {
+            Ok(root) => root,
+            Err(error) => {
+                serial_write(b"ONE OS ADDRESS SPACE SWITCH FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        serial_write(b"ONE OS ADDRESS SPACE SWITCH PASS\n");
 
         // The active handle carries the private recursive index installed in
         // the new root. Exercise the exact initializer path after CR3 changes.

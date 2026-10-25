@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+FUNCTION_NAMES = ("activate_supervisor_kernel_root", "switch_address_space")
 FUNCTION_NAME = "activate_supervisor_kernel_root"
 TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
@@ -21,7 +22,7 @@ GPR_RE = re.compile(
 
 
 def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
-    """Return emitted function bodies for the activation routine."""
+    """Return emitted function bodies for all CR3-switch routines."""
     lines = assembly.splitlines()
     found: list[tuple[str, list[str]]] = []
 
@@ -30,7 +31,7 @@ def activation_function_bodies(assembly: str) -> list[tuple[str, list[str]]]:
         if not match:
             continue
         symbol = match.group(1)
-        if FUNCTION_NAME not in symbol:
+        if not any(function_name in symbol for function_name in FUNCTION_NAMES):
             continue
 
         label_re = re.compile(r"^\s*" + re.escape(symbol) + r"\s*:\s*$")
@@ -450,40 +451,260 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "original pre-switch CR4 value was not restored on every CR3-switch exit"
     return True, "all reachable CR3 writes are bracketed by PGE disable and original CR4 restore"
 
-def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
-    """Ensure the CR3 inline asm retains the compiler memory clobber."""
-    match = re.search(
-        r'asm!\s*\(\s*"mov\s+cr3\s*,\s*\{\}"(?P<body>.*?)\);',
-        source,
-        flags=re.DOTALL,
-    )
-    if match is None:
-        return False, "could not locate the CR3 asm block in address_space.rs"
+def _asm_blocks_writing_control_register(
+    source: str, register: str
+) -> list[str]:
+    """Find asm! blocks whose string templates write the named control register.
 
-    block = match.group("body")
-    if re.search(r"\bnomem\b", block):
-        return False, "CR3 inline asm must not specify nomem"
-    if not re.search(r"\bin\(reg\)\s+root_physical\b", block):
-        return False, "CR3 inline asm no longer uses the validated root_physical operand"
-    return True, "CR3 inline asm preserves the compiler memory-ordering boundary"
+    Match the instruction independently of its operand placeholder style, so
+    both positional ("mov cr3, {}") and named ("mov cr3, {root}") operands are
+    checked. Rust's asm! templates are string literals; the macro body is
+    captured separately so options and operands can be validated as a whole.
+    """
+    macro_pattern = re.compile(r"\basm!\s*\((?P<body>.*?)\);", re.DOTALL)
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    instruction_pattern = re.compile(
+        rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE
+    )
+    blocks: list[str] = []
+    for match in macro_pattern.finditer(source):
+        body = match.group("body")
+        templates = string_pattern.findall(body)
+        if any(instruction_pattern.search(template) for template in templates):
+            blocks.append(body)
+    return blocks
+
+
+def _split_top_level_commas(source: str) -> list[str]:
+    """Split a Rust macro argument list without splitting nested expressions."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(source):
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(source[start:index].strip())
+            start = index + 1
+    parts.append(source[start:].strip())
+    return parts
+
+
+def _asm_operand_bindings(
+    block: str,
+) -> tuple[list[tuple[str, str | None, str | None]], dict[str, tuple[str, str | None, str | None]]] | None:
+    """Map Rust asm! operand names and positions to their declared input values.
+
+    Each operand tuple is (kind, register class, expression). Unsupported operand
+    declarations are rejected conservatively so they cannot shift positional
+    placeholders past an operand the checker did not understand.
+    """
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    body = string_pattern.sub(" ", block)
+    body = re.sub(r"//[^\n]*", "", body)
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+    positional: list[tuple[str, str | None, str | None]] = []
+    named: dict[str, tuple[str, str | None, str | None]] = {}
+
+    operand_pattern = re.compile(
+        r"(?:(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?"
+        r"(?P<kind>inlateout|lateout|inout|in|out|const|sym)\b(?P<tail>.*)",
+        re.DOTALL,
+    )
+    register_operand_pattern = re.compile(
+        r"\s*\(\s*(?P<register_class>[^()]+?)\s*\)\s*"
+        r"(?P<expression>.+?)\s*",
+        re.DOTALL,
+    )
+
+    for argument in _split_top_level_commas(body):
+        if not argument or re.match(r"^(?:options|clobber_abi)\s*\(", argument):
+            continue
+        match = operand_pattern.fullmatch(argument)
+        if match is None:
+            return None
+
+        kind = match.group("kind")
+        tail = match.group("tail")
+        register_class: str | None = None
+        expression: str | None = None
+        if kind in {"in", "out", "inout", "lateout", "inlateout"}:
+            register_match = register_operand_pattern.fullmatch(tail)
+            if register_match is not None:
+                register_class = register_match.group("register_class").strip()
+                expression = register_match.group("expression").strip()
+        else:
+            expression = tail.strip() or None
+
+        operand = (kind, register_class, expression)
+        name = match.group("name")
+        if name is None:
+            positional.append(operand)
+        elif name in named:
+            return None
+        else:
+            named[name] = operand
+
+    return positional, named
+
+
+def _template_placeholders(
+    template: str, first_positional_index: int
+) -> tuple[list[tuple[int, int, str, int | None]], int]:
+    """Return placeholder spans, keys and positional indexes in template order.
+
+    Anonymous placeholders consume positional operands in order of appearance.
+    Named placeholders resolve by name and do not consume a positional index.
+    Explicit numeric placeholders refer directly to their indexed operand.
+    Escaped braces are ignored.
+    """
+    placeholders: list[tuple[int, int, str, int | None]] = []
+    next_positional_index = first_positional_index
+    index = 0
+
+    while index < len(template):
+        if template.startswith(("{{", "}}"), index):
+            index += 2
+            continue
+        if template[index] != "{":
+            index += 1
+            continue
+
+        closing = template.find("}", index + 1)
+        if closing < 0:
+            index += 1
+            continue
+
+        key = template[index + 1 : closing].split(":", 1)[0]
+        if key == "":
+            placeholders.append((index, closing + 1, key, next_positional_index))
+            next_positional_index += 1
+        elif re.fullmatch(r"\d+|[A-Za-z_][A-Za-z0-9_]*", key):
+            placeholders.append((index, closing + 1, key, None))
+        index = closing + 1
+
+    return placeholders, next_positional_index
+
+
+def _cr3_template_sources(
+    block: str,
+) -> list[tuple[str, str | None, int | None]]:
+    """Return each CR3 source token and its exact template-placeholder binding."""
+    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
+    sources: list[tuple[str, str | None, int | None]] = []
+    next_positional_index = 0
+
+    for template in string_pattern.findall(block):
+        placeholders, next_positional_index = _template_placeholders(
+            template, next_positional_index
+        )
+        line_offset = 0
+        for line in template.splitlines(keepends=True):
+            match = re.search(
+                r"\bmov(?:q)?\s+cr3\s*,\s*([^\s,;]+)",
+                line,
+                re.IGNORECASE,
+            )
+            if match is not None:
+                token_start = line_offset + match.start(1)
+                token_end = line_offset + match.end(1)
+                placeholder = next(
+                    (
+                        item
+                        for item in placeholders
+                        if item[0] == token_start and item[1] == token_end
+                    ),
+                    None,
+                )
+                if placeholder is None:
+                    sources.append((match.group(1), None, None))
+                else:
+                    _, _, key, positional_index = placeholder
+                    sources.append((match.group(1), key, positional_index))
+            line_offset += len(line)
+
+    return sources
+
+
+def _cr3_source_is_validated_root(
+    block: str,
+    placeholder_key: str | None,
+    positional_index: int | None,
+) -> bool:
+    """Require the CR3 placeholder to bind directly to in(reg) root_physical."""
+    if placeholder_key is None:
+        return False
+
+    parsed = _asm_operand_bindings(block)
+    if parsed is None:
+        return False
+    positional, named = parsed
+
+    if placeholder_key == "":
+        if positional_index is None:
+            return False
+        operand = (
+            positional[positional_index]
+            if positional_index < len(positional)
+            else None
+        )
+    elif placeholder_key.isdigit():
+        position = int(placeholder_key)
+        operand = positional[position] if position < len(positional) else None
+    else:
+        operand = named.get(placeholder_key)
+
+    return operand == ("in", "reg", "root_physical")
+
+
+def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
+    """Ensure CR3 asm preserves memory order and writes the validated root input."""
+    blocks = _asm_blocks_writing_control_register(source, "cr3")
+    if not blocks:
+        return False, "could not locate any asm! block writing CR3 in address_space.rs"
+
+    for index, block in enumerate(blocks, start=1):
+        if re.search(r"\bnomem\b", block):
+            return False, f"CR3 inline asm block {index} must not specify nomem"
+
+        sources = _cr3_template_sources(block)
+        if not sources:
+            return False, f"CR3 inline asm block {index} has no parseable CR3 source operand"
+        for source_token, placeholder_key, positional_index in sources:
+            if not _cr3_source_is_validated_root(
+                block, placeholder_key, positional_index
+            ):
+                return False, (
+                    f"CR3 inline asm block {index} writes CR3 from {source_token!r}; "
+                    "the template operand must bind directly to in(reg) root_physical"
+                )
+    return True, f"all {len(blocks)} CR3 asm blocks preserve compiler ordering and use the validated root"
 
 
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
-    """Ensure source-level CR4 writes disable PGE then restore the original CR4."""
-    blocks = re.findall(
-        r'asm!\s*\(\s*"mov\s+cr4\s*,\s*\{\}"(?P<body>.*?)\);',
-        source,
-        flags=re.DOTALL,
-    )
-    if len(blocks) < 2:
-        return False, "expected separate CR4 asm blocks for PGE disable and restore"
-    if not re.search(r"\bin\(reg\)\s+cr4_without_pge\b", blocks[0]):
-        return False, "first CR4 write must use the PGE-cleared cr4_without_pge value"
+    """Ensure every source-level CR3 switch clears PGE and restores original CR4."""
+    blocks = _asm_blocks_writing_control_register(source, "cr4")
+    if len(blocks) < 2 or len(blocks) % 2 != 0:
+        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
     if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
         return False, "cr4_without_pge must be derived from cr4 with CR4_PGE cleared"
-    if not re.search(r"\bin\(reg\)\s+cr4\b", blocks[1]):
-        return False, "second CR4 write must restore the original cr4 value"
-    return True, "source CR4 writes disable PGE and restore the original CR4 value"
+
+    for pair_index in range(0, len(blocks), 2):
+        disable_block = blocks[pair_index]
+        restore_block = blocks[pair_index + 1]
+        switch_number = pair_index // 2 + 1
+        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4_without_pge\b", disable_block):
+            return False, (
+                f"CR3 switch sequence {switch_number} must first write the "
+                "PGE-cleared cr4_without_pge value"
+            )
+        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4\b", restore_block):
+            return False, (
+                f"CR3 switch sequence {switch_number} must restore the original cr4 value"
+            )
+    return True, f"all {len(blocks) // 2} source CR3 switch sequences clear PGE and restore original CR4"
 
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
@@ -503,13 +724,27 @@ def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
 
     if not matches:
         return False, errors + [
-            f"could not find optimized {FUNCTION_NAME} function in any .s file under {assembly_dir}"
+            f"could not find optimized CR3-switch functions {FUNCTION_NAMES!r} "
+            f"in any .s file under {assembly_dir}"
         ]
+
+    found_functions = {
+        function_name
+        for _path, symbol, _body in matches
+        for function_name in FUNCTION_NAMES
+        if function_name in symbol
+    }
+    missing_functions = sorted(set(FUNCTION_NAMES) - found_functions)
+    if missing_functions:
+        errors.append(
+            "optimized assembly did not contain required CR3-switch functions: "
+            + ", ".join(missing_functions)
+        )
 
     for path, symbol, body in matches:
         valid, message = validate_function_body(body)
         if not valid:
-            errors.append(f"{path}: {symbol}: {message}\n--- activation function body ---\n" + "\n".join(body) + "\n--- end activation function body ---")
+            errors.append(f"{path}: {symbol}: {message}\n--- CR3-switch function body ---\n" + "\n".join(body) + "\n--- end CR3-switch function body ---")
         else:
             print(f"PASS: {path}: {symbol}: {message}")
             for index, line in enumerate(body):

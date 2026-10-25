@@ -22,6 +22,8 @@ ADDRESS_SPACE_READY_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION READY"
 ADDRESS_SPACE_FAILED_MARKER = "ONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED"
 ACTIVATION_READY_MARKER = "ONE OS KERNEL ADDRESS SPACE ACTIVATED"
 ACTIVATION_FAILED_MARKER = "ONE OS KERNEL ADDRESS SPACE ACTIVATION FAILED"
+SWITCH_PASS_MARKER = "ONE OS ADDRESS SPACE SWITCH PASS"
+SWITCH_FAILED_MARKER = "ONE OS ADDRESS SPACE SWITCH FAILED"
 USER_FRAME_ROOT_INDEX_LABEL = "ONE OS USER FRAME ZERO TEST RECURSIVE INDEX"
 USER_FRAME_DIRTY_LABEL = "ONE OS USER FRAME ZERO TEST DIRTY"
 USER_FRAME_VERIFIED_LABEL = "ONE OS USER FRAME ZERO TEST VERIFIED"
@@ -46,6 +48,8 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Address-space root initialization failure marker found: {ADDRESS_SPACE_FAILED_MARKER}"
     if ACTIVATION_FAILED_MARKER in log:
         return False, f"Kernel address-space activation failure marker found: {ACTIVATION_FAILED_MARKER}"
+    if SWITCH_FAILED_MARKER in log:
+        return False, f"Runtime address-space switch failure marker found: {SWITCH_FAILED_MARKER}"
     if USER_FRAME_FAILED_MARKER in log:
         return False, f"Kernel user-frame zeroing failure marker found: {USER_FRAME_FAILED_MARKER}"
     if INVALID_MAP_MARKER in log:
@@ -92,6 +96,12 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Kernel address-space activation marker missing: {ACTIVATION_READY_MARKER}"
     if activation_index < address_space_index or activation_index > complete_index:
         return False, "Kernel address-space activation marker appeared outside root-initialization/completion markers"
+    switch_lines = [line for line in log.splitlines() if line.startswith(SWITCH_PASS_MARKER)]
+    if len(switch_lines) != 1 or switch_lines[0] != SWITCH_PASS_MARKER:
+        return False, f"expected exactly one exact runtime address-space switch success marker: {SWITCH_PASS_MARKER}"
+    switch_index = log.find(SWITCH_PASS_MARKER)
+    if not activation_index < switch_index < complete_index:
+        return False, "Runtime address-space switch marker appeared outside activation/completion markers"
     # QEMU is deliberately configured with -no-shutdown and the kernel halts
     # forever, so timeout(1)'s 124 is the expected result of a healthy run.
     if exit_status != 124:
@@ -133,10 +143,10 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     verified_position = log.find(USER_FRAME_VERIFIED_LABEL + ":")
     pass_position = log.find(USER_FRAME_PASS_MARKER)
     if not (
-        activation_index < recursive_position < dirty_position
+        activation_index < switch_index < recursive_position < dirty_position
         < verified_position < pass_position < complete_index
     ):
-        return False, "active-root recursive index and user-frame zeroing verification must follow CR3 activation in order"
+        return False, "runtime address-space switching and user-frame zeroing verification must follow CR3 activation in order"
 
     return True, "QEMU reached bootstrap completion; private-root user-frame zeroing passed without a panic"
 

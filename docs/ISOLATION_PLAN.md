@@ -59,9 +59,13 @@ prove that an actual switch occurred or that stale translations have been
 invalidated. The architecture caller must verify the actual CR3 readback,
 complete the required local/global TLB invalidation, and ensure no CPU can still
 use the old root before demotion. Demotion does not remove user mappings, reclaim
-lower-level page tables, or make their frames reusable. The kernel does not yet
-provide a live user-address-space switching/teardown path; the primitive is not
-evidence of Ring 3 execution or process isolation.
+lower-level page tables, or make their frames reusable. The kernel now includes a narrow single-CPU runtime-root-switch smoke test for
+temporary roots that contain only shared supervisor-only kernel mappings. It
+verifies source/destination PML4 relationships, each root's recursive index,
+CPU paging preconditions, CR3 readback, and the CR4.PGE-clear / CR3-write /
+CR4-restore sequence before switching back and releasing the temporary root.
+This is not a user-process switching/teardown path, Ring 3 execution, or evidence
+of process isolation.
 
 The safe user-data mapping helper accepts only `ZeroedFrame`, not a raw allocator
 `Frame`. The kernel-backed `KernelUserFrameInitializer` validates the active CR3
