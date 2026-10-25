@@ -163,6 +163,25 @@ pub fn allocate_frame() -> Result<Frame, MemoryError> {
     allocator.allocate_frame().map_err(MemoryError::Allocator)
 }
 
+/// Permanently reserves an already mapped kernel frame before the first allocation.
+///
+/// Returns true when the physical address belongs to a managed Usable region and
+/// is now unavailable to allocate_frame; false means it is outside managed memory.
+/// All kernel PT_LOAD reservations must complete before any allocation attempt.
+pub fn reserve_frame(physical_address: u64) -> Result<bool, MemoryError> {
+    let _guard = GLOBAL.acquire()?;
+    if !GLOBAL.initialized.load(Ordering::Acquire) {
+        return Err(MemoryError::NotInitialized);
+    }
+
+    // SAFETY: the initialized flag was published after writing the allocator,
+    // and the lock provides exclusive access for the duration of this call.
+    let allocator = unsafe { (&mut *GLOBAL.allocator.get()).assume_init_mut() };
+    allocator
+        .reserve_frame(physical_address)
+        .map_err(MemoryError::Allocator)
+}
+
 /// Queries whether a frame is currently allocated by the global allocator.
 ///
 /// The allocator lock protects the bitmap read. The current page-table mutation

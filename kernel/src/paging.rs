@@ -14,16 +14,19 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
-    map_user_data_page, physical_page_is_in_allowed_region, recursive_entry_is_valid_kernel_root,
-    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level, unmap_4k,
-    unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
-    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
-    AddressSpaceRoot, Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
+    elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
+    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    parse_elf64_load_segments, physical_page_is_in_allowed_region,
+    recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
+    recursive_table_page_virtual_address, translate_4level, unmap_4k, unmap_all_user_data_pages,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot, Elf64LoadImage,
+    Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
+    PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -84,6 +87,9 @@ pub enum PagingError {
     MappingMutation(PageTableMutationError),
     InvalidRootTable,
     InvalidKernelImageRange,
+    InvalidKernelElf,
+    InvalidKernelLoadMapping,
+    KernelFrameReservationFailed,
     InvalidKernelCodeMapping,
     InvalidStackMapping,
     InvalidBootInfoMapping,
@@ -112,6 +118,9 @@ impl PagingError {
                 b"Recursive mapping entry does not reference the CR3 PML4 frame\n"
             }
             Self::InvalidKernelImageRange => b"BootInfo kernel image range is invalid\n",
+            Self::InvalidKernelElf => b"Kernel ELF header or PT_LOAD metadata is malformed or inaccessible\n",
+            Self::InvalidKernelLoadMapping => b"A kernel PT_LOAD page has a missing, conflicting, or unexpected translation or permission\n",
+            Self::KernelFrameReservationFailed => b"A loaded kernel frame in Usable memory could not be permanently reserved before allocation\n",
             Self::InvalidKernelCodeMapping => {
                 b"Kernel code translation is outside the ELF backing interval or has unexpected page-table permissions\n"
             }
@@ -268,9 +277,50 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         .filter(|_| boot_info.kernel_len != 0)
         .ok_or(PagingError::InvalidKernelImageRange)?;
     // The bootloader maps file-backed ELF segments from frames within the
-    // in-memory ELF slice using each PT_LOAD p_offset. A virtual offset is not
-    // generally equal to that file offset, so validate against the ELF backing
-    // interval rather than deriving a physical address from the virtual offset.
+    // in-memory ELF slice using each PT_LOAD p_offset. Parse the table with a
+    // bounded no-allocation parser, then validate every page belonging to every
+    // PT_LOAD segment against live translations and effective permissions.
+
+    if boot_info.kernel_addr & (PAGE_SIZE - 1) != 0 {
+        return Err(PagingError::InvalidKernelImageRange);
+    }
+
+    // Read metadata only through the loaded kernel mapping. The helper validates
+    // each translation against the original physical ELF file backing and requires
+    // a read-only, supervisor-only, NX alias before performing raw byte loads.
+    let mut elf_header = [0u8; ELF64_HEADER_SIZE];
+    read_kernel_elf_bytes(
+        boot_info,
+        0,
+        &mut elf_header,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let (program_header_offset, program_header_size) =
+        elf64_program_header_table_range(&elf_header, boot_info.kernel_len)
+            .map_err(|_| PagingError::InvalidKernelElf)?;
+    let mut program_header_buffer = [0u8; MAX_ELF64_PROGRAM_HEADERS * ELF64_PROGRAM_HEADER_SIZE];
+    let program_headers = &mut program_header_buffer[..program_header_size];
+    read_kernel_elf_bytes(
+        boot_info,
+        program_header_offset,
+        program_headers,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let load_image = parse_elf64_load_segments(&elf_header, program_headers, boot_info.kernel_len)
+        .map_err(|_| PagingError::InvalidKernelElf)?;
+    let validated_load_pages = validate_elf_load_mappings(
+        &load_image,
+        boot_info,
+        code_address,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+
     let stack_end = boot_info
         .kernel_stack_bottom
         .checked_add(boot_info.kernel_stack_len)
@@ -323,8 +373,272 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
 
     Ok(PageTableInspection {
         root_table_physical,
-        validated_mappings: 3,
+        validated_mappings: validated_load_pages.saturating_add(3),
     })
+}
+
+/// Copies a small metadata range from the bootloader-owned in-memory ELF image.
+///
+/// Every touched physical page must be fully Bootloader-owned, and its direct-map
+/// alias must translate to that exact page with supervisor, writable, NX access.
+/// No Rust reference or slice to the aliased source memory is constructed.
+fn read_kernel_elf_bytes(
+    boot_info: &BootInfo,
+    file_offset: u64,
+    output: &mut [u8],
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<(), PagingError> {
+    let output_len = u64::try_from(output.len()).map_err(|_| PagingError::InvalidKernelElf)?;
+    let file_end = file_offset
+        .checked_add(output_len)
+        .filter(|end| *end <= boot_info.kernel_len)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    if file_offset > boot_info.kernel_len || output.is_empty() || file_end <= file_offset {
+        return Err(PagingError::InvalidKernelElf);
+    }
+    let physical_start = boot_info
+        .kernel_addr
+        .checked_add(file_offset)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    let physical_end = boot_info
+        .kernel_addr
+        .checked_add(file_end)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    let virtual_start = boot_info
+        .kernel_image_offset
+        .checked_add(file_offset)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    let virtual_end = boot_info
+        .kernel_image_offset
+        .checked_add(file_end)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    if physical_start & (PAGE_SIZE - 1) != virtual_start & (PAGE_SIZE - 1)
+        || !canonical_range_stays_in_one_half(virtual_start, virtual_end)
+    {
+        return Err(PagingError::InvalidKernelElf);
+    }
+
+    let first_physical_page = physical_start & !(PAGE_SIZE - 1);
+    let last_physical_page = (physical_end - 1) & !(PAGE_SIZE - 1);
+    let first_virtual_page = virtual_start & !(PAGE_SIZE - 1);
+    let last_virtual_page = (virtual_end - 1) & !(PAGE_SIZE - 1);
+    let mut physical_page = first_physical_page;
+    let mut virtual_page = first_virtual_page;
+    loop {
+        if !is_bootloader_owned_page(regions, physical_page) {
+            return Err(PagingError::InvalidKernelElf);
+        }
+        let translation =
+            translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
+                .map_err(|_| PagingError::InvalidKernelElf)?;
+        if translation.page_size != PAGE_SIZE
+            || translation.physical_address != physical_page
+            || translation.writable
+            || translation.user_accessible
+            || translation.executable
+        {
+            return Err(PagingError::InvalidKernelElf);
+        }
+        if physical_page == last_physical_page && virtual_page == last_virtual_page {
+            break;
+        }
+        physical_page = physical_page
+            .checked_add(PAGE_SIZE)
+            .ok_or(PagingError::InvalidKernelElf)?;
+        virtual_page = virtual_page
+            .checked_add(PAGE_SIZE)
+            .ok_or(PagingError::InvalidKernelElf)?;
+        if physical_page > last_physical_page || virtual_page > last_virtual_page {
+            return Err(PagingError::InvalidKernelElf);
+        }
+    }
+
+    for (index, byte) in output.iter_mut().enumerate() {
+        let address = virtual_start
+            .checked_add(u64::try_from(index).map_err(|_| PagingError::InvalidKernelElf)?)
+            .ok_or(PagingError::InvalidKernelElf)?;
+        // SAFETY: every source page was proved Bootloader-owned and mapped at
+        // the corresponding virtual address as read-only, supervisor-only, NX.
+        // This is a raw load from the kernel's own load mapping, not a reference
+        // to a physical-memory-offset alias.
+        *byte = unsafe { ptr::read_volatile(address as *const u8) };
+    }
+    Ok(())
+}
+
+fn kernel_backing_region_kind(
+    regions: &[MemoryRegion],
+    physical_page: u64,
+) -> Option<MemoryRegionKind> {
+    let page_end = physical_page.checked_add(PAGE_SIZE)?;
+    regions
+        .iter()
+        .find(|region| region.start <= physical_page && page_end <= region.end)
+        .map(|region| region.kind)
+}
+
+fn is_kernel_backed_page(regions: &[MemoryRegion], physical_page: u64) -> bool {
+    matches!(
+        kernel_backing_region_kind(regions, physical_page),
+        Some(MemoryRegionKind::Usable | MemoryRegionKind::Bootloader)
+    )
+}
+
+fn reserve_kernel_load_frame(
+    regions: &[MemoryRegion],
+    physical_page: u64,
+) -> Result<(), PagingError> {
+    match kernel_backing_region_kind(regions, physical_page) {
+        Some(MemoryRegionKind::Bootloader) => Ok(()),
+        Some(MemoryRegionKind::Usable) => {
+            let reserved = crate::memory::reserve_frame(physical_page)
+                .map_err(|_| PagingError::KernelFrameReservationFailed)?;
+            if reserved {
+                Ok(())
+            } else {
+                Err(PagingError::KernelFrameReservationFailed)
+            }
+        }
+        _ => Err(PagingError::InvalidKernelLoadMapping),
+    }
+}
+
+fn canonical_range_stays_in_one_half(start: u64, end_exclusive: u64) -> bool {
+    if end_exclusive <= start || !is_canonical_4level(start) {
+        return false;
+    }
+    let Some(last) = end_exclusive.checked_sub(1) else {
+        return false;
+    };
+    if !is_canonical_4level(last) {
+        return false;
+    }
+    if start < 0x0000_8000_0000_0000 {
+        last < 0x0000_8000_0000_0000
+    } else {
+        start >= 0xffff_8000_0000_0000 && last >= 0xffff_8000_0000_0000
+    }
+}
+
+/// Audits all mapped pages described by ELF PT_LOAD headers.
+///
+/// The bootloader may copy writable segments while applying relocations and may
+/// copy the final file-backed page when zeroing a partial-page BSS tail, so
+/// exact source-frame correspondence is checked only for ordinary read-only
+/// file-backed pages. Every PT_LOAD page must still exist as a 4 KiB kernel
+/// mapping with effective U/S, R/W, and NX permissions matching the ELF flags.
+fn validate_elf_load_mappings(
+    image: &Elf64LoadImage,
+    boot_info: &BootInfo,
+    code_address: u64,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<usize, PagingError> {
+    let mut validated_pages = 0usize;
+    let mut code_is_in_executable_segment = false;
+
+    for segment in image.load_segments() {
+        let load_start = boot_info
+            .kernel_image_offset
+            .checked_add(segment.virtual_address)
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        let load_end = load_start
+            .checked_add(segment.memory_size)
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        if !canonical_range_stays_in_one_half(load_start, load_end) {
+            return Err(PagingError::InvalidKernelLoadMapping);
+        }
+        if segment.executable() && code_address >= load_start && code_address < load_end {
+            code_is_in_executable_segment = true;
+        }
+
+        let first_virtual_page = load_start & !(PAGE_SIZE - 1);
+        let last_virtual_page = (load_end - 1) & !(PAGE_SIZE - 1);
+        let source_first_page = boot_info
+            .kernel_addr
+            .checked_add(segment.offset & !(PAGE_SIZE - 1))
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        let file_end_virtual = load_start
+            .checked_add(segment.file_size)
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        let last_file_page = if segment.file_size == 0 {
+            None
+        } else {
+            Some((file_end_virtual - 1) & !(PAGE_SIZE - 1))
+        };
+        let partial_bss_tail_page = if segment.memory_size > segment.file_size
+            && file_end_virtual & (PAGE_SIZE - 1) != 0
+            && segment.file_size != 0
+        {
+            Some((file_end_virtual - 1) & !(PAGE_SIZE - 1))
+        } else {
+            None
+        };
+
+        let mut virtual_page = first_virtual_page;
+        loop {
+            let elf_virtual_page = virtual_page
+                .checked_sub(boot_info.kernel_image_offset)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+            let translation = translate_virtual_address(
+                virtual_page,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )
+            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+            if translation.page_size != PAGE_SIZE
+                || translation.physical_address & (PAGE_SIZE - 1) != 0
+                || !is_kernel_backed_page(regions, translation.physical_address)
+                || translation.user_accessible
+                || translation.writable
+                    != (segment.writable()
+                        && !image.page_is_read_only_after_relocation(elf_virtual_page))
+                || translation.executable != segment.executable()
+            {
+                return Err(PagingError::InvalidKernelLoadMapping);
+            }
+
+            // A PT_LOAD frame can still be labelled Usable in the firmware map.
+            // Pin it in the allocator before any allocation is permitted, so it
+            // cannot be handed out as an ordinary free frame even if the loader
+            // copied it for relocations or BSS.
+            reserve_kernel_load_frame(regions, translation.physical_address)?;
+
+            let file_backed_page = last_file_page
+                .is_some_and(|last| virtual_page >= first_virtual_page && virtual_page <= last);
+            let bss_tail_copy_page = partial_bss_tail_page == Some(virtual_page);
+            if file_backed_page && !segment.writable() && !bss_tail_copy_page {
+                let offset = virtual_page
+                    .checked_sub(first_virtual_page)
+                    .ok_or(PagingError::InvalidKernelLoadMapping)?;
+                let expected_physical = source_first_page
+                    .checked_add(offset)
+                    .ok_or(PagingError::InvalidKernelLoadMapping)?;
+                if translation.physical_address != expected_physical {
+                    return Err(PagingError::InvalidKernelLoadMapping);
+                }
+            }
+
+            validated_pages = validated_pages
+                .checked_add(1)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+            if virtual_page == last_virtual_page {
+                break;
+            }
+            virtual_page = virtual_page
+                .checked_add(PAGE_SIZE)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        }
+    }
+
+    if !code_is_in_executable_segment {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+    Ok(validated_pages)
 }
 
 fn translation_preserves_page_offset(virtual_address: u64, translation: PageTranslation) -> bool {

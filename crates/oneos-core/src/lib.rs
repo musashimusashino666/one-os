@@ -16,6 +16,7 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod address_space;
+mod elf64;
 mod frame_allocator;
 mod frame_registry;
 mod frame_wx;
@@ -28,6 +29,11 @@ pub use address_space::{
     validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot,
     AddressSpaceRootDeactivationError, AddressSpaceRootEditor, AddressSpaceRootError,
     AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+};
+pub use elf64::{
+    elf64_program_header_table_range, parse_elf64_load_segments, Elf64Error, Elf64LoadImage,
+    Elf64LoadSegment, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
+    MAX_ELF64_TOTAL_LOAD_BYTES,
 };
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
