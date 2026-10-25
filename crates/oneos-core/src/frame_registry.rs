@@ -589,8 +589,14 @@ mod tests {
 
         // SAFETY: this unit test models the caller's external proof that the
         // frame has been detached and is unreachable before releasing the token.
-        assert_eq!(registry.published_table_level_for_root(0x1000, 0x8000), Some(2));
-        assert_eq!(registry.published_table_level_for_root(0x2000, 0x8000), None);
+        assert_eq!(
+            registry.published_table_level_for_root(0x1000, 0x8000),
+            Some(2)
+        );
+        assert_eq!(
+            registry.published_table_level_for_root(0x2000, 0x8000),
+            None
+        );
         let frame = unsafe { registry.take_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert_eq!(frame, TestFrame::new(0x8000, 91));
         assert!(!registry.contains(0x8000));
