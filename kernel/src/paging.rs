@@ -20,8 +20,9 @@ use oneos_core::{
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame, PAGE_SIZE,
+    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
+    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
+    ZeroedFrame, PAGE_SIZE,
     USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -1630,39 +1631,27 @@ fn release_pending_detached_private_table(
 
     // SAFETY: the frame was marked detached only after its parent entry was
     // cleared, the table was emptied, and the inactive-root/TLB contract held.
-    let frame = unsafe {
-        (&mut *TABLE_FRAMES.registry.get()).take_published_for_root(
+    // The registry transaction restores the ownership record if free_frame
+    // returns the token on failure, so a later teardown can retry it.
+    match unsafe {
+        (&mut *TABLE_FRAMES.registry.get()).release_published_for_root_with(
             editor.target_root_physical,
             table_physical,
             table_level,
+            super::memory::free_frame,
         )
-    }
-    .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
-
-    match super::memory::free_frame(frame) {
+    } {
         Ok(()) => Ok(()),
-        Err((_error, frame)) => {
-            // The allocator explicitly returned ownership of the still-allocated
-            // frame. Restore the detached record so a later teardown retry can
-            // find it without a parent entry. Single-core execution with maskable
-            // interrupts disabled guarantees the just-vacated registry slot remains
-            // available unless an invariant has already been violated.
-            match unsafe {
-                (&mut *TABLE_FRAMES.registry.get()).restore_detached_published_for_root(
-                    frame,
-                    editor.target_root_physical,
-                    table_level,
-                )
-            } {
-                Ok(()) => Err(PagingError::PageTableFrameReleaseFailed),
-                Err((_restore_error, frame)) => {
-                    // Restoration can fail only after an ownership/registry
-                    // invariant violation. Fail-stop rather than continue with an
-                    // allocator-owned frame that no longer has a registry record.
-                    core::mem::forget(frame);
-                    panic!("failed to restore detached page-table ownership after free failure");
-                }
-            }
+        Err(PublishedFrameReleaseError::Registry(_))
+        | Err(PublishedFrameReleaseError::Release(_)) => {
+            Err(PagingError::PageTableFrameReleaseFailed)
+        }
+        Err(PublishedFrameReleaseError::Restore { token, .. }) => {
+            // Restoration failure is an invariant violation. Preserve the
+            // allocator-issued token and fail-stop rather than let execution
+            // continue without a registry record for an allocated frame.
+            core::mem::forget(token);
+            panic!("failed to restore detached page-table ownership after free failure");
         }
     }
 }
