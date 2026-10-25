@@ -125,13 +125,17 @@ pub fn reserve_bootstrap_backing_frame<E>(
 mod tests {
     use super::{
         bootstrap_mapping_page_count, reserve_bootstrap_backing_frame, BootstrapBackingKind,
-        BootstrapFrameReservationError as ReservationError, BootstrapMappingRangeError as RangeError,
+        BootstrapFrameReservationError as ReservationError,
+        BootstrapMappingRangeError as RangeError,
     };
     use crate::PAGE_SIZE;
 
     #[test]
     fn rejects_empty_overflowing_and_noncanonical_ranges() {
-        assert_eq!(bootstrap_mapping_page_count(0x1000, 0, 4096), Err(RangeError::Empty));
+        assert_eq!(
+            bootstrap_mapping_page_count(0x1000, 0, 4096),
+            Err(RangeError::Empty)
+        );
         assert_eq!(
             bootstrap_mapping_page_count(u64::MAX - 0x7ff, 0x1000, 4096),
             Err(RangeError::AddressOverflow)
@@ -191,13 +195,12 @@ mod tests {
 
     #[test]
     fn reserved_or_unknown_backing_is_rejected_without_reservation() {
-        let result =
-            reserve_bootstrap_backing_frame(
-                BootstrapBackingKind::ReservedOrUnknown,
-                || -> Result<bool, ()> {
-                    panic!("reserved frames must fail before allocator reservation")
-                },
-            );
+        let result = reserve_bootstrap_backing_frame(
+            BootstrapBackingKind::ReservedOrUnknown,
+            || -> Result<bool, ()> {
+                panic!("reserved frames must fail before allocator reservation")
+            },
+        );
         assert_eq!(result, Err(ReservationError::DisallowedRegion));
     }
 
