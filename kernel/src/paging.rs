@@ -846,10 +846,7 @@ impl<'a> KernelPageTableEditor<'a> {
         for level in 1..=3 {
             if let Some(physical_address) = self.reachable_table_physical(level) {
                 if self.target_virtual_address < USER_VIRTUAL_ADDRESS_LIMIT {
-                    mark_table_frame_published_for_root(
-                        self.root_table_physical,
-                        physical_address,
-                    );
+                    mark_table_frame_published_for_root(self.root_table_physical, physical_address);
                 } else {
                     mark_table_frame_published(physical_address);
                 }
