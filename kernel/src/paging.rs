@@ -1544,8 +1544,19 @@ fn preflight_private_pt<const CAPACITY: usize>(
         if entry == 0 {
             continue;
         }
-        if entry & PRESENT == 0 || entry & WRITABLE == 0 || entry & USER_ACCESSIBLE == 0 {
+        if entry & PRESENT == 0
+            || entry & WRITABLE == 0
+            || entry & USER_ACCESSIBLE == 0
+            || entry & PROTECTION_KEY_FIELD_MASK != 0
+        {
             return Err(PagingError::InactivePageTableMalformed);
+        }
+        let leaf_physical = entry & PHYSICAL_ADDRESS_MASK;
+        if !valid_physical_page(leaf_physical, editor.physical_address_bits())
+            || !editor.is_frame_allocated(leaf_physical)
+            || editor.is_page_table_or_reserved_frame(leaf_physical)
+        {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
         }
 
         let virtual_address = virtual_prefix | ((pt_index as u64) << 12);
