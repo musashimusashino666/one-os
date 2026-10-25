@@ -353,6 +353,23 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         regions,
         PagingError::InvalidBootInfoMapping,
     )?;
+    // BootInfo stores the memory map through a slice pointer; its entries live
+    // outside the BootInfo struct and must not be assumed to share its backing.
+    let memory_regions_address = boot_info.memory_regions.as_ptr() as usize as u64;
+    let memory_regions_bytes = boot_info
+        .memory_regions
+        .len()
+        .checked_mul(size_of::<MemoryRegion>())
+        .and_then(|length| u64::try_from(length).ok())
+        .ok_or(PagingError::InvalidBootInfoMapping)?;
+    let validated_memory_region_pages = validate_bootstrap_data_mapping_range(
+        memory_regions_address,
+        memory_regions_bytes,
+        root_table_physical,
+        recursive_index,
+        regions,
+        PagingError::InvalidBootInfoMapping,
+    )?;
 
     let code_translation =
         translate_virtual_address(code_address, root_table_physical, recursive_index, regions)
@@ -373,7 +390,8 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         root_table_physical,
         validated_mappings: validated_load_pages
             .saturating_add(validated_stack_pages)
-            .saturating_add(validated_boot_info_pages),
+            .saturating_add(validated_boot_info_pages)
+            .saturating_add(validated_memory_region_pages),
     })
 }
 
