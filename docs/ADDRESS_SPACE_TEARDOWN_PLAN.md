@@ -41,6 +41,7 @@ Out of scope: Ring 3 entry/return, scheduling, IPC, capability enforcement, SMP,
 2. Before dereferencing a table frame, validate alignment, CPU physical-address width, full-frame region coverage, allocator ownership, and table-frame registry state.
 3. For tables not reachable through the active root's recursive mapping, use only a validated supervisor-only, writable, NX physical-memory-offset alias. Walk the active root to prove the complete alias maps the exact expected physical frame.
 4. The target root's lower canonical half is private. Every present intermediate entry must point to an owned page-table frame and must not create cycles, recursive aliases, large-page overlaps, or shared private tables.
+5. Validate user data mappings in both directions: every present user PTE must point to the exact physical frame retained by the same root's mapping registry, and every registry entry must resolve to a present PTE with that same physical frame and expected permissions. A mere virtual-address registration match is insufficient.
 5. Never free bootloader-owned tables, kernel-half shared tables, the active root, or a frame whose registry state is ambiguous.
 6. A published intermediate table may be released only after every parent reference to it has been removed, no root can reach it, and the required local/global TLB invalidation contract is satisfied.
 
@@ -82,6 +83,8 @@ The PR is not complete until all applicable checks below pass on the exact lates
 - QEMU isolation case: roots A and B use the same virtual address for different physical frames; tearing down A must not modify B's mapping or data
 - QEMU dirty-frame case: write a non-zero pattern through A, tear down A, reuse the physical frame for B only after full zero initialization, and verify every byte/word seen by B is zero
 - preflight failure: inject a root self-reference, an intermediate large-page flag, a non-present leaf, and a user leaf pointing at a registered page-table frame; prove each is rejected, restored, and followed by a successful read-only preflight
+- bidirectional user-map ownership: inject another address space's allocated data frame and target/foreign PML4 frames into a registered user PTE, and delete a registered PTE; each mutation must be rejected before root activation or teardown, with the entry restored and a later valid preflight succeeding
+- reverse registry validation: a present PTE must match the frame token for its VA, and every registry token must have a present translation at the expected VA; neither extra PTEs nor stale registry-only mappings may pass preflight
 - bottom-up reclamation: verify private intermediate tables are released exactly once after becoming unreachable, while shared kernel tables and the active root remain allocated
 - release failure/retry: fail the first intermediate-table release after parent detachment, verify the detached token remains root-owned and pending, retry through the production allocator, then release the root only after no root-owned table token remains
 - partial failure: all returned data/table ownership tokens remain visible and no unprocessed mapping is falsely marked complete
