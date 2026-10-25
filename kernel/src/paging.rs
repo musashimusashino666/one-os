@@ -14,12 +14,14 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
-    physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, validate_cr0_write_protect,
-    validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
-    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PagingPreconditionError, UserFrameInitializationError,
-    UserFrameInitializer, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    map_user_data_page, physical_page_is_in_allowed_region, recursive_entry_matches_root,
+    recursive_entry_is_valid_kernel_root, recursive_table_page_virtual_address, translate_4level,
+    unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
+    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
+    AddressSpaceRoot, Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
+    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
+    UserPageMappingRegistry, ZeroedFrame, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -42,6 +44,7 @@ const LARGE_PAGE: u64 = 1 << 7;
 ))]
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const TABLE_FRAME_CAPACITY: usize = 512;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
@@ -84,6 +87,15 @@ pub enum PagingError {
     InvalidStackMapping,
     InvalidBootInfoMapping,
     Translation(PageTableError),
+    InactiveAddressSpaceInvalid,
+    InactivePageTableUnavailable,
+    InactivePageTableOwnershipViolation,
+    InactivePageTableMalformed,
+    UnregisteredUserPage,
+    UserPageMapping(UserPageMappingError),
+    UserPageTeardownFailed,
+    PageTableFrameReleaseFailed,
+    PrivatePageTableCapacityExceeded,
 }
 
 impl PagingError {
@@ -107,6 +119,33 @@ impl PagingError {
             }
             Self::InvalidBootInfoMapping => {
                 b"BootInfo mapping has an unexpected page offset or page-table permissions\n"
+            }
+            Self::InactiveAddressSpaceInvalid => {
+                b"Inactive address-space root failed validation\n"
+            }
+            Self::InactivePageTableUnavailable => {
+                b"Inactive private page-table frame is not safely accessible\n"
+            }
+            Self::InactivePageTableOwnershipViolation => {
+                b"Inactive page-table frame is not owned by the requested root\n"
+            }
+            Self::InactivePageTableMalformed => {
+                b"Inactive user address-space page-table tree is malformed\n"
+            }
+            Self::UnregisteredUserPage => {
+                b"Inactive address space contains an unregistered user mapping\n"
+            }
+            Self::UserPageMapping(_) => {
+                b"Could not install or validate inactive user page mapping\n"
+            }
+            Self::UserPageTeardownFailed => {
+                b"Inactive user-page teardown failed; frame ownership is retained\n"
+            }
+            Self::PageTableFrameReleaseFailed => {
+                b"Could not safely release a detached private page-table frame\n"
+            }
+            Self::PrivatePageTableCapacityExceeded => {
+                b"Private page-table tree exceeds the ownership registry capacity\n"
             }
             Self::UnsupportedFiveLevelPaging => {
                 b"Five-level paging is not supported by this inspector\n"
