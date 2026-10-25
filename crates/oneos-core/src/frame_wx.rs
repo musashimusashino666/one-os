@@ -16,7 +16,7 @@ static NEXT_REGISTRY_ID: AtomicU64 = AtomicU64::new(1);
 
 fn allocate_registry_id() -> Option<u64> {
     NEXT_REGISTRY_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .ok()
@@ -928,7 +928,7 @@ mod tests {
             (VA_A + 1, PAGE_SIZE),
             (LOWER_CANONICAL_LIMIT - PAGE_SIZE, 2 * PAGE_SIZE),
             (UPPER_CANONICAL_START - PAGE_SIZE, 2 * PAGE_SIZE),
-            (u64::MAX & !(PAGE_SIZE - 1), 2 * PAGE_SIZE),
+            (!(PAGE_SIZE - 1), 2 * PAGE_SIZE),
             (VA_A, 0),
             (VA_A, PAGE_SIZE + 1),
         ] {
