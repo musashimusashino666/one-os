@@ -129,7 +129,8 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
                 slot,
                 FrameSlot::Owned {
                     token,
-                    published: false
+                    published: false,
+                    ..
                 } if token.frame_address() == physical_address
             )
         })
