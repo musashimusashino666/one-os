@@ -20,7 +20,7 @@ use oneos_core::{
     recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level, unmap_4k,
     unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
-    AddressSpaceRoot, Elf64LoadImage, Elf64LoadSegment, Frame, FrameRegistryError, PagePermissions,
+    AddressSpaceRoot, Elf64LoadImage, Frame, FrameRegistryError, PagePermissions,
     PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
