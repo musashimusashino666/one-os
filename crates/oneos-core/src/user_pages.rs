@@ -311,6 +311,43 @@ impl<T: FrameToken, const CAPACITY: usize> UserPageMappingRegistry<T, CAPACITY> 
         })
     }
 
+    /// Returns the physical frame owned for a live mapping at `virtual_address`.
+    ///
+    /// The returned address is the page-aligned base from the registry's retained
+    /// frame token, not a page-table walk. Callers that validate a mapping must
+    /// compare this value with the actual page-table translation.
+    pub fn mapped_physical_address(&self, virtual_address: u64) -> Option<u64> {
+        self.slots.iter().find_map(|slot| match slot {
+            MappingSlot::Mapped {
+                virtual_address: mapped,
+                token,
+            } if *mapped == virtual_address => Some(token.frame_address()),
+            _ => None,
+        })
+    }
+
+    /// Returns the live mapping stored at a registry slot, as (virtual, physical).
+    ///
+    /// Empty and in-progress reservation slots return `None`; use
+    /// `has_reserved_mappings` to reject incomplete transactions before walking
+    /// the page table tree.
+    pub fn mapped_entry_at(&self, slot_index: usize) -> Option<(u64, u64)> {
+        match self.slots.get(slot_index)? {
+            MappingSlot::Mapped {
+                virtual_address,
+                token,
+            } => Some((*virtual_address, token.frame_address())),
+            MappingSlot::Empty | MappingSlot::Reserved { .. } => None,
+        }
+    }
+
+    /// Returns whether any mapping transaction is still reserved but unpublished.
+    pub fn has_reserved_mappings(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| matches!(slot, MappingSlot::Reserved { .. }))
+    }
+
     fn reserve_mapping(
         &mut self,
         virtual_address: u64,
@@ -1049,6 +1086,19 @@ mod tests {
             &mut editor,
         )
         .unwrap();
+
+        assert_eq!(
+            registry.mapped_physical_address(0x4000),
+            Some(first_physical)
+        );
+        assert_eq!(
+            registry.mapped_physical_address(0x8000),
+            Some(second_physical)
+        );
+        assert_eq!(registry.mapped_physical_address(0xc000), None);
+        assert_eq!(registry.mapped_entry_at(0), Some((0x4000, first_physical)));
+        assert_eq!(registry.mapped_entry_at(1), Some((0x8000, second_physical)));
+        assert!(!registry.has_reserved_mappings());
 
         let mut result = unmap_all_user_data_pages(&root, &mut registry, &mut editor).unwrap();
         assert_eq!(result.completed_pages(), 2);
