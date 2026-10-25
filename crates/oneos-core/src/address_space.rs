@@ -175,8 +175,8 @@ impl AddressSpaceRoot {
     /// and must not return the frame to its allocator or reuse its physical
     /// address until all root-private mappings and child page tables have been
     /// detached/reclaimed and the required TLB invalidation has completed. If
-    /// cleanup or CPU state is uncertain, the frame token must be deliberately
-    /// leaked rather than made reusable.
+    /// cleanup or CPU state is uncertain, use `leak_frame()` rather than extracting
+    /// the token, so the allocator can never reuse this physical frame.
     ///
     /// ```compile_fail
     /// use oneos_core::AddressSpaceRoot;
