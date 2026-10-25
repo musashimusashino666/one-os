@@ -42,7 +42,7 @@ review approval as enforced while its count is zero.
 
 ## Address-space teardown work
 
-The current batch user-page teardown API in `oneos-core` is host-testable, but the kernel integration must still provide checked access to private page-table frames belonging to an inactive root and reclaim those tables only after detachment. Follow [the kernel-backed teardown contract](ADDRESS_SPACE_TEARDOWN_PLAN.md) for the required invariants, failure semantics, and QEMU acceptance tests. Do not describe core-only teardown as complete runtime process teardown.
+PR #31 now contains an initial kernel integration slice: the inactive-root editor validates each table frame through the active root's physical-memory-offset mapping and requires root-and-level ownership records for private tables. The normal-boot A -> B -> A smoke path exercises one real user-data mapping, sentinel read/write, teardown, re-zeroing, and bottom-up private-table reclamation. The change is still a Draft and the latest-head CI result is the acceptance gate; this smoke path does not enter Ring 3 or prove process isolation. Follow [the kernel-backed teardown contract](ADDRESS_SPACE_TEARDOWN_PLAN.md) for the invariants, failure semantics, and remaining QEMU acceptance coverage.
 
 ## Build a BIOS image
 
