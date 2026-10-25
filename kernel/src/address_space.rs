@@ -1078,9 +1078,9 @@ pub fn activate_supervisor_kernel_root(
         // The root may already be active. Never recycle its frame after a
         // switch attempt whose observed result is uncertain.
         // SAFETY: this root is not active. Cleanup/access is uncertain, so the
-            // token is intentionally discarded without returning it to the allocator;
-            // the allocator continues to mark the physical frame as allocated.
-            let _unreleased_frame = unsafe { root.into_frame() };
+        // token is intentionally discarded without returning it to the allocator;
+        // the allocator continues to mark the physical frame as allocated.
+        let _unreleased_frame = unsafe { root.into_frame() };
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -1148,9 +1148,9 @@ fn clear_and_release_root(
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
         // SAFETY: this root is not active. Cleanup/access is uncertain, so the
-            // token is intentionally discarded without returning it to the allocator;
-            // the allocator continues to mark the physical frame as allocated.
-            let _unreleased_frame = unsafe { root.into_frame() };
+        // token is intentionally discarded without returning it to the allocator;
+        // the allocator continues to mark the physical frame as allocated.
+        let _unreleased_frame = unsafe { root.into_frame() };
         return Err(error);
     }
     // SAFETY: the root PML4 was cleared and verified above. Callers either
