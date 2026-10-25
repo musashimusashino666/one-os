@@ -3,7 +3,15 @@
 //! The registry reserves metadata capacity before a physical frame is allocated,
 //! retains the non-Copy token until the frame is released, and refuses to release
 //! a published page-table frame until the caller proves it detached and records
-//! that state. Synchronization is the caller's responsibility.
+//! that state.
+//!
+//! This type does not provide internal synchronization. Mutating methods require
+//! exclusive `&mut` access, and callers that place it behind interior mutability
+//! must serialize *all* reads and writes themselves. In the kernel, the wrapper
+//! uses a non-blocking atomic access guard for registry state; page-table tree
+//! mutation additionally requires the documented single-CPU, interrupts-disabled
+//! contract. Neither contract alone implements remote TLB shootdowns or makes
+//! the page-table tree safe for concurrent SMP mutation.
 
 /// The ownership token for a physical frame tracked by a frame registry.
 pub trait FrameToken {
@@ -50,9 +58,13 @@ pub enum PublishedFrameReleaseError<E, T> {
 
 /// Fixed-capacity storage for reserved and owned page-table frame tokens.
 ///
-/// A reservation consumes metadata capacity before allocation. install_reserved
+/// A reservation consumes metadata capacity before allocation. `install_reserved`
 /// transfers a non-Copy ownership token into the slot. Published frames remain
-/// owned, but cannot be released through take_unpublished.
+/// owned, but cannot be released through `take_unpublished`.
+///
+/// This registry is intentionally unsynchronized. Every mutation requires
+/// exclusive access, and any kernel wrapper using `UnsafeCell` must establish
+/// exclusion for reads as well as writes before dereferencing the cell.
 pub struct PageTableFrameRegistry<T: FrameToken, const CAPACITY: usize> {
     slots: [FrameSlot<T>; CAPACITY],
 }
@@ -859,6 +871,44 @@ mod tests {
         assert!(matches!(
             first,
             Err(super::PublishedFrameReleaseError::Release(()))
+        ));
+        assert!(registry.contains(0xA000));
+        assert_eq!(registry.published_count_for_root(0x3000), Ok(1));
+        assert_eq!(
+            registry.detached_table_for_root(0x3000, 0),
+            Some((0xA000, 1))
+        );
+        assert_eq!(registry.available_slots(), 0);
+
+        // A detached token still cannot be adopted or released using a different
+        // root identity or paging level while the original root awaits retry.
+        let wrong_root = unsafe {
+            registry.release_published_for_root_with(
+                0x5000,
+                0xA000,
+                1,
+                injected_free_frame_failure::<TestFrame>,
+            )
+        };
+        assert!(matches!(
+            wrong_root,
+            Err(super::PublishedFrameReleaseError::Registry(
+                FrameRegistryError::PublishedOwnerMismatch
+            ))
+        ));
+        let wrong_level = unsafe {
+            registry.release_published_for_root_with(
+                0x3000,
+                0xA000,
+                2,
+                injected_free_frame_failure::<TestFrame>,
+            )
+        };
+        assert!(matches!(
+            wrong_level,
+            Err(super::PublishedFrameReleaseError::Registry(
+                FrameRegistryError::PublishedOwnerMismatch
+            ))
         ));
         assert!(registry.contains(0xA000));
         assert_eq!(registry.published_count_for_root(0x3000), Ok(1));
