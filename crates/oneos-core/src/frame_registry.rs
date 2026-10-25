@@ -141,7 +141,10 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     /// `take_unpublished`; it cannot be reclaimed by the root-scoped API.
     pub fn mark_published(&mut self, physical_address: u64) -> Result<(), FrameRegistryError> {
         for slot in &mut self.slots {
-            if let FrameSlot::Owned { token, published, .. } = slot {
+            if let FrameSlot::Owned {
+                token, published, ..
+            } = slot
+            {
                 if token.frame_address() == physical_address {
                     *published = true;
                     return Ok(());
@@ -194,11 +197,7 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
     }
 
     /// Returns whether a published frame is recorded as private to this root.
-    pub fn contains_published_for_root(
-        &self,
-        root_physical: u64,
-        physical_address: u64,
-    ) -> bool {
+    pub fn contains_published_for_root(&self, root_physical: u64, physical_address: u64) -> bool {
         if root_physical == 0 || root_physical & (crate::PAGE_SIZE - 1) != 0 {
             return false;
         }
