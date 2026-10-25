@@ -14,14 +14,15 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     initialize_user_frame, is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k,
-    map_user_data_page, physical_page_is_in_allowed_region, recursive_entry_matches_root,
-    recursive_entry_is_valid_kernel_root, recursive_table_page_virtual_address, translate_4level,
-    unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
+    map_user_data_page, physical_page_is_in_allowed_region, recursive_entry_is_valid_kernel_root,
+    recursive_entry_matches_root, recursive_table_page_virtual_address, translate_4level, unmap_4k,
+    unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
-    UserPageMappingRegistry, ZeroedFrame, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+    UserPageMappingError, UserPageMappingRegistry, ZeroedFrame, PAGE_SIZE,
+    USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -1175,7 +1176,10 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
     fn active_offset_alias(&self, physical_address: u64) -> Option<*mut u8> {
         if !valid_physical_page(physical_address, self.physical_address_bits)
             || !self.is_usable_frame(physical_address)
-            || !matches!(super::memory::is_frame_allocated(physical_address), Ok(true))
+            || !matches!(
+                super::memory::is_frame_allocated(physical_address),
+                Ok(true)
+            )
         {
             return None;
         }
@@ -1308,7 +1312,10 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {
-        matches!(super::memory::is_frame_allocated(physical_address), Ok(true))
+        matches!(
+            super::memory::is_frame_allocated(physical_address),
+            Ok(true)
+        )
     }
 
     fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
@@ -1635,9 +1642,8 @@ fn release_detached_private_table(
             .take_published_for_root(editor.target_root_physical, table_physical)
     }
     .map_err(|_| PagingError::PageTableFrameReleaseFailed)?;
-    super::memory::free_frame(frame).map_err(|(_error, _frame)| {
-        PagingError::PageTableFrameReleaseFailed
-    })
+    super::memory::free_frame(frame)
+        .map_err(|(_error, _frame)| PagingError::PageTableFrameReleaseFailed)
 }
 
 fn reclaim_private_pd(
@@ -1651,9 +1657,7 @@ fn reclaim_private_pd(
         if entry == 0 {
             continue;
         }
-        if entry & PRESENT == 0
-            || entry & LARGE_PAGE != 0
-            || entry & PROTECTION_KEY_FIELD_MASK != 0
+        if entry & PRESENT == 0 || entry & LARGE_PAGE != 0 || entry & PROTECTION_KEY_FIELD_MASK != 0
         {
             return Err(PagingError::InactivePageTableMalformed);
         }
@@ -1679,9 +1683,7 @@ fn reclaim_private_pdpt(
         if entry == 0 {
             continue;
         }
-        if entry & PRESENT == 0
-            || entry & LARGE_PAGE != 0
-            || entry & PROTECTION_KEY_FIELD_MASK != 0
+        if entry & PRESENT == 0 || entry & LARGE_PAGE != 0 || entry & PROTECTION_KEY_FIELD_MASK != 0
         {
             return Err(PagingError::InactivePageTableMalformed);
         }
@@ -1707,9 +1709,7 @@ fn reclaim_private_user_tables(
         if entry == 0 {
             continue;
         }
-        if entry & PRESENT == 0
-            || entry & LARGE_PAGE != 0
-            || entry & PROTECTION_KEY_FIELD_MASK != 0
+        if entry & PRESENT == 0 || entry & LARGE_PAGE != 0 || entry & PROTECTION_KEY_FIELD_MASK != 0
         {
             return Err(PagingError::InactivePageTableMalformed);
         }
@@ -1800,7 +1800,7 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
 
     reclaim_private_user_tables(root.physical_address(), &mut editor)
 }
- 
+
 /// Kernel implementation of the unsafe zero-before-publication contract.
 ///
 /// The recursive PML4 index must describe the current CR3 root. It may be the
