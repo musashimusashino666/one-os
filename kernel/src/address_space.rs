@@ -235,7 +235,10 @@ pub fn verify_root_initialization_smoke_test(
         } else {
             // The destination frame could not be safely accessed for zeroization.
             // Keep it allocated rather than recycle potentially stale contents.
-            core::mem::forget(root);
+            // SAFETY: this root is not active. Cleanup/access is uncertain, so the
+            // token is intentionally discarded without returning it to the allocator;
+            // the allocator continues to mark the physical frame as allocated.
+            let _unreleased_frame = unsafe { root.into_frame() };
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -321,7 +324,10 @@ fn create_inactive_address_space_root(
         } else {
             // Do not recycle a frame whose contents could not be validated and
             // cleared through the checked physical-memory-offset alias.
-            core::mem::forget(root);
+            // SAFETY: this root is not active. Cleanup/access is uncertain, so the
+            // token is intentionally discarded without returning it to the allocator;
+            // the allocator continues to mark the physical frame as allocated.
+            let _unreleased_frame = unsafe { root.into_frame() };
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -987,7 +993,10 @@ pub fn activate_supervisor_kernel_root(
         } else {
             // Keep an inaccessible allocation reserved rather than recycling
             // memory whose contents could not be safely zeroed.
-            core::mem::forget(root);
+            // SAFETY: this root is not active. Cleanup/access is uncertain, so the
+            // token is intentionally discarded without returning it to the allocator;
+            // the allocator continues to mark the physical frame as allocated.
+            let _unreleased_frame = unsafe { root.into_frame() };
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -1068,7 +1077,10 @@ pub fn activate_supervisor_kernel_root(
     if active_root_table_physical() != root_physical {
         // The root may already be active. Never recycle its frame after a
         // switch attempt whose observed result is uncertain.
-        core::mem::forget(root);
+        // SAFETY: this root is not active. Cleanup/access is uncertain, so the
+            // token is intentionally discarded without returning it to the allocator;
+            // the allocator continues to mark the physical frame as allocated.
+            let _unreleased_frame = unsafe { root.into_frame() };
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
@@ -1135,7 +1147,10 @@ fn clear_and_release_root(
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
-        core::mem::forget(root);
+        // SAFETY: this root is not active. Cleanup/access is uncertain, so the
+            // token is intentionally discarded without returning it to the allocator;
+            // the allocator continues to mark the physical frame as allocated.
+            let _unreleased_frame = unsafe { root.into_frame() };
         return Err(error);
     }
     // SAFETY: the root PML4 was cleared and verified above. Callers either
