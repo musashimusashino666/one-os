@@ -19,7 +19,7 @@ use oneos_core::{
     validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
     FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, UserFrameInitializationError,
-    UserFrameInitializer, PAGE_SIZE,
+    UserFrameInitializer, USER_VIRTUAL_ADDRESS_LIMIT, PAGE_SIZE,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -541,6 +541,28 @@ fn mark_table_frame_published(physical_address: u64) {
     let _ = unsafe { &mut *TABLE_FRAMES.registry.get() }.mark_published(physical_address);
 }
 
+fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64) {
+    // SAFETY: registry mutations are serialized by the single-core,
+    // interrupts-disabled bootstrap precondition. Lower-half page-table paths
+    // are private to the root whose entry was just published.
+    match unsafe { &mut *TABLE_FRAMES.registry.get() }
+        .mark_published_for_root(root_physical, physical_address)
+    {
+        Ok(()) => {}
+        Err(FrameRegistryError::FrameNotFound) => {
+            panic!("private lower-half page table is missing from the frame registry")
+        }
+        Err(
+            FrameRegistryError::InvalidOwnerRoot
+            | FrameRegistryError::PublishedOwnerMismatch
+            | FrameRegistryError::NotPublished
+            | FrameRegistryError::InvalidReservation
+            | FrameRegistryError::DuplicateFrameAddress
+            | FrameRegistryError::PublishedFrame,
+        ) => panic!("private page-table root ownership invariant violated"),
+    }
+}
+
 fn release_registered_table_frame(physical_address: u64) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
@@ -813,9 +835,19 @@ impl<'a> KernelPageTableEditor<'a> {
     fn mark_reachable_table_frames(&self) {
         // The root publication makes each staged table reachable. Record all
         // allocator-owned frames on this virtual path, not just the first child.
+        // The lower canonical half is private to this address-space root, so its
+        // table frames must carry root ownership before inactive-root teardown
+        // can safely distinguish them from shared kernel-half tables.
         for level in 1..=3 {
             if let Some(physical_address) = self.reachable_table_physical(level) {
-                mark_table_frame_published(physical_address);
+                if self.target_virtual_address < USER_VIRTUAL_ADDRESS_LIMIT {
+                    mark_table_frame_published_for_root(
+                        self.root_table_physical,
+                        physical_address,
+                    );
+                } else {
+                    mark_table_frame_published(physical_address);
+                }
             }
         }
     }
