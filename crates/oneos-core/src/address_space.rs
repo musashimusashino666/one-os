@@ -189,6 +189,16 @@ impl AddressSpaceRoot {
     pub unsafe fn into_frame(self) -> Frame {
         self.frame
     }
+
+    /// Intentionally abandons this root's allocator token without releasing its frame.
+    ///
+    /// Unlike `into_frame`, this operation does not require the caller to prove that
+    /// the root is inactive. It is appropriate when CR3 activation, CPU state, or
+    /// cleanup is uncertain and recycling the physical frame could corrupt a live
+    /// page table. The allocator's allocation record is deliberately left intact.
+    pub fn leak_frame(self) {
+        let _intentionally_leaked_root = core::mem::ManuallyDrop::new(self);
+    }
 }
 
 /// A root that the kernel has activated in CR3.
@@ -633,6 +643,25 @@ mod tests {
         // SAFETY: unit tests use only the in-memory TestEditor model and never
         // activate these roots on hardware.
         unsafe { root.into_frame() }
+    }
+
+    #[test]
+    fn leaking_root_keeps_its_frame_reserved_from_allocator_reuse() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let frame = allocator.allocate_frame().unwrap();
+        let leaked_physical = frame.physical_address();
+        let root = AddressSpaceRoot::try_from_frame(frame, 32).unwrap();
+
+        root.leak_frame();
+
+        assert_eq!(allocator.stats().allocated_frames, 1);
+        let probe = allocator.allocate_frame().unwrap();
+        assert_ne!(probe.physical_address(), leaked_physical);
+        allocator.free_frame(probe).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 1);
     }
 
     #[test]
