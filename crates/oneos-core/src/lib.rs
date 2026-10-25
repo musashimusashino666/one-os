@@ -31,7 +31,9 @@ pub use address_space::{
 pub use frame_allocator::{
     Frame, FrameAllocator, FrameAllocatorError, FrameAllocatorStats, FrameSegment, PAGE_SIZE,
 };
-pub use frame_registry::{FrameRegistryError, FrameToken, PageTableFrameRegistry};
+pub use frame_registry::{
+    FrameRegistryError, FrameToken, PageTableFrameRegistry, PublishedFrameReleaseError,
+};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
