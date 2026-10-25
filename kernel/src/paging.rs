@@ -1495,10 +1495,32 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
         )?;
     }
 
-    // Walk the registry in the opposite direction as well: every token retained
-    // for a mapped VA must still have a present PTE that resolves to its exact
-    // physical frame. This catches deleted/missing PTEs that a tree-only walk
-    // cannot see.
+    // Walk ownership metadata in the opposite direction too: every published
+    // non-detached table owned by this root must be reachable from the root.
+    // Detached tokens are the explicit exception: a previous allocator-release
+    // failure leaves those frames in the root-scoped retry list.
+    let mut owned_table_ordinal = 0usize;
+    loop {
+        let owned_table = TABLE_FRAMES
+            .lock()
+            .root_owned_table_at(root_physical, owned_table_ordinal);
+        let Some((table_physical, table_level, published, detached)) = owned_table else {
+            break;
+        };
+        owned_table_ordinal += 1;
+
+        if !published || table_level.is_none() {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
+        }
+        if !detached && !visited[..visited_count].contains(&table_physical) {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
+        }
+    }
+
+    // Walk the mapping registry in the opposite direction as well: every token
+    // retained for a mapped VA must still have a present PTE that resolves to
+    // its exact physical frame. This catches deleted/missing PTEs that a tree-only
+    // walk cannot see.
     for slot_index in 0..CAPACITY {
         let Some((virtual_address, expected_physical)) = registry.mapped_entry_at(slot_index)
         else {
@@ -1881,6 +1903,52 @@ fn reclaim_private_user_tables<E>(
     Ok(())
 }
 
+fn initialize_user_frame_or_release_on_error<E>(
+    frame: Frame,
+    initializer: &mut impl UserFrameInitializer,
+    release_frame: &mut impl FnMut(Frame) -> Result<(), (E, Frame)>,
+) -> Result<ZeroedFrame, PagingError> {
+    match initialize_user_frame(frame, initializer) {
+        Ok(zeroed) => Ok(zeroed),
+        Err((_initialization_error, frame)) => match release_frame(frame) {
+            Ok(()) => Err(PagingError::UserFrameInitializationFailed),
+            Err((_release_error, frame)) => {
+                // A failed release must not permit reuse of a frame whose token
+                // is no longer tracked by a caller. Fail-stop while retaining it
+                // as allocated in the physical allocator.
+                let _unreleased_frame_physical = frame.physical_address();
+                panic!(
+                    "allocator failed to release a frame after user-frame initialization failure"
+                );
+            }
+        },
+    }
+}
+
+/// Exercises the initializer-failure path and verifies that the exact returned
+/// frame token reaches the allocator-release callback instead of being dropped.
+pub(super) fn verify_user_frame_initialization_failure_releases_frame_for_smoke(
+) -> Result<(), PagingError> {
+    let frame = super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let expected_physical = frame.physical_address();
+    let mut initializer = FailingUserFrameInitializer;
+    let mut released_physical = None;
+    let mut release_frame = |frame: Frame| {
+        released_physical = Some(frame.physical_address());
+        super::memory::free_frame(frame)
+    };
+
+    let result =
+        initialize_user_frame_or_release_on_error(frame, &mut initializer, &mut release_frame);
+    drop(release_frame);
+    if !matches!(result, Err(PagingError::UserFrameInitializationFailed))
+        || released_physical != Some(expected_physical)
+    {
+        return Err(PagingError::UserFrameInitializationFailed);
+    }
+    Ok(())
+}
+
 /// Allocates, zeroes, and maps one test user-data page into an inactive root.
 ///
 /// This helper is used by the normal-boot lifecycle smoke test. The returned
@@ -1898,8 +1966,12 @@ pub fn map_test_user_page_for_teardown(
     // keeps interrupts disabled and the active root stable for this operation.
     let mut initializer =
         unsafe { KernelUserFrameInitializer::new(boot_info, active_root.recursive_index()) };
-    let zeroed = initialize_user_frame(frame, &mut initializer)
-        .map_err(|(_error, _frame)| PagingError::UserFrameInitializationFailed)?;
+    let mut release_frame = super::memory::free_frame;
+    let zeroed = initialize_user_frame_or_release_on_error(
+        frame,
+        &mut initializer,
+        &mut release_frame,
+    )?;
 
     let mut registry = UserPageMappingRegistry::new(root);
     if let Err((error, zeroed)) =
@@ -1942,6 +2014,7 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
 ) -> Result<(), PagingError> {
     const TEST_VA: u64 = 0x4000;
     let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
+    verify_user_frame_initialization_failure_releases_frame_for_smoke()?;
     let root_physical = root.physical_address();
     let pml4_index = ((TEST_VA >> 39) & 0x1ff) as usize;
     let pdpt_index = ((TEST_VA >> 30) & 0x1ff) as usize;
@@ -2054,6 +2127,57 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
         0,
         PagingError::InactivePageTableMalformed
     );
+
+    // Register an allocated but unreachable table frame to prove reverse
+    // ownership validation rejects an orphan before teardown can mutate the tree.
+    let orphan_table_physical = editor
+        .allocate_table()
+        .ok_or(PagingError::FrameAllocationFailed)?;
+    // SAFETY: the orphan is an exclusively allocated, zeroed table frame. This
+    // injected bad state exists only to test that preflight rejects it.
+    if unsafe {
+        TABLE_FRAMES.lock().mark_published_for_root(
+            root_physical,
+            orphan_table_physical,
+            1,
+        )
+    }
+    .is_err()
+    {
+        editor.free_table(orphan_table_physical);
+        return Err(PagingError::InactivePageTableOwnershipViolation);
+    }
+    let orphan_rejected = matches!(
+        preflight_private_user_tree(root_physical, registry, &mut editor),
+        Err(PagingError::InactivePageTableOwnershipViolation)
+    );
+
+    // Restore a valid detached-pending state so the allocated test frame can be
+    // reclaimed by the same production release transaction used by teardown.
+    // SAFETY: this injected frame has no parent entry, is zeroed and unreachable.
+    unsafe {
+        TABLE_FRAMES
+            .lock()
+            .mark_published_table_detached_for_root(
+                root_physical,
+                orphan_table_physical,
+                1,
+            )
+    }
+    .map_err(|_| PagingError::InactivePageTableOwnershipViolation)?;
+    if !editor.remove_staged_table(orphan_table_physical) {
+        return Err(PagingError::InactivePageTableOwnershipViolation);
+    }
+    let mut release_table_frame = super::memory::free_frame;
+    release_pending_detached_private_table(
+        orphan_table_physical,
+        1,
+        &mut editor,
+        &mut release_table_frame,
+    )?;
+    if !orphan_rejected {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
 
     if !registry.is_mapped(TEST_VA)
         || preflight_private_user_tree(root_physical, registry, &mut editor).is_err()
@@ -2201,6 +2325,16 @@ impl<'a> KernelUserFrameInitializer<'a> {
             boot_info,
             recursive_index,
         }
+    }
+}
+
+struct FailingUserFrameInitializer;
+
+// SAFETY: this test initializer always fails and never claims that any frame is
+// zeroed, so initialize_user_frame cannot create an invalid ZeroedFrame token.
+unsafe impl UserFrameInitializer for FailingUserFrameInitializer {
+    fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
+        Err(UserFrameInitializationError::InitializationFailed)
     }
 }
 
