@@ -176,7 +176,12 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
 
         let physical_end = physical_start + length;
         let virtual_end = virtual_start + length;
-        for record in self.slots.iter().copied().filter(|record| record.is_occupied()) {
+        for record in self
+            .slots
+            .iter()
+            .copied()
+            .filter(|record| record.is_occupied())
+        {
             if record.root_physical == root_physical
                 && ranges_overlap(
                     virtual_start,
@@ -230,10 +235,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Commits a reservation after the corresponding PTE/range is published.
-    pub fn commit_alias(
-        &mut self,
-        reservation: FrameWxReservation,
-    ) -> Result<(), FrameWxError> {
+    pub fn commit_alias(&mut self, reservation: FrameWxReservation) -> Result<(), FrameWxError> {
         let record = self.validate_token(
             reservation.registry_id,
             reservation.slot,
@@ -248,10 +250,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
     }
 
     /// Cancels a reservation only when the corresponding alias was not published.
-    pub fn cancel_alias(
-        &mut self,
-        reservation: FrameWxReservation,
-    ) -> Result<(), FrameWxError> {
+    pub fn cancel_alias(&mut self, reservation: FrameWxReservation) -> Result<(), FrameWxError> {
         self.validate_token(
             reservation.registry_id,
             reservation.slot,
@@ -437,10 +436,7 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
 }
 
 fn validate_virtual_range(virtual_start: u64, length: u64) -> Result<(), FrameWxError> {
-    if virtual_start & (PAGE_SIZE - 1) != 0
-        || length == 0
-        || length & (PAGE_SIZE - 1) != 0
-    {
+    if virtual_start & (PAGE_SIZE - 1) != 0 || length == 0 || length & (PAGE_SIZE - 1) != 0 {
         return Err(FrameWxError::InvalidVirtualRange);
     }
     let end = virtual_start
@@ -503,13 +499,15 @@ mod tests {
     fn rejects_an_alias_that_is_both_writable_and_executable() {
         let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_A,
-                VA_A,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(true, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_A,
+                    VA_A,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(true, true),
+                )
+                .unwrap_err(),
             FrameWxError::WritableExecutableAlias
         );
         assert_eq!(registry.occupied_slots(), 0);
@@ -528,13 +526,15 @@ mod tests {
         );
 
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
     }
@@ -552,13 +552,15 @@ mod tests {
         );
 
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(true, false),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(true, false),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
     }
@@ -577,13 +579,15 @@ mod tests {
         );
 
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_A,
-                large_physical + 17 * PAGE_SIZE,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_A,
+                    large_physical + 17 * PAGE_SIZE,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
 
@@ -612,13 +616,15 @@ mod tests {
         );
 
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_A,
-                large_physical + ONE_GIB - PAGE_SIZE,
-                PAGE_SIZE,
-                FrameWxPermissions::new(true, false),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_A,
+                    large_physical + ONE_GIB - PAGE_SIZE,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(true, false),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
     }
@@ -626,23 +632,27 @@ mod tests {
     #[test]
     fn reserved_aliases_participate_in_conflict_checks_before_publication() {
         let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
-        let reservation = registry.reserve_alias_range(
-            ROOT_A,
-            VA_A,
-            FRAME_A,
-            PAGE_SIZE,
-            FrameWxPermissions::new(true, false),
-        ).unwrap();
+        let reservation = registry
+            .reserve_alias_range(
+                ROOT_A,
+                VA_A,
+                FRAME_A,
+                PAGE_SIZE,
+                FrameWxPermissions::new(true, false),
+            )
+            .unwrap();
 
         assert!(registry.has_pending_reservations());
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
         registry.cancel_alias(reservation).unwrap();
@@ -665,13 +675,15 @@ mod tests {
         assert_eq!(registry.published_aliases(), 0);
         assert_eq!(registry.occupied_slots(), 1);
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
 
@@ -703,13 +715,15 @@ mod tests {
         assert_eq!(registry.published_aliases(), 1);
         assert!(registry.frame_has_writable_alias(FRAME_A));
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_A,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_A,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
             FrameWxError::PhysicalAliasWxConflict
         );
     }
@@ -744,6 +758,19 @@ mod tests {
             PAGE_SIZE,
             FrameWxPermissions::new(false, false),
         );
+
+        let removal = registry.begin_removal(ROOT_B, VA_B).unwrap();
+        registry.complete_removal(removal).unwrap();
+        add(
+            &mut registry,
+            ROOT_B,
+            VA_B,
+            FRAME_A,
+            PAGE_SIZE,
+            FrameWxPermissions::new(false, true),
+        );
+        assert!(registry.frame_has_executable_alias(FRAME_A));
+        assert!(!registry.frame_has_writable_alias(FRAME_A));
     }
 
     #[test]
@@ -759,13 +786,15 @@ mod tests {
         );
 
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_A,
-                VA_A + PAGE_SIZE,
-                FRAME_B,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, false),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_A,
+                    VA_A + PAGE_SIZE,
+                    FRAME_B,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, false),
+                )
+                .unwrap_err(),
             FrameWxError::VirtualAliasConflict
         );
     }
@@ -803,13 +832,15 @@ mod tests {
             FrameWxPermissions::new(false, false),
         );
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                FRAME_B,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, false),
-            ).unwrap_err(),
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    FRAME_B,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, false),
+                )
+                .unwrap_err(),
             FrameWxError::CapacityExhausted
         );
         assert_eq!(registry.occupied_slots(), 1);
@@ -824,13 +855,15 @@ mod tests {
         let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
         for root in [0, ROOT_A + 1, 1u64 << 48] {
             assert_eq!(
-                registry.reserve_alias_range(
-                    root,
-                    VA_A,
-                    FRAME_A,
-                    PAGE_SIZE,
-                    FrameWxPermissions::new(false, false),
-                ).unwrap_err(),
+                registry
+                    .reserve_alias_range(
+                        root,
+                        VA_A,
+                        FRAME_A,
+                        PAGE_SIZE,
+                        FrameWxPermissions::new(false, false),
+                    )
+                    .unwrap_err(),
                 FrameWxError::InvalidRootAddress
             );
         }
@@ -843,13 +876,15 @@ mod tests {
             (VA_A, PAGE_SIZE + 1),
         ] {
             assert_eq!(
-                registry.reserve_alias_range(
-                    ROOT_A,
-                    va,
-                    FRAME_A,
-                    len,
-                    FrameWxPermissions::new(false, false),
-                ).unwrap_err(),
+                registry
+                    .reserve_alias_range(
+                        ROOT_A,
+                        va,
+                        FRAME_A,
+                        len,
+                        FrameWxPermissions::new(false, false),
+                    )
+                    .unwrap_err(),
                 FrameWxError::InvalidVirtualRange
             );
         }
@@ -861,13 +896,15 @@ mod tests {
             (FRAME_A, PAGE_SIZE + 1),
         ] {
             assert_eq!(
-                registry.reserve_alias_range(
-                    ROOT_A,
-                    VA_A,
-                    physical,
-                    len,
-                    FrameWxPermissions::new(false, false),
-                ).unwrap_err(),
+                registry
+                    .reserve_alias_range(
+                        ROOT_A,
+                        VA_A,
+                        physical,
+                        len,
+                        FrameWxPermissions::new(false, false),
+                    )
+                    .unwrap_err(),
                 FrameWxError::InvalidPhysicalRange
             );
         }
@@ -876,13 +913,15 @@ mod tests {
     #[test]
     fn removal_cannot_begin_for_an_unpublished_reservation() {
         let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
-        let _reservation = registry.reserve_alias_range(
-            ROOT_A,
-            VA_A,
-            FRAME_A,
-            PAGE_SIZE,
-            FrameWxPermissions::new(true, false),
-        ).unwrap();
+        let _reservation = registry
+            .reserve_alias_range(
+                ROOT_A,
+                VA_A,
+                FRAME_A,
+                PAGE_SIZE,
+                FrameWxPermissions::new(true, false),
+            )
+            .unwrap();
 
         assert_eq!(
             registry.begin_removal(ROOT_A, VA_A).unwrap_err(),
