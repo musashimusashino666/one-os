@@ -151,7 +151,7 @@ impl AddressSpaceError {
             }
             Self::PagingPrecondition(error) => error.message(),
             Self::PagingIntegrationFailed => {
-                b"Inactive user-page lifecycle smoke test failed\\n"
+                b"Inactive user-page lifecycle smoke test failed\n"
             }
             Self::RootActivationFailed => {
                 b"CR3 did not report the newly activated address-space root\n"
