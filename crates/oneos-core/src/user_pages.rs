@@ -145,12 +145,98 @@ pub enum UserPageMappingError {
     DuplicatePhysicalFrame,
     /// The requested address has no mapping owned by this registry.
     NoOwnedMapping,
+    /// Teardown found a registry reservation that was not published as a mapping.
+    IncompleteMappingReservation,
     /// The page-table translation disagrees with the registry's ownership record.
     MappingInvariantViolation,
     /// The generic page-table mutation engine rejected the operation.
     PageTable(PageTableMutationError),
     /// The current page-table walk could not establish a safe translation.
     Translation(PageTableError),
+}
+
+
+/// Completed progress for a batch of user-data page removals.
+///
+/// Each returned frame has already been detached from its leaf mapping and its
+/// translation invalidation hook has completed. The caller still owns every
+/// returned token and must return it to the issuing allocator or retain it.
+/// Unused slots are None. Dropping this result without taking/freeing its frames
+/// intentionally leaks those allocations rather than making them reusable.
+#[must_use = "retain and release every frame returned by user-page teardown"]
+#[derive(Debug)]
+pub struct UserPageTeardownResult<const CAPACITY: usize> {
+    frames: [Option<Frame>; CAPACITY],
+    completed_pages: usize,
+}
+
+impl<const CAPACITY: usize> UserPageTeardownResult<CAPACITY> {
+    fn empty() -> Self {
+        Self {
+            frames: core::array::from_fn(|_| None),
+            completed_pages: 0,
+        }
+    }
+
+    /// Number of leaf mappings detached and invalidated by this operation.
+    pub const fn completed_pages(&self) -> usize {
+        self.completed_pages
+    }
+
+    /// Takes ownership of a returned frame by its completion-order index.
+    ///
+    /// Returns None for an out-of-range index or a frame already taken.
+    pub fn take_frame(&mut self, index: usize) -> Option<Frame> {
+        self.frames.get_mut(index).and_then(Option::take)
+    }
+
+    /// Consumes the result and returns the frame slots, with unused slots as None.
+    pub fn into_frames(self) -> [Option<Frame>; CAPACITY] {
+        self.frames
+    }
+}
+
+/// Failure from batch user-data page teardown.
+///
+/// A preflight failure guarantees that no mappings were modified. If an editor
+/// unexpectedly fails after mutation begins, partial_result retains all frame
+/// tokens whose pages were already unmapped and invalidated; remaining mappings
+/// and tokens stay in the registry and can be retried. Never free or reactivate
+/// the address-space root merely because a partial batch completed.
+#[must_use = "inspect partial teardown progress and retain every returned frame"]
+#[derive(Debug)]
+pub struct UserPageTeardownFailure<const CAPACITY: usize> {
+    error: UserPageMappingError,
+    partial_result: UserPageTeardownResult<CAPACITY>,
+}
+
+impl<const CAPACITY: usize> UserPageTeardownFailure<CAPACITY> {
+    fn before_mutation(error: UserPageMappingError) -> Self {
+        Self {
+            error,
+            partial_result: UserPageTeardownResult::empty(),
+        }
+    }
+
+    /// The reason the teardown stopped.
+    pub const fn error(&self) -> UserPageMappingError {
+        self.error
+    }
+
+    /// Number of pages safely unmapped before the failure.
+    pub const fn completed_pages(&self) -> usize {
+        self.partial_result.completed_pages()
+    }
+
+    /// Borrow the partial result to retrieve already-detached frame tokens.
+    pub fn partial_result_mut(&mut self) -> &mut UserPageTeardownResult<CAPACITY> {
+        &mut self.partial_result
+    }
+
+    /// Consumes the failure and returns already-detached frame tokens.
+    pub fn into_partial_result(self) -> UserPageTeardownResult<CAPACITY> {
+        self.partial_result
+    }
 }
 
 enum MappingSlot<T: FrameToken> {
@@ -475,12 +561,127 @@ pub fn unmap_user_data_page<E: UserAddressSpaceEditor, const CAPACITY: usize>(
     Ok((unmapped, frame))
 }
 
+
+/// Validates that one registry-owned virtual address still maps the exact
+/// writable, user-accessible, NX 4 KiB frame recorded by the ownership token.
+fn preflight_user_data_mapping<E: UserAddressSpaceEditor>(
+    root_physical: u64,
+    virtual_address: u64,
+    expected_physical: u64,
+    editor: &mut E,
+) -> Result<(), UserPageMappingError> {
+    validate_user_page_address(virtual_address)?;
+
+    // translate_4level calls the reader in level order (4, 3, 2, 1). Track the
+    // level explicitly because PageTableEditor validates access per level.
+    let mut next_level: u8 = 4;
+    let translation = translate_4level(virtual_address, root_physical, |table, index| {
+        let current_level = next_level;
+        next_level = next_level.saturating_sub(1);
+        editor.read_entry(table, index, current_level)
+    })
+    .map_err(UserPageMappingError::Translation)?;
+
+    if translation.page_size != PAGE_SIZE
+        || translation.physical_address != expected_physical
+        || !translation.user_accessible
+        || !translation.writable
+        || translation.executable
+    {
+        return Err(UserPageMappingError::MappingInvariantViolation);
+    }
+
+    Ok(())
+}
+
+/// Removes all user-data mappings tracked by one address-space registry.
+///
+/// The root must already be inactive, and the caller must serialize teardown
+/// with mapping, allocation, and any address-space activation. Every registry
+/// entry is preflighted before the first leaf is changed. Consequently, a
+/// detected bad mapping, unfinished reservation, wrong root, or invalid state
+/// returns without changing any page table.
+///
+/// Each successful leaf removal is followed by root-aware translation
+/// invalidation before its Frame token is returned. If the editor unexpectedly
+/// fails after mutation begins, the error reports partial progress: completed
+/// frames are returned in the failure value, and the still-mapped frames remain
+/// owned by the registry. Callers must retain/release those completed frames
+/// and may retry the remaining registry. Intermediate page-table pages and the
+/// root frame are deliberately not reclaimed by this function.
+///
+/// The initial implementation is for the existing serialized, single-CPU
+/// model. It does not provide remote TLB shootdowns or SMP safety.
+pub fn unmap_all_user_data_pages<E: UserAddressSpaceEditor, const CAPACITY: usize>(
+    root: &AddressSpaceRoot,
+    registry: &mut UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
+    editor: &mut E,
+) -> Result<UserPageTeardownResult<CAPACITY>, UserPageTeardownFailure<CAPACITY>> {
+    if let Err(error) = registry.validate_root(root) {
+        return Err(UserPageTeardownFailure::before_mutation(error));
+    }
+    if !root.is_initialized() {
+        return Err(UserPageTeardownFailure::before_mutation(
+            UserPageMappingError::AddressSpaceNotInitialized,
+        ));
+    }
+
+    let root_physical = root.physical_address();
+    let mut virtual_addresses = [0u64; CAPACITY];
+    let mut mapping_count = 0usize;
+
+    // Preflight every registered mapping before the first destructive write.
+    for slot in &registry.slots {
+        match slot {
+            MappingSlot::Empty => {}
+            MappingSlot::Reserved { .. } => {
+                return Err(UserPageTeardownFailure::before_mutation(
+                    UserPageMappingError::IncompleteMappingReservation,
+                ));
+            }
+            MappingSlot::Mapped {
+                virtual_address,
+                token,
+            } => {
+                if let Err(error) = preflight_user_data_mapping(
+                    root_physical,
+                    *virtual_address,
+                    token.frame_address(),
+                    editor,
+                ) {
+                    return Err(UserPageTeardownFailure::before_mutation(error));
+                }
+                virtual_addresses[mapping_count] = *virtual_address;
+                mapping_count += 1;
+            }
+        }
+    }
+
+    let mut progress = UserPageTeardownResult::empty();
+    for virtual_address in virtual_addresses[..mapping_count].iter().copied() {
+        match unmap_user_data_page(root, virtual_address, registry, editor) {
+            Ok((_unmapped, frame)) => {
+                progress.frames[progress.completed_pages] = Some(frame);
+                progress.completed_pages += 1;
+            }
+            Err(error) => {
+                return Err(UserPageTeardownFailure {
+                    error,
+                    partial_result: progress,
+                });
+            }
+        }
+    }
+
+    Ok(progress)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        initialize_user_frame, map_user_data_page, unmap_user_data_page, UserAddressSpaceEditor,
-        UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
-        UserPageMappingRegistry, ZeroedFrame,
+        initialize_user_frame, map_user_data_page, unmap_all_user_data_pages,
+        unmap_user_data_page, UserAddressSpaceEditor, UserFrameInitializationError,
+        UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, ZeroedFrame,
     };
     use crate::{
         map_4k, unmap_4k, AddressSpaceRoot, AddressSpaceRootEditor, Frame, FrameAllocator,
@@ -523,7 +724,8 @@ mod tests {
 
     struct TestEditor {
         tables: [TestTable; 9],
-        data_frame: u64,
+        data_frames: [u64; TEST_FRAME_MEMORY_SLOTS],
+        data_frame_count: usize,
         fail_allocation: bool,
         fail_after_successful_allocations: Option<usize>,
         successful_allocations: usize,
@@ -547,7 +749,8 @@ mod tests {
                     TestTable::new(0xc000, false),
                     TestTable::new(0xd000, false),
                 ],
-                data_frame,
+                data_frames: [data_frame, 0, 0, 0],
+                data_frame_count: 1,
                 fail_allocation: false,
                 fail_after_successful_allocations: None,
                 successful_allocations: 0,
@@ -561,6 +764,18 @@ mod tests {
                 .expect("test data frame must fit the memory model");
             editor.set_entry(0x1000, 511, 0x1000 | PRESENT | WRITABLE);
             editor
+        }
+
+        fn register_data_frame(&mut self, physical_address: u64) {
+            if self.data_frames[..self.data_frame_count].contains(&physical_address) {
+                return;
+            }
+            let slot = self.data_frame_count;
+            assert!(slot < self.data_frames.len(), "test frame registry capacity exceeded");
+            self.data_frames[slot] = physical_address;
+            self.data_frame_count += 1;
+            self.ensure_frame_memory(physical_address)
+                .expect("test data frame must fit the memory model");
         }
 
         fn ensure_frame_memory(&mut self, physical_address: u64) -> Option<usize> {
@@ -706,7 +921,7 @@ mod tests {
         }
 
         fn is_frame_allocated(&self, physical_address: u64) -> bool {
-            physical_address == self.data_frame
+            self.data_frames[..self.data_frame_count].contains(&physical_address)
                 || self
                     .tables
                     .iter()
@@ -790,6 +1005,123 @@ mod tests {
         for table_physical in [0x2000, 0x3000, 0x4000, 0xb000, 0xc000, 0xd000] {
             editor.free_table(table_physical);
         }
+    }
+
+    #[test]
+    fn batch_teardown_unmaps_all_pages_and_returns_owned_frames_after_invalidation() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, first_frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let first_physical = first_frame.physical_address();
+        let second_frame = allocator.allocate_frame().unwrap();
+        let second_physical = second_frame.physical_address();
+        editor.register_data_frame(second_physical);
+
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
+        map_user_data_page(
+            &root,
+            0x4000,
+            initialize_user_frame(first_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+        map_user_data_page(
+            &root,
+            0x8000,
+            initialize_user_frame(second_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+
+        let mut result = unmap_all_user_data_pages(&root, &mut registry, &mut editor).unwrap();
+        assert_eq!(result.completed_pages(), 2);
+        assert!(!registry.is_mapped(0x4000));
+        assert!(!registry.is_mapped(0x8000));
+        assert_eq!(registry.available_slots(), 2);
+        assert_eq!(editor.invalidations, 4);
+        assert_eq!(
+            editor.last_invalidation,
+            Some((root.physical_address(), 0x8000))
+        );
+
+        let returned_first = result.take_frame(0).unwrap();
+        let returned_second = result.take_frame(1).unwrap();
+        assert_eq!(returned_first.physical_address(), first_physical);
+        assert_eq!(returned_second.physical_address(), second_physical);
+        assert!(result.take_frame(0).is_none());
+        allocator.free_frame(returned_first).unwrap();
+        allocator.free_frame(returned_second).unwrap();
+
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
+    }
+
+    #[test]
+    fn batch_teardown_preflights_every_page_before_mutating_any_leaf() {
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let (mut allocator, root, first_frame, mut editor) = setup(&mut slots, &mut bitmap);
+        let first_physical = first_frame.physical_address();
+        let second_frame = allocator.allocate_frame().unwrap();
+        let second_physical = second_frame.physical_address();
+        editor.register_data_frame(second_physical);
+
+        let mut registry = UserPageMappingRegistry::<ZeroedFrame, 2>::new(&root);
+        map_user_data_page(
+            &root,
+            0x4000,
+            initialize_user_frame(first_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+        map_user_data_page(
+            &root,
+            0x8000,
+            initialize_user_frame(second_frame, &mut editor).unwrap(),
+            &mut registry,
+            &mut editor,
+        )
+        .unwrap();
+
+        // Break the second leaf after both mappings are registered. Batch
+        // preflight must detect it before removing the first, valid mapping.
+        editor.set_entry(0x4000, 8, 0);
+        let failure = unmap_all_user_data_pages(&root, &mut registry, &mut editor)
+            .expect_err("batch teardown must reject a registry/table mismatch");
+        assert!(matches!(
+            failure.error(),
+            UserPageMappingError::Translation(_)
+                | UserPageMappingError::MappingInvariantViolation
+        ));
+        assert_eq!(failure.completed_pages(), 0);
+        assert!(registry.is_mapped(0x4000));
+        assert!(registry.is_mapped(0x8000));
+        assert_eq!(editor.invalidations, 2, "preflight must not invalidate or mutate");
+
+        editor.set_entry(
+            0x4000,
+            8,
+            second_physical | PRESENT | WRITABLE | (1 << 2) | (1 << 63),
+        );
+        let mut result = unmap_all_user_data_pages(&root, &mut registry, &mut editor).unwrap();
+        assert_eq!(result.completed_pages(), 2);
+        let returned_first = result.take_frame(0).unwrap();
+        let returned_second = result.take_frame(1).unwrap();
+        assert_eq!(returned_first.physical_address(), first_physical);
+        assert_eq!(returned_second.physical_address(), second_physical);
+        allocator.free_frame(returned_first).unwrap();
+        allocator.free_frame(returned_second).unwrap();
+        assert_eq!(editor.invalidations, 4);
+
+        disconnect_test_address_space(&root, &mut editor);
+        release_test_page_tables(&mut editor);
+        allocator.free_frame(root.into_frame()).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 0);
     }
 
     #[test]
