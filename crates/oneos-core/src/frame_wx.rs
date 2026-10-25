@@ -134,9 +134,7 @@ impl FrameWxError {
             Self::InvalidRootAddress => b"W^X registry rejected an invalid root address\n",
             Self::InvalidVirtualRange => b"W^X registry rejected an invalid virtual range\n",
             Self::InvalidPhysicalRange => b"W^X registry rejected an invalid physical range\n",
-            Self::WritableExecutableAlias => {
-                b"W^X registry rejected a writable executable alias\n"
-            }
+            Self::WritableExecutableAlias => b"W^X registry rejected a writable executable alias\n",
             Self::VirtualAliasConflict => b"W^X registry rejected overlapping virtual aliases\n",
             Self::PhysicalAliasWxConflict => {
                 b"W^X registry rejected conflicting physical aliases\n"
@@ -146,9 +144,7 @@ impl FrameWxError {
             Self::InvalidReservation => b"W^X alias registry reservation is invalid\n",
             Self::AliasNotFound => b"W^X alias registry mapping was not found\n",
             Self::AliasNotPublished => b"W^X alias registry mapping is not published\n",
-            Self::AliasAlreadyRetiring => {
-                b"W^X alias registry mapping is already retiring\n"
-            }
+            Self::AliasAlreadyRetiring => b"W^X alias registry mapping is already retiring\n",
         }
     }
 }
