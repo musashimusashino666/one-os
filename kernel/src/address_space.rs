@@ -555,7 +555,22 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         &restored_active,
         &mut user_registry,
     )
-    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    .map_err(|error| {
+        match error {
+            super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
+                super::serial_write(kernel_error.message());
+            }
+            super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
+                let _cause = failure.error();
+                if failure.completed_pages() == 0 {
+                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
+                } else {
+                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n");
+                }
+            }
+        }
+        AddressSpaceError::PagingIntegrationFailed
+    })?;
 
     let (physical_address_bits, physical_memory_offset) =
         validate_runtime_root_context(boot_info, &restored_active)?;
