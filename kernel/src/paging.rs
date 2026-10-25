@@ -283,12 +283,11 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidKernelImageRange);
     }
 
-    // Read metadata only through the bootloader's physical-memory alias after
-    // proving every source page is Bootloader-owned and that the live page tables
-    // map the alias to the exact expected physical page. Raw volatile reads avoid
-    // manufacturing Rust references to Bootloader-owned frames.
+    // Read metadata only through the loaded kernel mapping. The helper validates
+    // each translation against the original physical ELF file backing and requires
+    // a read-only, supervisor-only, NX alias before performing raw byte loads.
     let mut elf_header = [0u8; ELF64_HEADER_SIZE];
-    read_bootloader_elf_bytes(
+    read_kernel_elf_bytes(
         boot_info,
         0,
         &mut elf_header,
@@ -301,7 +300,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
             .map_err(|_| PagingError::InvalidKernelElf)?;
     let mut program_header_buffer = [0u8; MAX_ELF64_PROGRAM_HEADERS * ELF64_PROGRAM_HEADER_SIZE];
     let program_headers = &mut program_header_buffer[..program_header_size];
-    read_bootloader_elf_bytes(
+    read_kernel_elf_bytes(
         boot_info,
         program_header_offset,
         program_headers,
@@ -381,7 +380,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
 /// Every touched physical page must be fully Bootloader-owned, and its direct-map
 /// alias must translate to that exact page with supervisor, writable, NX access.
 /// No Rust reference or slice to the aliased source memory is constructed.
-fn read_bootloader_elf_bytes(
+fn read_kernel_elf_bytes(
     boot_info: &BootInfo,
     file_offset: u64,
     output: &mut [u8],
@@ -405,58 +404,63 @@ fn read_bootloader_elf_bytes(
         .kernel_addr
         .checked_add(file_end)
         .ok_or(PagingError::InvalidKernelElf)?;
-    let physical_memory_offset = match boot_info.physical_memory_offset {
-        Optional::Some(offset) => offset,
-        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
-    };
+    let virtual_start = boot_info
+        .kernel_image_offset
+        .checked_add(file_offset)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    let virtual_end = boot_info
+        .kernel_image_offset
+        .checked_add(file_end)
+        .ok_or(PagingError::InvalidKernelElf)?;
+    if physical_start & (PAGE_SIZE - 1) != virtual_start & (PAGE_SIZE - 1)
+        || !canonical_range_stays_in_one_half(virtual_start, virtual_end)
+    {
+        return Err(PagingError::InvalidKernelElf);
+    }
 
-    let first_page = physical_start & !(PAGE_SIZE - 1);
-    let last_page = (physical_end - 1) & !(PAGE_SIZE - 1);
-    let mut page = first_page;
+    let first_physical_page = physical_start & !(PAGE_SIZE - 1);
+    let last_physical_page = (physical_end - 1) & !(PAGE_SIZE - 1);
+    let first_virtual_page = virtual_start & !(PAGE_SIZE - 1);
+    let last_virtual_page = (virtual_end - 1) & !(PAGE_SIZE - 1);
+    let mut physical_page = first_physical_page;
+    let mut virtual_page = first_virtual_page;
     loop {
-        if !is_bootloader_owned_page(regions, page) {
-            return Err(PagingError::InvalidKernelElf);
-        }
-        let alias = physical_memory_offset
-            .checked_add(page)
-            .ok_or(PagingError::InvalidKernelElf)?;
-        let alias_last = alias
-            .checked_add(PAGE_SIZE - 1)
-            .ok_or(PagingError::InvalidKernelElf)?;
-        if alias & (PAGE_SIZE - 1) != 0
-            || !is_canonical_4level(alias)
-            || !is_canonical_4level(alias_last)
-        {
+        if !is_bootloader_owned_page(regions, physical_page) {
             return Err(PagingError::InvalidKernelElf);
         }
         let translation =
-            translate_virtual_address(alias, root_table_physical, recursive_index, regions)
+            translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
                 .map_err(|_| PagingError::InvalidKernelElf)?;
-        if translation.physical_address != page
-            || !translation.writable
+        if translation.page_size != PAGE_SIZE
+            || translation.physical_address != physical_page
+            || translation.writable
             || translation.user_accessible
             || translation.executable
         {
             return Err(PagingError::InvalidKernelElf);
         }
-        if page == last_page {
+        if physical_page == last_physical_page && virtual_page == last_virtual_page {
             break;
         }
-        page = page
+        physical_page = physical_page
             .checked_add(PAGE_SIZE)
             .ok_or(PagingError::InvalidKernelElf)?;
+        virtual_page = virtual_page
+            .checked_add(PAGE_SIZE)
+            .ok_or(PagingError::InvalidKernelElf)?;
+        if physical_page > last_physical_page || virtual_page > last_virtual_page {
+            return Err(PagingError::InvalidKernelElf);
+        }
     }
 
-    let alias_start = physical_memory_offset
-        .checked_add(physical_start)
-        .ok_or(PagingError::InvalidKernelElf)?;
     for (index, byte) in output.iter_mut().enumerate() {
-        let address = alias_start
+        let address = virtual_start
             .checked_add(u64::try_from(index).map_err(|_| PagingError::InvalidKernelElf)?)
             .ok_or(PagingError::InvalidKernelElf)?;
-        // SAFETY: the containing complete page was proved Bootloader-owned,
-        // and the checked live translation above proved this alias reads the
-        // expected physical page. This is a raw load, not a Rust reference.
+        // SAFETY: every source page was proved Bootloader-owned and mapped at
+        // the corresponding virtual address as read-only, supervisor-only, NX.
+        // This is a raw load from the kernel's own load mapping, not a reference
+        // to a physical-memory-offset alias.
         *byte = unsafe { ptr::read_volatile(address as *const u8) };
     }
     Ok(())

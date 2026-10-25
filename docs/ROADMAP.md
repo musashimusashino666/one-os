@@ -29,7 +29,7 @@ Exit criteria: three independent QEMU invocations emit the expected startup mark
 - [x] Build the kernel as position-independent code at a fixed upper-half base, constrain bootloader-created dynamic mappings to the upper half, validate execution-critical addresses, and activate a verified supervisor-only kernel root during the normal QEMU boot smoke test. This is not yet process isolation or ring-3 execution.
 - Keep unsafe code small and document safety invariants.
 
-Exit criteria: allocator, ownership-registry, registry-backed mutation rollback, and CPU-precondition tests pass; reserved and unknown regions are never allocated; insufficient metadata fails closed; invalid maps fail closed; controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker; read-only page-table walks complete their documented structural and sampled-address checks for essential bootstrap addresses without claiming exact ELF PT_LOAD correspondence; and all dedicated QEMU mapping/protection cases pass on the exact reviewed commit.
+Exit criteria: allocator, ownership-registry, registry-backed mutation rollback, and CPU-precondition tests pass; reserved and unknown regions are never allocated; insufficient metadata fails closed; invalid maps fail closed; controlled CPU exception injection produces expected vector/error-code/CR2 diagnostics without a false boot-completion marker; read-only page-table walks complete their structural checks, all PT_LOAD pages satisfy the documented translation and permission checks, and all dedicated QEMU mapping/protection cases pass on the exact reviewed commit; this still does not claim complete boot-mapping or alias-wide W^X coverage.
 
 ## M2 — Isolation and IPC
 
