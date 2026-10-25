@@ -18,6 +18,7 @@ const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
+const PT_GNU_RELRO: u32 = 0x6474_e552;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
@@ -56,12 +57,24 @@ impl Elf64LoadSegment {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Elf64RelroRange {
+    virtual_address: u64,
+    memory_size: u64,
+}
+
+impl Elf64RelroRange {
+    const EMPTY: Self = Self { virtual_address: 0, memory_size: 0 };
+}
+
 /// Bounded, allocation-free metadata for an ELF64 x86_64 image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Elf64LoadImage {
     entry_point: u64,
     segments: [Elf64LoadSegment; MAX_ELF64_PROGRAM_HEADERS],
     segment_count: usize,
+    relro_ranges: [Elf64RelroRange; MAX_ELF64_PROGRAM_HEADERS],
+    relro_count: usize,
 }
 
 impl Elf64LoadImage {
@@ -71,6 +84,24 @@ impl Elf64LoadImage {
 
     pub fn load_segments(&self) -> &[Elf64LoadSegment] {
         &self.segments[..self.segment_count]
+    }
+
+    /// Returns true when the page is covered by a GNU_RELRO range.
+    ///
+    /// The bootloader rounds RELRO ranges outward to page boundaries after
+    /// relocations, so even a partial-byte overlap makes the whole page read-only.
+    pub fn page_is_read_only_after_relocation(&self, virtual_page: u64) -> bool {
+        if virtual_page & (PAGE_SIZE - 1) != 0 {
+            return true;
+        }
+        self.relro_ranges[..self.relro_count].iter().any(|range| {
+            let Some(end) = range.virtual_address.checked_add(range.memory_size) else {
+                return true;
+            };
+            let first_page = range.virtual_address & !(PAGE_SIZE - 1);
+            let last_page = (end - 1) & !(PAGE_SIZE - 1);
+            virtual_page >= first_page && virtual_page <= last_page
+        })
     }
 }
 
@@ -94,6 +125,7 @@ pub enum Elf64Error {
     TruncatedProgramHeaders,
     ProgramHeaderTableSizeMismatch,
     NoLoadSegments,
+    InvalidRelroRange,
     LoadImageTooLarge,
     InvalidLoadSegment,
     FileRangeOverflow,
@@ -223,12 +255,33 @@ pub fn parse_elf64_load_segments(
         entry_point: parsed.entry_point,
         segments: [Elf64LoadSegment::EMPTY; MAX_ELF64_PROGRAM_HEADERS],
         segment_count: 0,
+        relro_ranges: [Elf64RelroRange::EMPTY; MAX_ELF64_PROGRAM_HEADERS],
+        relro_count: 0,
     };
     let mut total_memory_size = 0u64;
 
     for index in 0..parsed.program_header_count {
         let offset = index * ELF64_PROGRAM_HEADER_SIZE;
-        if read_u32(program_headers, offset) != Some(PT_LOAD) {
+        let header_type = read_u32(program_headers, offset)
+            .ok_or(Elf64Error::TruncatedProgramHeaders)?;
+        if header_type == PT_GNU_RELRO {
+            let range = Elf64RelroRange {
+                virtual_address: read_u64(program_headers, offset + 16)
+                    .ok_or(Elf64Error::TruncatedProgramHeaders)?,
+                memory_size: read_u64(program_headers, offset + 40)
+                    .ok_or(Elf64Error::TruncatedProgramHeaders)?,
+            };
+            let end = range.virtual_address
+                .checked_add(range.memory_size)
+                .ok_or(Elf64Error::InvalidRelroRange)?;
+            if range.memory_size == 0 || end <= range.virtual_address {
+                return Err(Elf64Error::InvalidRelroRange);
+            }
+            image.relro_ranges[image.relro_count] = range;
+            image.relro_count += 1;
+            continue;
+        }
+        if header_type != PT_LOAD {
             continue;
         }
 
@@ -305,6 +358,23 @@ pub fn parse_elf64_load_segments(
 
     if image.segment_count == 0 {
         return Err(Elf64Error::NoLoadSegments);
+    }
+    for relro in &image.relro_ranges[..image.relro_count] {
+        let relro_end = relro.virtual_address
+            .checked_add(relro.memory_size)
+            .ok_or(Elf64Error::InvalidRelroRange)?;
+        let covered_by_writable_data_segment = image.load_segments().iter().any(|segment| {
+            let Some(segment_end) = segment.virtual_address.checked_add(segment.memory_size) else {
+                return false;
+            };
+            segment.writable()
+                && !segment.executable()
+                && relro.virtual_address >= segment.virtual_address
+                && relro_end <= segment_end
+        });
+        if !covered_by_writable_data_segment {
+            return Err(Elf64Error::InvalidRelroRange);
+        }
     }
     if !image.load_segments().iter().any(|segment| {
         segment.executable()
@@ -449,6 +519,34 @@ mod tests {
         assert_eq!(
             parse_elf64_load_segments(&header, &extra, FILE_LEN),
             Err(Elf64Error::ProgramHeaderTableSizeMismatch)
+        );
+    }
+
+    #[test]
+    fn recognizes_gnu_relro_pages_after_relocation() {
+        let mut header = header(3, 0x1000);
+        write_u64(&mut header, 32, ELF64_HEADER_SIZE as u64);
+        let mut program_headers = [0u8; ELF64_PROGRAM_HEADER_SIZE * 3];
+        program_header(&mut program_headers, 0, 0x5, 0x1000, 0x1000, 0x800, 0x800);
+        program_header(&mut program_headers, 1, 0x6, 0x2000, 0x2000, 0x400, 0x1800);
+        program_header(&mut program_headers, 2, 0, 0x2400, 0x2800, 0x200, 0x200);
+        write_u32(&mut program_headers, ELF64_PROGRAM_HEADER_SIZE * 2, 0x6474_e552);
+        let image = parse_elf64_load_segments(&header, &program_headers, FILE_LEN).unwrap();
+        assert!(image.page_is_read_only_after_relocation(0x2000));
+        assert!(!image.page_is_read_only_after_relocation(0x3000));
+    }
+
+    #[test]
+    fn rejects_relro_range_outside_writable_load_segment() {
+        let header = header(3, 0x1000);
+        let mut program_headers = [0u8; ELF64_PROGRAM_HEADER_SIZE * 3];
+        program_header(&mut program_headers, 0, 0x5, 0x1000, 0x1000, 0x800, 0x800);
+        program_header(&mut program_headers, 1, 0x6, 0x2000, 0x2000, 0x400, 0x1800);
+        program_header(&mut program_headers, 2, 0, 0x5000, 0x5000, 0x200, 0x200);
+        write_u32(&mut program_headers, ELF64_PROGRAM_HEADER_SIZE * 2, 0x6474_e552);
+        assert_eq!(
+            parse_elf64_load_segments(&header, &program_headers, FILE_LEN),
+            Err(Elf64Error::InvalidRelroRange)
         );
     }
 

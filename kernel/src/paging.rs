@@ -566,7 +566,9 @@ fn validate_elf_load_mappings(
                 || translation.physical_address & (PAGE_SIZE - 1) != 0
                 || !is_kernel_backed_page(regions, translation.physical_address)
                 || translation.user_accessible
-                || translation.writable != segment.writable()
+                || translation.writable
+                    != (segment.writable()
+                        && !image.page_is_read_only_after_relocation(virtual_page))
                 || translation.executable != segment.executable()
             {
                 return Err(PagingError::InvalidKernelLoadMapping);
