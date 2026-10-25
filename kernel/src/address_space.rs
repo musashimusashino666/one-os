@@ -58,6 +58,7 @@ pub enum AddressSpaceError {
     PagingPrecondition(PagingPreconditionError),
     PagingIntegrationFailed,
     RootActivationFailed,
+    #[cfg(feature = "test-root-leak-safety")]
     RootLeakSafetyFailed,
 }
 
@@ -157,6 +158,7 @@ impl AddressSpaceError {
             Self::RootActivationFailed => {
                 b"CR3 did not report the newly activated address-space root\n"
             }
+            #[cfg(feature = "test-root-leak-safety")]
             Self::RootLeakSafetyFailed => {
                 b"Address-space root leak safety smoke test failed\n"
             }
