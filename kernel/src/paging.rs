@@ -1755,6 +1755,23 @@ pub fn map_test_user_page_for_teardown(
     Ok(registry)
 }
 
+/// Validates an inactive root's complete lower-half user page-table tree before
+/// the CR3 switch path is allowed to activate it.
+///
+/// This is a read-only preflight. It requires every present lower-half leaf to be
+/// represented by the matching registry and rejects foreign or shared private
+/// tables, malformed entries, cycles, unsupported large pages, and capacity
+/// exhaustion. The caller must serialize this check with all root mutations.
+pub fn validate_inactive_user_address_space<const CAPACITY: usize>(
+    boot_info: &BootInfo,
+    root: &AddressSpaceRoot,
+    active_root: &ActiveAddressSpaceRoot,
+    registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
+) -> Result<(), PagingError> {
+    let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
+    preflight_private_user_tree(root.physical_address(), registry, &mut editor)
+}
+
 /// Tears down every registered user page in one inactive root, then reclaims
 /// its private lower-half intermediate tables bottom-up.
 ///
