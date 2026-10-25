@@ -541,6 +541,8 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         &second_root,
         &active_root,
         &user_registry,
+        third_physical,
+        peer_frame_physical,
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
