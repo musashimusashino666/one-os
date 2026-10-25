@@ -19,7 +19,7 @@ use oneos_core::{
     validate_efer_nx_enable, validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, Frame,
     FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, UserFrameInitializationError,
-    UserFrameInitializer, USER_VIRTUAL_ADDRESS_LIMIT, PAGE_SIZE,
+    UserFrameInitializer, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -566,26 +566,25 @@ fn mark_table_frame_published_for_root(root_physical: u64, physical_address: u64
 fn release_registered_table_frame(physical_address: u64) {
     // SAFETY: registry mutations are serialized by the single-core,
     // interrupts-disabled bootstrap precondition.
-    let frame = match unsafe { &mut *TABLE_FRAMES.registry.get() }
-        .take_unpublished(physical_address)
-    {
-        Ok(frame) => frame,
-        Err(FrameRegistryError::PublishedFrame) => {
-            panic!("attempted to release a published page-table frame")
-        }
-        Err(FrameRegistryError::FrameNotFound) => {
-            panic!("attempted to release an unregistered page-table frame")
-        }
-        Err(
-            FrameRegistryError::InvalidReservation
-            | FrameRegistryError::DuplicateFrameAddress
-            | FrameRegistryError::InvalidOwnerRoot
-            | FrameRegistryError::PublishedOwnerMismatch
-            | FrameRegistryError::NotPublished,
-        ) => {
-            panic!("page-table frame registry state is invalid")
-        }
-    };
+    let frame =
+        match unsafe { &mut *TABLE_FRAMES.registry.get() }.take_unpublished(physical_address) {
+            Ok(frame) => frame,
+            Err(FrameRegistryError::PublishedFrame) => {
+                panic!("attempted to release a published page-table frame")
+            }
+            Err(FrameRegistryError::FrameNotFound) => {
+                panic!("attempted to release an unregistered page-table frame")
+            }
+            Err(
+                FrameRegistryError::InvalidReservation
+                | FrameRegistryError::DuplicateFrameAddress
+                | FrameRegistryError::InvalidOwnerRoot
+                | FrameRegistryError::PublishedOwnerMismatch
+                | FrameRegistryError::NotPublished,
+            ) => {
+                panic!("page-table frame registry state is invalid")
+            }
+        };
     if let Err((_error, _frame)) = super::memory::free_frame(frame) {
         panic!("physical allocator rejected an owned page-table frame");
     }
