@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod address_space;
 mod frame_allocator;
 mod frame_registry;
+mod frame_wx;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
@@ -33,6 +34,9 @@ pub use frame_allocator::{
 };
 pub use frame_registry::{
     FrameRegistryError, FrameToken, PageTableFrameRegistry, PublishedFrameReleaseError,
+};
+pub use frame_wx::{
+    FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxReservation,
 };
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
