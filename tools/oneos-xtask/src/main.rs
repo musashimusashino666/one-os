@@ -28,6 +28,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         "image-test-nx-protection" => build_bios_image(Some("test-nx-protection")),
         "image-test-vm-transitions" => build_bios_image(Some("test-vm-transitions")),
+        "image-test-root-leak-safety" => build_bios_image(Some("test-root-leak-safety")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
@@ -50,6 +51,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a test-only NX instruction-fetch protection image");
             println!("  cargo run -p oneos-xtask -- image-test-vm-transitions");
             println!("      Build a test-only map/unmap/remap and TLB-transition image");
+            println!("  cargo run -p oneos-xtask -- image-test-root-leak-safety");
+            println!("      Build a test-only uncertain-CR3 root-token leak safety image");
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -176,6 +179,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         }
         Some("test-nx-protection") => "one-os-nx-protection-test-bios.img",
         Some("test-vm-transitions") => "one-os-vm-transitions-test-bios.img",
+        Some("test-root-leak-safety") => "one-os-root-leak-safety-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
     let image_path = target_directory.join(image_name);

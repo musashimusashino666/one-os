@@ -2,19 +2,17 @@
 
 ## Status
 
-This Draft PR now contains an initial kernel integration slice in addition to the contract below. `KernelInactiveAddressSpaceEditor` is bound to one initialized, inactive root, accesses frames through a validated active-root physical-memory-offset alias, and accepts private child tables only when the registry records the exact root and paging level. The normal-boot A -> B -> A smoke path maps a test user-data page, switches to B after a full lower-half preflight, writes/reads a sentinel, switches back to A, tears down B's user mapping, re-zeroes the data frame, and reclaims private intermediate tables bottom-up.
+Implemented on `main` by [PR #31](https://github.com/musashimusashino666/one-os/pull/31). The kernel now has a `KernelInactiveAddressSpaceEditor` bound to one initialized, inactive root; it accesses owned frames through a validated active-root physical-memory-offset alias and validates the lower-half tree against root/level-scoped table ownership records.
 
-This remains an initial implementation slice, not a complete acceptance result. The normal-boot smoke path injects one intermediate-table allocator-release failure, asserts that the detached token remains registered, and retries teardown through the production release callback. Its preflight corruption cases include a self-root/cycle target, an intermediate large-page flag, a non-present leaf, a leaf alias to a registered table frame, another address space's allocated data frame, the target and a foreign PML4 frame substituted into the registered user PTE, and deletion of a registered PTE. Every injected entry is restored, each corrupted state must be rejected before activation/teardown, and the final valid preflight must pass. These checks cover representative ownership-mismatch and missing-PTE cases, not every possible corruption or hardware failure. The exact latest PR HEAD must pass the optimized CR3 assembly validator and all M1/QEMU tests. The smoke path exercises CPL 0 mapping management; it does not enter Ring 3 or establish process isolation.
+The normal-boot QEMU lifecycle path switches between independent roots that map the same user virtual address to distinct frames, rejects representative ownership/tree corruption before mutation, switches away before teardown, removes registered user pages, re-zeroes returned data frames, reclaims private intermediate tables bottom-up, and verifies the peer mapping is unchanged. A one-shot allocator-release failure verifies that a detached table token remains registered and can be reclaimed on retry. These checks exercise CPL 0 mapping management; they do not enter Ring 3 or prove process isolation.
 
-`PageTableFrameRegistry` records both the root and paging level for private tables. A root-owned table can only be reclaimed through an unsafe transition whose caller proves that the parent entry has been cleared, the table is empty and unreachable, and the inactive-root/TLB precondition holds. The registry records ownership; it does not independently prove hardware reachability.
+The PR description records the full required CI suite passing for reviewed HEAD `7ad7cf5853560710eb92fcae03b611a8a6db2060` ([CI run #40171726440](https://github.com/musashimusashino666/one-os/actions/runs/40171726440)). Treat this as evidence for the configured tests only, not as proof of all corruption states, all hardware behavior, or production security.
 
-Keep Roadmap M2 incomplete until the exact reviewed PR HEAD passes the implementation and acceptance tests below.
+Roadmap M2 remains incomplete until Ring 3 entry/return, adversarial process-isolation tests, frame-wide W^X, kernel-enforced capability checks, scheduler/IPC acceptance criteria, and the other documented requirements are satisfied. SMP and remote TLB shootdowns remain out of scope for this single-CPU implementation.
 
-## Scope
+## Implemented scope
 
-Implement a kernel-controlled teardown path for one initialized, inactive address-space root under the existing single-CPU, maskable-interrupts-disabled model.
-
-The initial increment must:
+PR #31 implements a kernel-controlled teardown path for one initialized, inactive address-space root under the existing single-CPU, maskable-interrupts-disabled model. It:
 
 - connect `UserAddressSpaceEditor` to a concrete kernel editor bound to one inactive `AddressSpaceRoot`;
 - safely access existing page-table frames in that root, not only the current CR3 recursive mapping or unpublished table frames;
@@ -61,7 +59,7 @@ Out of scope: Ring 3 entry/return, scheduling, IPC, capability enforcement, SMP,
 4. Do not free the root or any intermediate table after uncertain CR3 state, failed parent detachment, failed table verification, or uncertain TLB state.
 5. Prefer a deliberate leak over releasing a frame that may still be referenced.
 
-## Implementation sequence
+## Implementation record
 
 1. Add a concrete inactive-root editor in the kernel. Its root identity and recursive index are fixed at construction and revalidated before destructive mutation.
 2. Add an ownership-aware lower-half table walker that preflights the complete private subtree. Reject malformed entries, user leaf mappings not represented in the matching registry, aliases/cycles, large-page entries, unowned tables, and table-count exhaustion.
@@ -72,9 +70,9 @@ Out of scope: Ring 3 entry/return, scheduling, IPC, capability enforcement, SMP,
 7. Add failpoint coverage for bad registered translations, foreign/unregistered child tables, allocation/registry exhaustion, mid-teardown failure, and release failure.
 8. Keep all existing M1 QEMU acceptance tests green on the same candidate commit.
 
-## Acceptance tests
+## Regression and acceptance checklist
 
-The PR is not complete until all applicable checks below pass on the exact latest PR head.
+The items below are the regression contract for future changes to this subsystem. PR #31 added the described host and QEMU coverage, and its reviewed HEAD passed the documented CI suite. Keep the overall M2 milestone open: this checklist does not establish Ring 3 isolation, frame-wide W^X, SMP safety, or production readiness.
 
 - `cargo fmt --all -- --check`
 - `cargo test --locked -p oneos-core`

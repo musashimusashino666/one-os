@@ -164,13 +164,40 @@ impl AddressSpaceRoot {
 
     /// Consumes an inactive root and returns its allocator ownership token.
     ///
-    /// This operation is available only for the inactive-root type. A root
-    /// returned by the kernel's CR3 activation path is represented by
-    /// `ActiveAddressSpaceRoot`, which intentionally exposes no release API.
-    /// The caller must still prove that child tables and TLB references have
-    /// been handled before returning the token to the allocator.
-    pub fn into_frame(self) -> Frame {
+    /// This operation transfers the token only; it does not clear page tables,
+    /// detach mappings, or invalidate translations. A root returned by the
+    /// kernel's CR3 activation path is represented by `ActiveAddressSpaceRoot`,
+    /// which intentionally exposes no release API.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure this root is not active or reachable by any CPU,
+    /// and must not return the frame to its allocator or reuse its physical
+    /// address until all root-private mappings and child page tables have been
+    /// detached/reclaimed and the required TLB invalidation has completed. If
+    /// cleanup or CPU state is uncertain, use `leak_frame()` rather than extracting
+    /// the token, so the allocator can never reuse this physical frame.
+    ///
+    /// ```compile_fail
+    /// use oneos_core::AddressSpaceRoot;
+    ///
+    /// fn extract_without_safety_contract(root: AddressSpaceRoot) {
+    ///     let _frame = root.into_frame();
+    /// }
+    /// ```
+    #[allow(unsafe_code)]
+    pub unsafe fn into_frame(self) -> Frame {
         self.frame
+    }
+
+    /// Intentionally abandons this root's allocator token without releasing its frame.
+    ///
+    /// Unlike `into_frame`, this operation does not require the caller to prove that
+    /// the root is inactive. It is appropriate when CR3 activation, CPU state, or
+    /// cleanup is uncertain and recycling the physical frame could corrupt a live
+    /// page table. The allocator's allocation record is deliberately left intact.
+    pub fn leak_frame(self) {
+        let _intentionally_leaked_root = core::mem::ManuallyDrop::new(self);
     }
 }
 
@@ -608,6 +635,35 @@ mod tests {
         FrameAllocator::initialize(regions.len(), |index| regions[index], slots, bitmap)
     }
 
+    // This helper is restricted to host-side tests: TestEditor stores page-table
+    // entries in ordinary test memory, and these tests never load a test root into
+    // hardware CR3. No CPU or hardware TLB can retain a reference to these roots.
+    #[allow(unsafe_code)]
+    fn take_test_root_frame(root: AddressSpaceRoot) -> Frame {
+        // SAFETY: unit tests use only the in-memory TestEditor model and never
+        // activate these roots on hardware.
+        unsafe { root.into_frame() }
+    }
+
+    #[test]
+    fn leaking_root_keeps_its_frame_reserved_from_allocator_reuse() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [FrameSegment::EMPTY; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+        let frame = allocator.allocate_frame().unwrap();
+        let leaked_physical = frame.physical_address();
+        let root = AddressSpaceRoot::try_from_frame(frame, 32).unwrap();
+
+        root.leak_frame();
+
+        assert_eq!(allocator.stats().allocated_frames, 1);
+        let probe = allocator.allocate_frame().unwrap();
+        assert_ne!(probe.physical_address(), leaked_physical);
+        allocator.free_frame(probe).unwrap();
+        assert_eq!(allocator.stats().allocated_frames, 1);
+    }
+
     #[test]
     fn deactivation_requires_a_valid_different_cr3_root() {
         assert_eq!(
@@ -639,7 +695,7 @@ mod tests {
         assert_eq!(root.physical_address_bits(), 32);
         assert_eq!(allocator.stats().allocated_frames, 1);
 
-        let frame = root.into_frame();
+        let frame = take_test_root_frame(root);
         assert_eq!(frame.physical_address(), address);
         allocator.free_frame(frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
@@ -864,7 +920,7 @@ mod tests {
         assert_eq!(allocator.stats().allocated_frames, 2);
 
         let ActiveAddressSpaceRoot { root, .. } = active;
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
@@ -897,7 +953,7 @@ mod tests {
         assert_eq!(allocator.stats().allocated_frames, 2);
 
         let ActiveAddressSpaceRoot { root, .. } = active;
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
@@ -920,7 +976,9 @@ mod tests {
         assert!(inactive.is_initialized());
         assert_eq!(allocator.stats().allocated_frames, 2);
 
-        allocator.free_frame(inactive.into_frame()).unwrap();
+        allocator
+            .free_frame(take_test_root_frame(inactive))
+            .unwrap();
         allocator.free_frame(kernel_frame).unwrap();
         assert_eq!(allocator.stats().allocated_frames, 0);
     }
@@ -962,7 +1020,7 @@ mod tests {
             root_address | PRESENT | WRITABLE | NO_EXECUTE
         );
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -988,7 +1046,7 @@ mod tests {
         );
         assert_eq!(editor.entry(root_address, 256), 0x3000 | PRESENT | WRITABLE);
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1016,7 +1074,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1038,7 +1096,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1062,7 +1120,7 @@ mod tests {
         assert_eq!(editor.entry(root_address, 0), 0xdead_beef);
         assert_eq!(editor.entry(root_address, 511), 0xdead_beef);
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1083,7 +1141,7 @@ mod tests {
         assert_eq!(editor.entry(root_address, 0), 0xdead_beef);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1107,7 +1165,7 @@ mod tests {
         );
         assert_eq!(editor.entry(root_address, 511), before);
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1130,7 +1188,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1154,7 +1212,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1181,7 +1239,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1209,7 +1267,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1231,7 +1289,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 
@@ -1255,7 +1313,7 @@ mod tests {
         assert_eq!(editor.tables[0].entries, before);
         assert!(!root.is_initialized());
 
-        allocator.free_frame(root.into_frame()).unwrap();
+        allocator.free_frame(take_test_root_frame(root)).unwrap();
         allocator.free_frame(kernel_frame).unwrap();
     }
 }

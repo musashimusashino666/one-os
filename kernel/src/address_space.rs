@@ -45,19 +45,27 @@ pub enum AddressSpaceError {
     InvalidRecursiveIndex,
     InvalidKernelRoot,
     PhysicalMemoryOffsetUnavailable,
-    InvalidPhysicalAddressWidth { bits: u8 },
+    InvalidPhysicalAddressWidth {
+        bits: u8,
+    },
     FrameAllocationFailed,
     FrameReleaseFailed,
     InvalidOwnedRoot(AddressSpaceRootError),
     RootInitialization(AddressSpaceRootInitializationError),
     RootTableUnavailable,
     NoUnusedRecursiveIndex,
-    RootVerificationFailed { index: usize },
-    RootZeroizationFailed { index: usize },
+    RootVerificationFailed {
+        index: usize,
+    },
+    RootZeroizationFailed {
+        index: usize,
+    },
     KernelMappingNotInUpperHalf,
     PagingPrecondition(PagingPreconditionError),
     PagingIntegrationFailed,
     RootActivationFailed,
+    #[cfg(feature = "test-root-leak-safety")]
+    RootLeakSafetyFailed,
 }
 
 impl AddressSpaceError {
@@ -156,6 +164,10 @@ impl AddressSpaceError {
             Self::RootActivationFailed => {
                 b"CR3 did not report the newly activated address-space root\n"
             }
+            #[cfg(feature = "test-root-leak-safety")]
+            Self::RootLeakSafetyFailed => {
+                b"Address-space root leak safety smoke test failed\n"
+            }
             Self::RootZeroizationFailed { .. } => {
                 b"Address-space root could not be zeroed before frame release\n"
             }
@@ -235,7 +247,8 @@ pub fn verify_root_initialization_smoke_test(
         } else {
             // The destination frame could not be safely accessed for zeroization.
             // Keep it allocated rather than recycle potentially stale contents.
-            let _unreleased_frame = root.into_frame();
+            // Cleanup or access is uncertain. Preserve the allocator reservation.
+            root.leak_frame();
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -321,7 +334,8 @@ fn create_inactive_address_space_root(
         } else {
             // Do not recycle a frame whose contents could not be validated and
             // cleared through the checked physical-memory-offset alias.
-            let _unreleased_frame = root.into_frame();
+            // Cleanup or access is uncertain. Preserve the allocator reservation.
+            root.leak_frame();
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -704,6 +718,8 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         AddressSpaceError::PagingIntegrationFailed
     })?;
     release_inactive_address_space_root(boot_info, &final_active, peer_inactive)?;
+    #[cfg(feature = "test-root-leak-safety")]
+    verify_root_leak_allocator_smoke_test(boot_info, &final_active)?;
     Ok(final_active)
 }
 
@@ -734,6 +750,37 @@ fn release_inactive_address_space_root(
         return Err(AddressSpaceError::RootTableUnavailable);
     }
     clear_and_release_root(root, &mut editor, root_physical)
+}
+
+/// Conservatively handles a CR3 readback that does not establish which root is
+/// active. The token is abandoned without assuming that `root` is inactive.
+fn abandon_uncertain_root_activation(root: AddressSpaceRoot) -> AddressSpaceError {
+    root.leak_frame();
+    AddressSpaceError::RootActivationFailed
+}
+
+/// Checks the real kernel allocator through the same conservative error handler
+/// used by a CR3 readback mismatch. This is compiled only into the dedicated QEMU
+/// acceptance image so normal boots do not permanently consume a test frame.
+#[cfg(feature = "test-root-leak-safety")]
+fn verify_root_leak_allocator_smoke_test(
+    boot_info: &BootInfo,
+    active_root: &ActiveAddressSpaceRoot,
+) -> Result<(), AddressSpaceError> {
+    let root = create_inactive_address_space_root(boot_info, active_root)?;
+    let root_physical = root.physical_address();
+
+    if abandon_uncertain_root_activation(root) != AddressSpaceError::RootActivationFailed {
+        return Err(AddressSpaceError::RootLeakSafetyFailed);
+    }
+
+    match super::memory::is_frame_allocated(root_physical) {
+        Ok(true) => {
+            super::serial_write(b"ONE OS ROOT LEAK SAFETY PASS\n");
+            Ok(())
+        }
+        Ok(false) | Err(_) => Err(AddressSpaceError::RootLeakSafetyFailed),
+    }
 }
 
 /// Revalidates the live kernel context at the CR3-switch boundary.
@@ -987,7 +1034,8 @@ pub fn activate_supervisor_kernel_root(
         } else {
             // Keep an inaccessible allocation reserved rather than recycling
             // memory whose contents could not be safely zeroed.
-            let _unreleased_frame = root.into_frame();
+            // Cleanup or access is uncertain. Preserve the allocator reservation.
+            root.leak_frame();
         }
         return Err(AddressSpaceError::RootTableUnavailable);
     }
@@ -1067,9 +1115,9 @@ pub fn activate_supervisor_kernel_root(
 
     if active_root_table_physical() != root_physical {
         // The root may already be active. Never recycle its frame after a
-        // switch attempt whose observed result is uncertain.
-        let _unreleased_frame = root.into_frame();
-        return Err(AddressSpaceError::RootActivationFailed);
+        // switch attempt whose observed result is uncertain. The shared handler
+        // deliberately does not assume that the root is inactive.
+        return Err(abandon_uncertain_root_activation(root));
     }
 
     // SAFETY: CR3 readback above matched root_physical. This is the architecture
@@ -1135,10 +1183,14 @@ fn clear_and_release_root(
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
     if let Err(error) = clear_root_entries(editor, root_physical) {
-        let _unreleased_frame = root.into_frame();
+        // Cleanup or access is uncertain. Preserve the allocator reservation.
+        root.leak_frame();
         return Err(error);
     }
-    release_frame(root.into_frame())
+    // SAFETY: the root PML4 was cleared and verified above. Callers either
+    // release a never-activated construction root with no private child tables,
+    // or call only after switching away and completing inactive-root teardown.
+    release_frame(unsafe { root.into_frame() })
 }
 
 fn clear_root_entries(
