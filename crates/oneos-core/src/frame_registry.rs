@@ -710,10 +710,7 @@ mod tests {
         // root. The detached second token is deliberately pending release.
         unsafe { registry.mark_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         unsafe { registry.mark_published_for_root(0x1000, 0x9000, 1) }.unwrap();
-        unsafe {
-            registry.mark_published_table_detached_for_root(0x1000, 0x9000, 1)
-        }
-        .unwrap();
+        unsafe { registry.mark_published_table_detached_for_root(0x1000, 0x9000, 1) }.unwrap();
 
         assert_eq!(
             registry.root_owned_table_at(0x1000, 0),
