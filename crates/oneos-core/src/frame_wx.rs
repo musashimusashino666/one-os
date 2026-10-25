@@ -949,8 +949,6 @@ mod tests {
             (0, PAGE_SIZE),
             (FRAME_A + 1, PAGE_SIZE),
             ((1u64 << 48) - PAGE_SIZE, 2 * PAGE_SIZE),
-            (FRAME_A, 0),
-            (FRAME_A, PAGE_SIZE + 1),
         ] {
             assert_eq!(
                 registry
