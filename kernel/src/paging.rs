@@ -22,8 +22,7 @@ use oneos_core::{
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, PAGE_SIZE,
-    USER_VIRTUAL_ADDRESS_LIMIT,
+    ZeroedFrame, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
