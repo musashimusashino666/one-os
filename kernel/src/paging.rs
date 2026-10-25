@@ -1099,7 +1099,7 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
             Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
         };
 
-        let mut editor = Self {
+        let editor = Self {
             boot_info,
             regions: &boot_info.memory_regions,
             physical_memory_offset,
@@ -1223,31 +1223,11 @@ impl<'a> KernelInactiveAddressSpaceEditor<'a> {
         Some(alias.cast::<u64>())
     }
 
-    fn table_entry(
-        &mut self,
-        table_physical: u64,
-        index: usize,
-        level: u8,
-    ) -> Result<u64, PagingError> {
-        if index >= PML4_ENTRY_COUNT || !(1..=4).contains(&level) {
-            return Err(PagingError::InactivePageTableMalformed);
-        }
-        let table = self
-            .table_pointer(table_physical)
-            .ok_or(PagingError::InactivePageTableUnavailable)?;
-        // SAFETY: table_pointer validated the complete frame, ownership,
-        // physical-memory-offset translation, and entry alignment.
-        Ok(unsafe { ptr::read_volatile(table.add(index)) })
-    }
-
-    fn publish_staged_subtree(&mut self, table_physical: u64, table_level: u8) {
+remove dead method    fn publish_staged_subtree(&mut self, table_physical: u64, table_level: u8) {
         if !(1..=3).contains(&table_level) || !self.is_staged_table(table_physical) {
             panic!("attempted to publish an untracked private page-table frame");
         }
 
-        // SAFETY: the new intermediate table is being linked exclusively into
-        // the supplied root's private lower-half subtree. The mapping engine
-        // staged and zero-initialized it before publishing the first parent.
         // SAFETY: this subtree is being linked only beneath the target
         // root's private lower-half PML4 entry, and each child was allocated by
         // this editor, zeroed before publication, and reached through that tree.
@@ -1460,7 +1440,7 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
         preflight_private_pdpt(
             root_physical,
             pdpt_physical,
-            pml4_index,
+            (pml4_index as u64) << 39,
             registry,
             editor,
             &mut visited,
@@ -1473,7 +1453,7 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
 fn preflight_private_pdpt<const CAPACITY: usize>(
     root_physical: u64,
     pdpt_physical: u64,
-    pml4_index: usize,
+    virtual_prefix: u64,
     registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
     editor: &mut KernelInactiveAddressSpaceEditor<'_>,
     visited: &mut [u64; TABLE_FRAME_CAPACITY],
@@ -1501,8 +1481,7 @@ fn preflight_private_pdpt<const CAPACITY: usize>(
         preflight_private_pd(
             root_physical,
             pd_physical,
-            pml4_index,
-            pdpt_index,
+            virtual_prefix | ((pdpt_index as u64) << 30),
             registry,
             editor,
             visited,
@@ -1515,8 +1494,7 @@ fn preflight_private_pdpt<const CAPACITY: usize>(
 fn preflight_private_pd<const CAPACITY: usize>(
     root_physical: u64,
     pd_physical: u64,
-    pml4_index: usize,
-    pdpt_index: usize,
+    virtual_prefix: u64,
     registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
     editor: &mut KernelInactiveAddressSpaceEditor<'_>,
     visited: &mut [u64; TABLE_FRAME_CAPACITY],
@@ -1544,9 +1522,7 @@ fn preflight_private_pd<const CAPACITY: usize>(
         preflight_private_pt(
             root_physical,
             pt_physical,
-            pml4_index,
-            pdpt_index,
-            pd_index,
+            virtual_prefix | ((pd_index as u64) << 21),
             registry,
             editor,
         )?;
@@ -1557,9 +1533,7 @@ fn preflight_private_pd<const CAPACITY: usize>(
 fn preflight_private_pt<const CAPACITY: usize>(
     root_physical: u64,
     pt_physical: u64,
-    pml4_index: usize,
-    pdpt_index: usize,
-    pd_index: usize,
+    virtual_prefix: u64,
     registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
     editor: &mut KernelInactiveAddressSpaceEditor<'_>,
 ) -> Result<(), PagingError> {
@@ -1574,10 +1548,7 @@ fn preflight_private_pt<const CAPACITY: usize>(
             return Err(PagingError::InactivePageTableMalformed);
         }
 
-        let virtual_address = ((pml4_index as u64) << 39)
-            | ((pdpt_index as u64) << 30)
-            | ((pd_index as u64) << 21)
-            | ((pt_index as u64) << 12);
+        let virtual_address = virtual_prefix | ((pt_index as u64) << 12);
         if virtual_address == 0 || virtual_address >= USER_VIRTUAL_ADDRESS_LIMIT {
             return Err(PagingError::InactivePageTableMalformed);
         }
