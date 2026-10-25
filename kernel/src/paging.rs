@@ -1459,6 +1459,9 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
     if registry.root_physical_address() != root_physical {
         return Err(PagingError::InactivePageTableOwnershipViolation);
     }
+    if registry.has_reserved_mappings() {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
 
     let mut visited = [0u64; TABLE_FRAME_CAPACITY];
     let mut visited_count = 0usize;
@@ -1491,6 +1494,44 @@ fn preflight_private_user_tree<const CAPACITY: usize>(
             &mut visited_count,
         )?;
     }
+
+    // Walk the registry in the opposite direction as well: every token retained
+    // for a mapped VA must still have a present PTE that resolves to its exact
+    // physical frame. This catches deleted/missing PTEs that a tree-only walk
+    // cannot see.
+    for slot_index in 0..CAPACITY {
+        let Some((virtual_address, expected_physical)) = registry.mapped_entry_at(slot_index)
+        else {
+            continue;
+        };
+        if virtual_address == 0
+            || virtual_address >= USER_VIRTUAL_ADDRESS_LIMIT
+            || virtual_address & (PAGE_SIZE - 1) != 0
+        {
+            return Err(PagingError::InactivePageTableMalformed);
+        }
+
+        let mut level = 4u8;
+        let translation = translate_4level(
+            virtual_address,
+            root_physical,
+            |table_physical, index| {
+                let current_level = level;
+                level = level.saturating_sub(1);
+                editor.read_entry(table_physical, index, current_level)
+            },
+        )
+        .map_err(|_| PagingError::InactivePageTableMalformed)?;
+        if translation.page_size != PAGE_SIZE
+            || translation.physical_address != expected_physical
+        {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
+        }
+        if !translation.writable || !translation.user_accessible || translation.executable {
+            return Err(PagingError::InactivePageTableMalformed);
+        }
+    }
+
     Ok(())
 }
 
@@ -1607,8 +1648,15 @@ fn preflight_private_pt<const CAPACITY: usize>(
         if virtual_address == 0 || virtual_address >= USER_VIRTUAL_ADDRESS_LIMIT {
             return Err(PagingError::InactivePageTableMalformed);
         }
-        if !registry.is_mapped(virtual_address) {
-            return Err(PagingError::UnregisteredUserPage);
+        let expected_physical = registry
+            .mapped_physical_address(virtual_address)
+            .ok_or(PagingError::UnregisteredUserPage)?;
+        if leaf_physical != expected_physical
+            || leaf_physical == root_physical
+            || leaf_physical == editor.active_root_physical
+            || leaf_physical == editor.target_root_physical
+        {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
         }
 
         let mut level = 4u8;
@@ -1620,10 +1668,11 @@ fn preflight_private_pt<const CAPACITY: usize>(
             })
             .map_err(PagingError::Translation)?;
         if translation.page_size != PAGE_SIZE
-            || !translation.writable
-            || !translation.user_accessible
-            || translation.executable
+            || translation.physical_address != expected_physical
         {
+            return Err(PagingError::InactivePageTableOwnershipViolation);
+        }
+        if !translation.writable || !translation.user_accessible || translation.executable {
             return Err(PagingError::InactivePageTableMalformed);
         }
     }
@@ -1895,6 +1944,8 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
     root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
     registry: &UserPageMappingRegistry<ZeroedFrame, CAPACITY>,
+    foreign_root_physical: u64,
+    foreign_data_physical: u64,
 ) -> Result<(), PagingError> {
     const TEST_VA: u64 = 0x4000;
     let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, root, active_root)?;
@@ -1972,6 +2023,43 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
         leaf_entry,
         (leaf_entry & !PHYSICAL_ADDRESS_MASK) | pt_physical,
         PagingError::InactivePageTableOwnershipViolation
+    );
+    // A valid, allocated data frame owned by another address space must not
+    // satisfy this root's mapping merely because it is a user-usable frame.
+    expect_rejected!(
+        pt_physical,
+        1,
+        pt_index,
+        leaf_entry,
+        (leaf_entry & !PHYSICAL_ADDRESS_MASK) | foreign_data_physical,
+        PagingError::InactivePageTableOwnershipViolation
+    );
+    // Reject the target's own PML4 and another root's PML4 as user data frames.
+    expect_rejected!(
+        pt_physical,
+        1,
+        pt_index,
+        leaf_entry,
+        (leaf_entry & !PHYSICAL_ADDRESS_MASK) | root_physical,
+        PagingError::InactivePageTableOwnershipViolation
+    );
+    expect_rejected!(
+        pt_physical,
+        1,
+        pt_index,
+        leaf_entry,
+        (leaf_entry & !PHYSICAL_ADDRESS_MASK) | foreign_root_physical,
+        PagingError::InactivePageTableOwnershipViolation
+    );
+    // Delete a registered mapping's PTE. The tree walk alone skips zero entries;
+    // the registry-to-PTE pass must detect the now-missing translation.
+    expect_rejected!(
+        pt_physical,
+        1,
+        pt_index,
+        leaf_entry,
+        0,
+        PagingError::InactivePageTableMalformed
     );
 
     if !registry.is_mapped(TEST_VA)
