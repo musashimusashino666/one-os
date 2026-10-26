@@ -405,12 +405,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Otherwise a post-transition writable-sibling pass would not prove that
     // splitting a 1 GiB/2 MiB mapping preserved unrelated writable data pages.
     #[cfg(feature = "test-wx-runtime-audit")]
-    let wx_original_direct_map_page_size =
-        match paging::verify_wx_sibling_large_page_precondition(
-            boot_info,
-            core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64,
-            paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
-        ) {
+    let wx_original_direct_map_page_size = match paging::verify_wx_sibling_large_page_precondition(
+        boot_info,
+        core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64,
+        paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
+    ) {
             Ok(page_size) => page_size,
             Err(error) => {
                 serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
