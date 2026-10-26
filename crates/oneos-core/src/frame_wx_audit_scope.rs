@@ -134,18 +134,22 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     /// Declares one root before the authoritative root inventory is sealed.
     pub fn declare_root(&mut self, physical_address: u64) -> Result<(), FrameWxAuditScopeError> {
         if self.root_inventory_sealed {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::RootInventorySealed);
         }
         if !self.valid_root_address(physical_address) {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::InvalidRootAddress);
         }
         if self.roots[..self.root_count]
             .iter()
             .any(|root| root.physical_address == physical_address)
         {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::DuplicateRoot);
         }
         if self.root_count == MAX_ROOTS {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::RootCapacityExhausted);
         }
         self.roots[self.root_count] = RootSlot {
@@ -164,9 +168,11 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     /// is authoritative and stable for the duration of the audit.
     pub fn seal_root_inventory(&mut self) -> Result<(), FrameWxAuditScopeError> {
         if self.root_inventory_sealed {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::RootInventoryAlreadySealed);
         }
         if self.root_count == 0 {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::EmptyRootInventory);
         }
         self.root_inventory_sealed = true;
@@ -178,16 +184,18 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
         &mut self,
         physical_address: u64,
     ) -> Result<(), FrameWxAuditScopeError> {
-        let Some(root) = self.roots[..self.root_count]
-            .iter_mut()
-            .find(|root| root.physical_address == physical_address)
+        let Some(index) = self.roots[..self.root_count]
+            .iter()
+            .position(|root| root.physical_address == physical_address)
         else {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::RootNotDeclared);
         };
-        if root.audited {
+        if self.roots[index].audited {
+            self.audit_failed = true;
             return Err(FrameWxAuditScopeError::RootAlreadyAudited);
         }
-        root.audited = true;
+        self.roots[index].audited = true;
         Ok(())
     }
 
@@ -368,11 +376,15 @@ mod tests {
 
     #[test]
     fn requires_a_non_empty_root_inventory_and_accounts_sources_idempotently() {
-        let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
+        let mut empty = FrameWxAuditScope::<1>::new(48).unwrap();
         assert_eq!(
-            scope.seal_root_inventory(),
+            empty.seal_root_inventory(),
             Err(FrameWxAuditScopeError::EmptyRootInventory)
         );
+        assert!(empty.summary().audit_failed);
+        assert!(!empty.summary().complete);
+
+        let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
         scope.declare_root(ROOT_A).unwrap();
         scope.seal_root_inventory().unwrap();
         scope.account_source(FrameWxAuditSource::LargePageLeaves);
@@ -381,5 +393,28 @@ mod tests {
             scope.summary().accounted_sources,
             FrameWxAuditSource::LargePageLeaves.mask()
         );
+    }
+
+    #[test]
+    fn ignored_root_inventory_errors_cannot_become_a_complete_audit() {
+        let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
+        scope.declare_root(ROOT_A).unwrap();
+        assert_eq!(
+            scope.declare_root(ROOT_B),
+            Err(FrameWxAuditScopeError::RootCapacityExhausted)
+        );
+        scope.seal_root_inventory().unwrap();
+        scope.mark_root_audited(ROOT_A).unwrap();
+        for source in [
+            FrameWxAuditSource::PhysicalMemoryOffsetAlias,
+            FrameWxAuditSource::RecursivePageTableView,
+            FrameWxAuditSource::SharedKernelMappings,
+            FrameWxAuditSource::LargePageLeaves,
+        ] {
+            scope.account_source(source);
+        }
+        let summary = scope.summary();
+        assert!(summary.audit_failed);
+        assert!(!summary.complete);
     }
 }
