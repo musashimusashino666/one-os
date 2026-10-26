@@ -2404,9 +2404,28 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64) {
-        let (pointer, reachable) = self
-            .entry_pointer(table_physical, index, level)
-            .unwrap_or_else(|| panic!("page-table write destination failed preflight"));
+        let Some((pointer, reachable)) = self.entry_pointer(table_physical, index, level) else {
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT TABLE: ", table_physical);
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT INDEX: ", index as u64);
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT LEVEL: ", level as u64);
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT TARGET VA: ",
+                self.target_virtual_address,
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT UNPUBLISHED: ",
+                u64::from(unpublished_table_frame(table_physical)),
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT USABLE: ",
+                u64::from(self.is_usable_frame(table_physical)),
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT REACHABLE MATCH: ",
+                u64::from(self.reachable_table_physical(level) == Some(table_physical)),
+            );
+            panic!("page-table write destination failed preflight");
+        };
         // SAFETY: every existing destination is validated as writable during the
         // walk; newly allocated frames were validated and zeroed before allocation
         // returned. A fault here violates the editor contract and fail-stops.
