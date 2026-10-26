@@ -61,7 +61,8 @@ impl LargePageDemotion {
         source_level: u8,
         physical_address_bits: u8,
     ) -> Result<Self, LargePageDemotionError> {
-        if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS).contains(&physical_address_bits) {
+        if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS).contains(&physical_address_bits)
+        {
             return Err(LargePageDemotionError::InvalidPhysicalAddressWidth);
         }
 
