@@ -615,8 +615,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
     if scope.declared_roots < 3
         || scope.audited_roots != scope.declared_roots
-        || scope.missing_sources
-            != oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+        || scope.missing_sources != oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
         || scope.complete
     {
         return Err(AddressSpaceError::PagingIntegrationFailed);
