@@ -226,14 +226,22 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
         return Err(LargePageDemotionTransactionError::TablePublicationReservationFailed);
     }
 
-    // Stage a complete, valid child table before making any reachable mapping
-    // change. Its A/D bits are refreshed from the invalidated parent below.
+    // Stage a complete child table before making any reachable mapping change.
+    // Conservatively pre-set A/D on every leaf: after Present is cleared, a direct-map
+    // demotion may temporarily remove the only writable alias of this unlinked table.
+    // Pre-setting both bits avoids any child-table write during that break window and
+    // ensures no in-flight hardware A/D update can be lost.
     for index in 0..ENTRIES_PER_TABLE {
         let Some(child_entry) = plan.child_entry(index) else {
             editor.release_unpublished_table(child_table_physical);
             return Err(LargePageDemotionTransactionError::ChildEntryUnavailable);
         };
-        editor.write_entry(child_table_physical, index, child_level, child_entry);
+        editor.write_entry(
+            child_table_physical,
+            index,
+            child_level,
+            child_entry | ACCESSED_DIRTY_MASK,
+        );
     }
 
     // Atomically clear Present. A hardware page walker may set A/D while the
@@ -291,26 +299,20 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
         panic!("large-page parent changed unexpectedly after invalidation");
     }
 
-    // The parent is now non-present and the old walk is quiescent. Rebuild the
-    // children with the final observed A/D state. Conservatively copying A/D to
-    // all children prevents loss of access/dirty information for any subpage.
+    // The parent is now non-present and the old walk is quiescent. Validate
+    // the final A/D sample, but do not rewrite child entries in this interval:
+    // the demoted mapping may have been the only alias through which the
+    // unpublished child table was writable. Both A/D bits were conservatively
+    // pre-set in every child before Present was cleared, so late hardware updates
+    // cannot be lost.
     let final_source = invalidated_parent | PRESENT;
-    let final_plan = match LargePageDemotion::new(final_source, source_level, physical_address_bits)
-    {
-        Ok(plan) => plan,
-        Err(_) => panic!("invalidated large-page source no longer validates"),
-    };
-    for index in 0..ENTRIES_PER_TABLE {
-        let child_entry = match final_plan.child_entry(index) {
-            Some(value) => value,
-            None => panic!("validated large-page plan omitted a child entry"),
-        };
-        editor.write_entry(child_table_physical, index, child_level, child_entry);
+    if LargePageDemotion::new(final_source, source_level, physical_address_bits).is_err() {
+        panic!("invalidated large-page source no longer validates");
     }
 
     // Preserve effective access restrictions on the non-leaf pointer. A is
     // retained as a conservative indication that the walk accessed this path;
-    // D is leaf state and is propagated to every child, not copied to a pointer.
+    // D is leaf state and remains conservatively set on every child, not on the pointer.
     // PAT, GLOBAL, software bits and protection-key bits likewise stay on leaves.
     let parent_flags =
         final_source & (PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE | ACCESSED);
@@ -588,6 +590,13 @@ mod tests {
             physical_base + 511 * (1 << 21)
         );
         assert_ne!(editor.allocated_child()[511] & LARGE_PAGE, 0);
+        for (index, entry) in editor.allocated_child().iter().enumerate() {
+            assert_eq!(
+                entry & ACCESSED_DIRTY_MASK,
+                ACCESSED_DIRTY_MASK,
+                "child {index} is conservatively marked accessed and dirty before publication"
+            );
+        }
         assert_ne!(
             editor.allocated_child()[0] & LARGE_PAGE_PAT,
             0,
