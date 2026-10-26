@@ -16,6 +16,7 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod address_space;
+mod atomic_entry_update;
 mod bootstrap_mapping_audit;
 mod elf64;
 mod frame_allocator;
@@ -28,6 +29,10 @@ mod page_table;
 mod page_table_mutation;
 mod paging_preconditions;
 mod user_pages;
+pub use atomic_entry_update::{
+    compare_exchange_entry_with_ad_retry, AtomicEntryCasRetryError,
+    ATOMIC_ENTRY_CAS_MAX_ATTEMPTS,
+};
 pub use address_space::{
     validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot,
     AddressSpaceRootDeactivationError, AddressSpaceRootEditor, AddressSpaceRootError,
