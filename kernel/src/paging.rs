@@ -1757,7 +1757,9 @@ fn registered_table_frame(physical_address: u64) -> bool {
 /// Active-root walkers may encounter these frames after a large-page demotion,
 /// even though the firmware memory map still classifies the backing pages as Usable.
 pub(super) fn registered_published_page_table_frame(physical_address: u64) -> bool {
-    TABLE_FRAMES.lock().contains_published_unowned(physical_address)
+    TABLE_FRAMES
+        .lock()
+        .contains_published_unowned(physical_address)
 }
 
 fn unpublished_table_frame(physical_address: u64) -> bool {
