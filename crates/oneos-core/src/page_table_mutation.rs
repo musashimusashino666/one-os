@@ -1745,7 +1745,7 @@ mod tests {
         let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let leaf = tables.read_any(l2, indices[3]).unwrap();
         tables.pages.get_mut(&l2).unwrap()[indices[3]] = leaf & !PHYSICAL_ADDRESS_FIELD_MASK;
-        tables
+        let reservation = tables
             .wx_registry
             .reserve_alias_range(
                 root,
@@ -1755,7 +1755,7 @@ mod tests {
                 FrameWxPermissions::new(true, false),
             )
             .unwrap();
-        tables.wx_registry.commit_alias_at(root, virtual_address).unwrap();
+        tables.wx_registry.commit_alias(reservation).unwrap();
 
         let present_zero_mapping = tables.read_any(l2, indices[3]).unwrap();
         assert_ne!(present_zero_mapping & PRESENT, 0);
