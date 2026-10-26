@@ -235,6 +235,24 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             return Ok(());
         }
         validate_virtual_range(virtual_start, length)?;
+        self.observe_physical_alias(physical_start, length, permissions)
+    }
+
+    /// Observes an alias after its virtual address has been independently
+    /// validated, checking physical overlap without storing another range.
+    ///
+    /// This lets the kernel collect reachable recursive-table physical frames
+    /// during the page-table walk, then check them against the completed leaf
+    /// inventory after every executable mapping has been seen.
+    pub fn observe_physical_alias(
+        &mut self,
+        physical_start: u64,
+        length: u64,
+        permissions: FrameWxPermissions,
+    ) -> Result<(), FrameWxAuditError> {
+        if !permissions.writable && !permissions.executable {
+            return Ok(());
+        }
         self.validate_physical_range(physical_start, length)?;
 
         let physical_end = physical_start + length;
