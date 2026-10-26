@@ -53,9 +53,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("  cargo run -p oneos-xtask -- image-test-vm-transitions");
             println!("      Build a test-only map/unmap/remap and TLB-transition image");
             println!("  cargo run -p oneos-xtask -- image-test-root-leak-safety");
-        println!("  cargo run -p oneos-xtask -- image-test-wx-runtime-audit");
-        println!("      Build a dedicated post-activation W^X audit diagnostic image");
             println!("      Build a test-only uncertain-CR3 root-token leak safety image");
+            println!("  cargo run -p oneos-xtask -- image-test-wx-runtime-audit");
+            println!("      Build a dedicated post-activation W^X audit diagnostic image");
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
