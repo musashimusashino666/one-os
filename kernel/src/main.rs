@@ -410,13 +410,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64,
         paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
     ) {
-            Ok(page_size) => page_size,
-            Err(error) => {
-                serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
-                serial_write(error.message());
-                halt_forever()
-            }
-        };
+        Ok(page_size) => page_size,
+        Err(error) => {
+            serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
     #[cfg(feature = "test-wx-runtime-audit")]
     {
         interrupts::write_hex(
