@@ -634,10 +634,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
             b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
             conflict.physical_start,
         );
-        super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME CONFLICT LENGTH: ",
-            conflict.length,
-        );
+        super::interrupts::write_hex(b"ONE OS W^X RUNTIME CONFLICT LENGTH: ", conflict.length);
         super::interrupts::write_hex(
             b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
             conflict.first_virtual_start,
@@ -659,9 +656,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
             second_flags,
         );
     } else {
-        super::serial_write(
-            b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n",
-        );
+        super::serial_write(b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n");
     }
 
     let (original_inactive, second_active) =
