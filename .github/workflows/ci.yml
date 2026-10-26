@@ -116,7 +116,8 @@ jobs:
             cat "$log"
             python3 tools/check_qemu_serial.py \
               --log "$log" \
-              --exit-status "$status"
+              --exit-status "$status" \
+              --require-large-page-demotion-smoke
           done
 
       - name: Verify post-activation W^X audit diagnostics in QEMU
