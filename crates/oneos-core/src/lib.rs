@@ -22,6 +22,7 @@ mod frame_allocator;
 mod frame_registry;
 mod frame_wx;
 mod frame_wx_audit;
+mod large_page;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
@@ -64,6 +65,7 @@ pub use page_table::{
     recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
 };
 pub(crate) use page_table_mutation::map_4k;
+pub use large_page::{LargePageDemotion, LargePageDemotionError};
 pub use page_table_mutation::{
     map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError,
     UnmappedPage,
