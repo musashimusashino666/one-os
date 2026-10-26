@@ -4745,6 +4745,145 @@ pub fn kernel_executable_direct_alias_for_test(
     Ok(direct_alias)
 }
 
+/// Verifies that the dedicated W^X test begins with a real large-page direct-map
+/// alias spanning both the executable kernel page and a writable data-page sibling.
+///
+/// Call this before `enforce_kernel_executable_alias_wx`. Returning the original
+/// large-leaf size proves that the later writable-sibling assertion exercises the
+/// demotion path, rather than passing on a direct map that was already split into 4 KiB
+/// leaves.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_wx_sibling_large_page_precondition(
+    boot_info: &BootInfo,
+    writable_virtual_address: u64,
+    executable_virtual_address: u64,
+) -> Result<u64, PagingError> {
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    let root_table_physical = active_root_table_physical();
+    if root_table_physical == 0
+        || !is_canonical_4level(writable_virtual_address)
+        || !is_canonical_4level(executable_virtual_address)
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
+
+    let writable_virtual_page = writable_virtual_address & !(PAGE_SIZE - 1);
+    let executable_virtual_page = executable_virtual_address & !(PAGE_SIZE - 1);
+    let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_page,
+        recursive_index,
+    )?;
+    let executable = translate_with_editor(
+        &mut executable_editor,
+        root_table_physical,
+        executable_virtual_page,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable.page_size != PAGE_SIZE
+        || executable.writable
+        || executable.user_accessible
+        || !executable.executable
+    {
+        return Err(PagingError::InvalidKernelCodeMapping);
+    }
+    let executable_physical_page = executable.physical_address & !(PAGE_SIZE - 1);
+    if !is_kernel_backed_page(regions, executable_physical_page) {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    let mut writable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        writable_virtual_page,
+        recursive_index,
+    )?;
+    let writable = translate_with_editor(
+        &mut writable_editor,
+        root_table_physical,
+        writable_virtual_page,
+    )
+    .map_err(PagingError::Translation)?;
+    if writable.page_size != PAGE_SIZE
+        || !writable.writable
+        || writable.user_accessible
+        || writable.executable
+    {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+    let writable_physical_page = writable.physical_address & !(PAGE_SIZE - 1);
+    if writable_physical_page == executable_physical_page
+        || !is_kernel_backed_page(regions, writable_physical_page)
+        || writable_physical_page & !((1u64 << 21) - 1)
+            != executable_physical_page & !((1u64 << 21) - 1)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let writable_direct_alias = physical_memory_offset
+        .checked_add(writable_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let executable_direct_alias = physical_memory_offset
+        .checked_add(executable_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+
+    let mut writable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        writable_direct_alias,
+        recursive_index,
+    )?;
+    let writable_alias = translate_with_editor(
+        &mut writable_alias_editor,
+        root_table_physical,
+        writable_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    if writable_alias.physical_address != writable_physical_page
+        || !writable_alias.writable
+        || writable_alias.user_accessible
+        || writable_alias.executable
+        || (writable_alias.page_size != (1u64 << 21)
+            && writable_alias.page_size != (1u64 << 30))
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    // The executable page must be in this same pre-existing large leaf. It is
+    // deliberately still writable/NX through the direct map before transition.
+    let mut executable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_direct_alias,
+        recursive_index,
+    )?;
+    let executable_alias = translate_with_editor(
+        &mut executable_alias_editor,
+        root_table_physical,
+        executable_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable_alias.physical_address != executable_physical_page
+        || executable_alias.page_size != writable_alias.page_size
+        || !executable_alias.writable
+        || executable_alias.user_accessible
+        || executable_alias.executable
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    Ok(writable_alias.page_size)
+}
+
 /// Returns the writable physical-offset alias of a mutable kernel data page that
 /// shares a demoted 2 MiB physical region with an executable kernel page.
 ///
@@ -4758,10 +4897,12 @@ pub fn kernel_writable_sibling_direct_alias_for_test(
     writable_virtual_address: u64,
     executable_virtual_address: u64,
     recursive_index: u16,
+    original_large_page_size: u64,
 ) -> Result<u64, PagingError> {
     let regions: &[MemoryRegion] = &boot_info.memory_regions;
     let root_table_physical = active_root_table_physical();
-    if !is_canonical_4level(writable_virtual_address)
+    if (original_large_page_size != (1u64 << 21) && original_large_page_size != (1u64 << 30))
+        || !is_canonical_4level(writable_virtual_address)
         || !is_canonical_4level(executable_virtual_address)
         || !is_safe_recursive_mapping_index(recursive_index)
         || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
