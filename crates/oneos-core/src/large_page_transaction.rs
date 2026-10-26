@@ -12,6 +12,9 @@ use super::{is_canonical_4level, LargePageDemotion, LargePageDemotionError};
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
+const ACCESSED: u64 = 1 << 5;
+const DIRTY: u64 = 1 << 6;
+const ACCESSED_DIRTY_MASK: u64 = ACCESSED | DIRTY;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PAGE_SIZE: u64 = 1 << 12;
@@ -37,11 +40,32 @@ pub trait LargePageDemotionEditor {
     /// Physical-address width of the CPU whose tables this editor accesses.
     fn physical_address_bits(&self) -> u8;
 
-    /// Reads one entry from a reachable table. Returns `None` if inaccessible.
+    /// Reads one entry from a reachable table, including a non-present entry.
+    /// Returns `None` only if the validated table cannot be accessed.
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64>;
 
     /// Writes an entry to a validated, writable table. Infallible by contract.
+    ///
+    /// Use this for the unlinked child table and for publishing the final parent
+    /// pointer after the previous large-page entry is non-present and flushed.
     fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64);
+
+    /// Strong atomic compare-exchange for the large-page parent entry.
+    ///
+    /// This must be atomic with respect to hardware page-walker updates of the
+    /// accessed/dirty bits. On failure, return the exact value observed in the
+    /// entry. On success, replace `expected` with `replacement` atomically.
+    /// The transaction uses this to clear Present without losing hardware A/D
+    /// updates; after a successful clear, the caller must flush the full virtual
+    /// range before sampling the final A/D state. Weak/spurious CAS is forbidden.
+    fn compare_exchange_entry(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+        expected: u64,
+        replacement: u64,
+    ) -> Result<(), u64>;
 
     /// Allocates a fresh page-table frame and zeros all 4 KiB before return.
     fn allocate_table(&mut self) -> Option<u64>;
@@ -99,7 +123,7 @@ pub enum LargePageDemotionTransactionError {
     TableAllocationFailed,
     /// Ownership metadata for publication could not be reserved.
     TablePublicationReservationFailed,
-    /// The parent changed while the child table was staged; it was not overwritten.
+    /// Non-A/D bits changed unexpectedly before the old leaf was invalidated.
     ParentEntryChanged,
     /// The validated planner unexpectedly failed to produce a child entry.
     ChildEntryUnavailable,
@@ -131,13 +155,14 @@ pub struct LargePageDemotionReceipt {
 /// MAXPHYADDR, and the VA/index relationship itself. The caller must hold the
 /// page-table mutation serialization required by the current kernel contract.
 ///
-/// Before the parent is changed, every child entry is populated, ownership
-/// metadata is reserved, and the original parent value is re-read. Any
-/// recoverable failure before publication releases only the unpublished table
-/// and leaves the parent's current value untouched. Once the parent is
-/// replaced, registration commit and local range invalidation are infallible
-/// editor contracts; failure must fail-stop rather than return an ambiguous
-/// partially completed transition.
+/// All fallible allocation and registration work completes before the original
+/// leaf is changed. The function atomically clears Present, invalidates the full
+/// range, samples the final hardware A/D bits, refreshes all 512 children with
+/// those bits, publishes the child pointer, commits ownership, and invalidates
+/// the range again. This break-before-make ordering prevents stale large-page
+/// translations and recovers A/D updates made while the original leaf was live.
+/// Any failure after clearing Present is an invariant violation and must fail-stop;
+/// it must not return while leaving the mapping partially published.
 pub fn demote_large_page<E: LargePageDemotionEditor>(
     editor: &mut E,
     root_table_physical: u64,
@@ -199,6 +224,8 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
         return Err(LargePageDemotionTransactionError::TablePublicationReservationFailed);
     }
 
+    // Stage a complete, valid child table before making any reachable mapping
+    // change. Its A/D bits are refreshed from the invalidated parent below.
     for index in 0..ENTRIES_PER_TABLE {
         let Some(child_entry) = plan.child_entry(index) else {
             editor.release_unpublished_table(child_table_physical);
@@ -207,25 +234,90 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
         editor.write_entry(child_table_physical, index, child_level, child_entry);
     }
 
-    // Re-check the parent after all fallible work. The caller must serialize
-    // mutations; this guard also prevents overwriting an observed intervening edit.
-    match editor.read_entry(parent_table_physical, parent_index, source_level) {
-        Some(current) if current == original_parent => {}
-        _ => {
+    // Atomically clear Present. A hardware page walker may set A/D while the
+    // large leaf is still present, so retry when those bits change. Any other
+    // change violates the caller's mutation-serialization contract and aborts
+    // before we invalidate or alter the mapping.
+    let mut expected_parent = original_parent;
+    loop {
+        if expected_parent & !ACCESSED_DIRTY_MASK != original_parent & !ACCESSED_DIRTY_MASK {
             editor.release_unpublished_table(child_table_physical);
             return Err(LargePageDemotionTransactionError::ParentEntryChanged);
         }
+        let invalid_parent = expected_parent & !PRESENT;
+        match editor.compare_exchange_entry(
+            parent_table_physical,
+            parent_index,
+            source_level,
+            expected_parent,
+            invalid_parent,
+        ) {
+            Ok(()) => break,
+            Err(observed) => {
+                let expected_ad = expected_parent & ACCESSED_DIRTY_MASK;
+                let observed_ad = observed & ACCESSED_DIRTY_MASK;
+                if observed & !ACCESSED_DIRTY_MASK != original_parent & !ACCESSED_DIRTY_MASK
+                    || observed & PRESENT == 0
+                    || observed_ad & expected_ad != expected_ad
+                    || observed_ad == expected_ad
+                {
+                    editor.release_unpublished_table(child_table_physical);
+                    return Err(LargePageDemotionTransactionError::ParentEntryChanged);
+                }
+                // Hardware only sets A/D bits. Use the newly observed value as
+                // the expected word for the next strong CAS; the final state is
+                // sampled again after invalidation to include in-flight updates.
+                expected_parent = observed;
+            }
+        }
     }
 
-    // The child leaves preserve the original leaf attributes. On the new
-    // non-leaf pointer, retain only effective access restrictions that apply
-    // through ancestor entries; leaf-only GLOBAL/PAT/dirty/protection-key bits
-    // must not be copied to the pointer. PWT/PCD remain on the child leaves,
-    // where they continue to describe the mapped physical memory type.
-    let parent_flags = original_parent & (PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE);
+    // Break-before-make: after this callback returns, the old large-page
+    // translation is gone and no prior walk may still update its A/D bits.
+    editor.invalidate_local_range(virtual_base, source_page_size);
+    let invalidated_parent = match editor.read_entry(
+        parent_table_physical,
+        parent_index,
+        source_level,
+    ) {
+        Some(value) => value,
+        None => panic!("large-page parent became inaccessible after invalidation"),
+    };
+    if invalidated_parent & PRESENT != 0
+        || invalidated_parent & !(ACCESSED_DIRTY_MASK | PRESENT)
+            != original_parent & !(ACCESSED_DIRTY_MASK | PRESENT)
+        || (invalidated_parent & ACCESSED_DIRTY_MASK & expected_parent)
+            != (expected_parent & ACCESSED_DIRTY_MASK)
+    {
+        panic!("large-page parent changed unexpectedly after invalidation");
+    }
+
+    // The parent is now non-present and the old walk is quiescent. Rebuild the
+    // children with the final observed A/D state. Conservatively copying A/D to
+    // all children prevents loss of access/dirty information for any subpage.
+    let final_source = invalidated_parent | PRESENT;
+    let final_plan = match LargePageDemotion::new(final_source, source_level, physical_address_bits) {
+        Ok(plan) => plan,
+        Err(_) => panic!("invalidated large-page source no longer validates"),
+    };
+    for index in 0..ENTRIES_PER_TABLE {
+        let child_entry = match final_plan.child_entry(index) {
+            Some(value) => value,
+            None => panic!("validated large-page plan omitted a child entry"),
+        };
+        editor.write_entry(child_table_physical, index, child_level, child_entry);
+    }
+
+    // Preserve effective access restrictions on the non-leaf pointer. A is
+    // retained as a conservative indication that the walk accessed this path;
+    // D is leaf state and is propagated to every child, not copied to a pointer.
+    // PAT, GLOBAL, software bits and protection-key bits likewise stay on leaves.
+    let parent_flags = final_source
+        & (PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE | ACCESSED);
     let new_parent = child_table_physical | parent_flags;
 
-    // No fallible operation may remain after the parent becomes reachable.
+    // From here on, callbacks are infallible by contract. Publish only after the
+    // final child contents are complete; then commit ownership and flush again.
     editor.write_entry(
         parent_table_physical,
         parent_index,
@@ -244,7 +336,7 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
         child_level,
         virtual_start: virtual_base,
         virtual_length: source_page_size,
-        physical_start: plan.child_entry(0).unwrap_or(0) & PHYSICAL_ADDRESS_MASK,
+        physical_start: plan.physical_base(),
     })
 }
 
