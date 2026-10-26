@@ -643,7 +643,6 @@ fn validate_shared_kernel_half(
 /// budgets make work and storage bounded. Physical aliases are compared by byte
 /// range, so 4 KiB entries can conflict with 2 MiB or 1 GiB mappings.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn audit_wx_table<const CAPACITY: usize>(
     boot_info: &BootInfo,
     active_recursive_index: u16,
