@@ -237,19 +237,39 @@ mod tests {
     fn detects_overlapping_aliases_in_either_insertion_order() {
         let mut executable_first = FrameWxAudit::<8>::new(48).unwrap();
         executable_first
-            .record_alias(BASE_VA, BASE_PA, 1 << 21, permissions(false, true))
+            .record_alias(
+                BASE_VA,
+                BASE_PA,
+                1 << 21,
+                permissions(false, true),
+            )
             .unwrap();
         executable_first
-            .record_alias(BASE_VA + (4 * PAGE), BASE_PA + (4 * PAGE), PAGE, permissions(true, false))
+            .record_alias(
+                BASE_VA + (4 * PAGE),
+                BASE_PA + (4 * PAGE),
+                PAGE,
+                permissions(true, false),
+            )
             .unwrap();
         assert!(executable_first.summary().conflicting_overlap_events > 0);
 
         let mut writable_first = FrameWxAudit::<8>::new(48).unwrap();
         writable_first
-            .record_alias(BASE_VA + (4 * PAGE), BASE_PA + (4 * PAGE), PAGE, permissions(true, false))
+            .record_alias(
+                BASE_VA + (4 * PAGE),
+                BASE_PA + (4 * PAGE),
+                PAGE,
+                permissions(true, false),
+            )
             .unwrap();
         writable_first
-            .record_alias(BASE_VA, BASE_PA, 1 << 21, permissions(false, true))
+            .record_alias(
+                BASE_VA,
+                BASE_PA,
+                1 << 21,
+                permissions(false, true),
+            )
             .unwrap();
         assert!(writable_first.summary().conflicting_overlap_events > 0);
     }
@@ -257,9 +277,21 @@ mod tests {
     #[test]
     fn detects_writable_executable_overlap_with_large_page_extents() {
         let mut audit = FrameWxAudit::<8>::new(48).unwrap();
-        audit.record_alias(BASE_VA, BASE_PA, 1 << 30, permissions(false, true)).unwrap();
         audit
-            .record_alias(BASE_VA + (1 << 30), BASE_PA + (1 << 21), 1 << 21, permissions(true, false))
+            .record_alias(
+                BASE_VA,
+                BASE_PA,
+                1 << 30,
+                permissions(false, true),
+            )
+            .unwrap();
+        audit
+            .record_alias(
+                BASE_VA + (1 << 30),
+                BASE_PA + (1 << 21),
+                1 << 21,
+                permissions(true, false),
+            )
             .unwrap();
         assert!(audit.summary().conflicting_overlap_events > 0);
     }
@@ -267,9 +299,16 @@ mod tests {
     #[test]
     fn coalesces_adjacent_aliases_with_identical_effective_rights() {
         let mut audit = FrameWxAudit::<2>::new(48).unwrap();
-        audit.record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, false)).unwrap();
         audit
-            .record_alias(BASE_VA + PAGE, BASE_PA + PAGE, PAGE, permissions(true, false))
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
+        audit
+            .record_alias(
+                BASE_VA + PAGE,
+                BASE_PA + PAGE,
+                PAGE,
+                permissions(true, false),
+            )
             .unwrap();
         let summary = audit.summary();
         assert_eq!(summary.tracked_alias_mappings, 2);
@@ -280,25 +319,34 @@ mod tests {
     #[test]
     fn read_only_nx_aliases_do_not_consume_inventory_capacity() {
         let mut audit = FrameWxAudit::<0>::new(48).unwrap();
-        audit.record_alias(BASE_VA, BASE_PA, PAGE, permissions(false, false)).unwrap();
+        audit
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(false, false))
+            .unwrap();
         assert_eq!(audit.summary().tracked_ranges, 0);
         assert_eq!(audit.summary().tracked_alias_mappings, 0);
     }
 
     #[test]
     fn rejects_invalid_ranges_and_reports_capacity_exhaustion() {
-        assert_eq!(
-            FrameWxAudit::<1>::new(64).unwrap_err(),
-            FrameWxAuditError::InvalidPhysicalAddressWidth
-        );
+        assert!(matches!(
+            FrameWxAudit::<1>::new(64),
+            Err(FrameWxAuditError::InvalidPhysicalAddressWidth)
+        ));
         let mut audit = FrameWxAudit::<1>::new(48).unwrap();
         assert_eq!(
             audit.record_alias(BASE_VA, BASE_PA + 1, PAGE, permissions(true, false)),
             Err(FrameWxAuditError::InvalidPhysicalRange)
         );
-        audit.record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, false)).unwrap();
+        audit
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
         assert_eq!(
-            audit.record_alias(BASE_VA + (2 * PAGE), BASE_PA + (2 * PAGE), PAGE, permissions(true, false)),
+            audit.record_alias(
+                BASE_VA + (2 * PAGE),
+                BASE_PA + (2 * PAGE),
+                PAGE,
+                permissions(true, false),
+            ),
             Err(FrameWxAuditError::CapacityExhausted)
         );
     }
