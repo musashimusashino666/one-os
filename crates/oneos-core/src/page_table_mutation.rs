@@ -602,7 +602,10 @@ mod tests {
         PageTableMutationError, UnmappedPage, LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK,
         PRESENT, PROTECTION_KEY_FIELD_MASK, USER_ACCESSIBLE, WRITABLE,
     };
-    use crate::{translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE};
+    use crate::{
+        translate_4level, FrameToken, FrameWxPermissions, FrameWxRegistry, PageTableError,
+        PageTableFrameRegistry, PAGE_SIZE,
+    };
     use std::boxed::Box;
     use std::collections::BTreeMap;
     use std::vec;
@@ -615,6 +618,7 @@ mod tests {
         physical_address_bits: u8,
         allow_executable_mappings: bool,
         unallocated_frames: Vec<u64>,
+        wx_registry: FrameWxRegistry<64>,
     }
 
     impl TestTables {
@@ -628,6 +632,7 @@ mod tests {
                 physical_address_bits: 48,
                 allow_executable_mappings: true,
                 unallocated_frames: Vec::new(),
+                wx_registry: FrameWxRegistry::new(48).expect("test W^X registry"),
             }
         }
 
@@ -655,6 +660,55 @@ mod tests {
 
         fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
             self.allow_executable_mappings
+        }
+
+        fn reserve_wx_alias(
+            &mut self,
+            root: u64,
+            virtual_address: u64,
+            physical_address: u64,
+            permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            self.wx_registry
+                .reserve_alias_range(
+                    root,
+                    virtual_address,
+                    physical_address,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(permissions.writable, permissions.executable),
+                )
+                .map(|_| ())
+                .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+        }
+
+        fn commit_wx_alias(&mut self, root: u64, virtual_address: u64) {
+            self.wx_registry
+                .commit_alias_at(root, virtual_address)
+                .expect("mapped alias reservation must commit");
+        }
+
+        fn begin_wx_alias_removal(
+            &mut self,
+            root: u64,
+            virtual_address: u64,
+            physical_address: u64,
+            permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            self.wx_registry
+                .begin_removal_for_alias(
+                    root,
+                    virtual_address,
+                    physical_address,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(permissions.writable, permissions.executable),
+                )
+                .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+        }
+
+        fn complete_wx_alias_removal(&mut self, root: u64, virtual_address: u64) {
+            self.wx_registry
+                .complete_removal_at(root, virtual_address)
+                .expect("retiring alias must complete after unmap");
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
