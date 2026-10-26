@@ -332,6 +332,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     serial_write(b"ONE OS VM MAPPING SMOKE TEST READY\n");
 
+    // Exercise the live large-page demotion transaction on the normal boot only.
+    // Dedicated fault/TLB acceptance images retain their isolated setup and exact
+    // fault/log contracts; the regular three-boot CI path validates this editor
+    // integration against the bootloader's physical-memory-offset large leaves.
+    #[cfg(not(any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault",
+        feature = "test-double-fault",
+        feature = "test-ist",
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection",
+        feature = "test-vm-transitions",
+        feature = "test-root-leak-safety",
+        feature = "test-wx-runtime-audit"
+    )))]
+    {
+        if let Err(error) = paging::verify_large_page_demotion_smoke_test(boot_info) {
+            serial_write(b"\nONE OS LARGE PAGE DEMOTION SMOKE TEST FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+        serial_write(b"ONE OS LARGE PAGE DEMOTION SMOKE TEST READY\n");
+    }
+
     if let Err(error) = address_space::verify_root_initialization_smoke_test(boot_info) {
         serial_write(b"\nONE OS ADDRESS SPACE ROOT INITIALIZATION FAILED\n");
         serial_write(error.message());
