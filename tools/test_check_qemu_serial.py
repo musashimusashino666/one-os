@@ -43,7 +43,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
             f"{MUTATION_READY}\n{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n"
             f"{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
         )
-        valid, reason = validate_serial_output(log, 124)
+        valid, reason = validate_serial_output(log, 124, require_large_page_demotion_smoke=True)
         self.assertFalse(valid)
         self.assertIn("large-page demotion smoke outcome", reason.lower())
 
@@ -53,7 +53,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
             f"{MUTATION_READY}\n{DEMOTION_SKIPPED}\n{ADDRESS_SPACE_READY}\n"
             f"{ACTIVATION_READY}\n{SWITCH_READY}\n{USER_FRAME_TEST_LOG}{COMPLETE}\n"
         )
-        valid, _ = validate_serial_output(log, 124)
+        valid, _ = validate_serial_output(log, 124, require_large_page_demotion_smoke=True)
         self.assertTrue(valid)
 
     def test_duplicate_large_page_demotion_smoke_marker_fails(self):
@@ -63,7 +63,7 @@ class ValidateSerialOutputTests(unittest.TestCase):
             f"{ADDRESS_SPACE_READY}\n{ACTIVATION_READY}\n{SWITCH_READY}\n"
             f"{USER_FRAME_TEST_LOG}{COMPLETE}\n"
         )
-        valid, reason = validate_serial_output(log, 124)
+        valid, reason = validate_serial_output(log, 124, require_large_page_demotion_smoke=True)
         self.assertFalse(valid)
         self.assertIn("exactly one large-page demotion smoke marker", reason.lower())
 
