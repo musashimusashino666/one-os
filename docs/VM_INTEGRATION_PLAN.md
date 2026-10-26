@@ -39,6 +39,8 @@ The 4 KiB mutation engine now has explicit editor hooks for reserving/committing
 
 This is deliberately not a global W^X guarantee. The registry presently accounts for aliases created through the managed 4 KiB mutation APIs; it is not seeded from pre-existing boot mappings, physical-memory-offset/direct-map aliases, inherited upper-half mappings, or every inactive root and large-page extent. The concrete kernel editors still reject new executable mappings. Do not relax that policy until complete reverse-alias accounting, direct-map downgrade/removal, and adversarial W-to-X tests are implemented.
 
+A host-testable `LargePageDemotion` planner now validates a present 1 GiB or 2 MiB leaf and derives its 512 child leaf entries. It preserves the source access/cache attributes and moves the large-page PAT bit from bit 12 to bit 7 when producing 4 KiB PTEs. This is only a calculation primitive: it does not allocate or publish a child table, modify the direct map, change permissions, serialize page-table writes, or invalidate the TLB. Direct-map permission transitions remain unimplemented, and executable mappings must remain fail-closed.
+
 ## Goals
 
 1. Use the existing tested mutation algorithms instead of duplicating paging logic in
