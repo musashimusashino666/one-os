@@ -41,6 +41,53 @@ This is deliberately not a global W^X guarantee. The registry presently accounts
 
 A host-testable `LargePageDemotion` planner now validates a present 1 GiB or 2 MiB leaf and derives its 512 child leaf entries. It preserves the source access/cache attributes and moves the large-page PAT bit from bit 12 to bit 7 when producing 4 KiB PTEs. This is only a calculation primitive: it does not allocate or publish a child table, modify the direct map, change permissions, serialize page-table writes, or invalidate the TLB. Direct-map permission transitions remain unimplemented, and executable mappings must remain fail-closed.
 
+## Atomic page-table entry update (implemented, limited scope)
+
+The active `KernelPageTableEditor` now exposes an internal strong atomic
+compare-exchange for a validated entry. It uses a 64-bit atomic RMW with
+acquire-release ordering so an observed change to hardware-maintained Accessed or
+Dirty bits is reported as a compare failure rather than silently overwritten.
+The normal map/access/unmap smoke path exercises a no-op compare-exchange against
+its live 4 KiB PTE and fails closed if that operation cannot be completed. A retry
+is permitted only when the observed value differs by monotonic A/D updates.
+
+This is a narrowly scoped editor primitive. It does **not** invalidate TLB
+translations, prove quiescence of in-flight hardware page walks, implement
+large-page demotion, or establish system-wide W^X. Ordinary `write_entry` and the
+existing local `INVLPG` helper must not be treated as a substitute for a reviewed
+break-before-make protocol.
+
+## Large-page live-kernel integration gate (not implemented)
+
+The host-testable large-page transaction proposal in PR #43 is not wired into the
+active kernel editor. Before a concrete adapter can be enabled, it must satisfy all
+of the following:
+
+- Use the strong atomic compare-exchange primitive to clear Present and retry only
+  when the observed parent change consists of monotonic hardware A/D updates. Any
+  other bit change must abort before publication.
+- Finish all allocation, child-entry staging, and reversible publication-metadata
+  reservation before clearing Present. Retain the actual `Frame` token for the
+  child table until it is safely published or rolled back.
+- Define and justify an x86_64 invalidation sequence for the complete old large-page
+  translation. The contract must distinguish TLB invalidation from proof that no
+  previous hardware walk can still update the retired entry's A/D bits. A host mock
+  or a successful `INVLPG` instruction alone is not enough evidence for that stronger
+  claim.
+- Refresh the 512 child entries from the final parent A/D state only after the
+  chosen architecture contract says old walks are quiescent; then publish the
+  child-table pointer, commit ownership without a fallible step, and invalidate the
+  range again.
+- Exercise the path on a deliberately created, disposable test large-page mapping
+  in QEMU before using it on any boot/direct-map mapping. The test must verify
+  translations, effective permissions, attributes/PAT, ownership rollback, and
+  the expected A/D behavior. Do not enable executable mappings as part of this work.
+
+Until these gates pass on the exact reviewed PR head, keep large-page demotion out of
+the live kernel path, keep executable mapping fail-closed, and leave Issue #26 open.
+This limitation is about the specific live demotion path; the existing 4 KiB smoke
+test only validates the no-op CAS helper.
+
 ## Goals
 
 1. Use the existing tested mutation algorithms instead of duplicating paging logic in
