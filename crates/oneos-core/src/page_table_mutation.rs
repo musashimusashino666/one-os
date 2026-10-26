@@ -806,6 +806,28 @@ mod tests {
             true
         }
 
+        // This backend focuses on page-table-frame ownership. Alias lifecycle
+        // behavior is covered by TestTables and FrameWxRegistry tests.
+        fn reserve_wx_alias(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> { Ok(()) }
+
+        fn commit_wx_alias(&mut self, _root: u64, _virtual_address: u64) {}
+
+        fn begin_wx_alias_removal(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> { Ok(()) }
+
+        fn complete_wx_alias_removal(&mut self, _root: u64, _virtual_address: u64) {}
+
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
             if let Some(page) = self.pages.get_mut(&table) {
                 page[index] = value;
@@ -1748,4 +1770,48 @@ mod tests {
             Err(PageTableMutationError::NotMapped { level: 4 })
         );
     }
+    #[test]
+    fn mapping_lifecycle_hooks_reject_writable_executable_alias_before_publication() {
+        let root = 0x1000;
+        let physical = 0x80_000;
+        let mut tables = TestTables::new(root);
+
+        map(
+            &mut tables,
+            root,
+            0x4000,
+            physical,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                0x8000,
+                physical,
+                PagePermissions::new(false, false, true),
+            ),
+            Err(PageTableMutationError::WxAliasRegistryFailure)
+        );
+        assert_eq!(
+            translate_4level(0x8000, root, |table, index| tables.read_any(table, index)),
+            Err(PageTableError::NotPresent { level: 1 })
+        );
+
+        // A denied executable reservation must not strand a pending entry.
+        map(
+            &mut tables,
+            root,
+            0x8000,
+            physical,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+        unmap_4k(root, 0x4000, &mut tables).unwrap();
+        unmap_4k(root, 0x8000, &mut tables).unwrap();
+        assert_eq!(tables.wx_registry.occupied_slots(), 0);
+    }
+
 }
