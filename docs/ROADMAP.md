@@ -108,3 +108,9 @@ Exit criteria: public reports disclose hardware, workload, build, limitations, a
 ## Prioritization rule
 
 Security boundaries, bootability, and reproducibility take precedence over features. A smaller, verified capability is more valuable than a broad subsystem whose behavior cannot be tested.
+
+
+## W^X audit coverage contract
+
+- [x] Add a host-testable coverage contract that cannot report system-wide completeness unless the root inventory is explicitly sealed, every declared root is audited, and all required alias sources are accounted for. The bootstrap reports the current active-root walk as **incomplete global coverage**; this status is not system-wide W^X enforcement.
+- [ ] Use the authoritative address-space/root registry to enumerate every activatable root, account for direct-map and recursive page-table aliases, and apply the coverage contract to complete multi-root walks. Keep executable publication denied until the full inventory and permission-transition path are proven.
