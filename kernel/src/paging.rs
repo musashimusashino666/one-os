@@ -45,7 +45,8 @@ const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const TABLE_FRAME_CAPACITY: usize = 512;
-const WX_ALIAS_REGISTRY_CAPACITY: usize = 512;
+// Keep lazy initialization bounded on the bootstrap kernel stack; exhaustion fails closed.
+const WX_ALIAS_REGISTRY_CAPACITY: usize = 64;
 const ADDRESS_SPACE_ROOT_CAPACITY: usize = 16;
 const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
