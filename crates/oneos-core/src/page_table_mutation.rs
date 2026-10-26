@@ -1613,15 +1613,6 @@ mod tests {
         let mut tables = TestTables::new(root);
         map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
 
-        // This test deliberately rewrites the synthetic PTE below. Keep the test
-        // registry aligned with that synthetic state so the unmap exercises the
-        // physical-zero translation rather than rejecting an untracked frame change.
-        let removal = tables
-            .wx_registry
-            .begin_removal(root, virtual_address)
-            .unwrap();
-        tables.wx_registry.complete_removal(removal).unwrap();
-
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
@@ -1733,6 +1724,15 @@ mod tests {
         let mut tables = TestTables::new(root);
         let permissions = PagePermissions::new(true, false, false);
         map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
+
+        // This test deliberately rewrites the synthetic PTE below. Keep the test
+        // registry aligned with that synthetic state so the unmap exercises the
+        // physical-zero translation rather than rejecting an untracked frame change.
+        let removal = tables
+            .wx_registry
+            .begin_removal(root, virtual_address)
+            .unwrap();
+        tables.wx_registry.complete_removal(removal).unwrap();
 
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
