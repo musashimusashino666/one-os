@@ -26,6 +26,7 @@ use oneos_core::{
     PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
     UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
     UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    FrameWxAudit, FrameWxAuditSummary, FrameWxPermissions,
     ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE,
     USER_VIRTUAL_ADDRESS_LIMIT,
 };
@@ -51,11 +52,17 @@ const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
 // Refuse malformed BootInfo ranges that would make bootstrap page auditing unbounded.
 const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
+// Bounds the read-only W^X walk. Exhaustion is an incomplete audit, never a clean result.
+const MAX_WX_AUDIT_RANGES: usize = 512;
+const MAX_WX_AUDIT_TABLES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
     pub root_table_physical: u64,
     pub validated_mappings: usize,
+    /// Read-only audit of writable/executable aliases in the source boot root.
+    /// This excludes the recursive page-table view and does not cover other roots.
+    pub wx_audit: FrameWxAuditSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +100,7 @@ pub enum PagingError {
     InvalidKernelCodeMapping,
     InvalidStackMapping,
     InvalidBootInfoMapping,
+    WxAuditFailed,
     Translation(PageTableError),
     InactiveAddressSpaceInvalid,
     InactivePageTableUnavailable,
@@ -132,6 +140,9 @@ impl PagingError {
             }
             Self::InvalidBootInfoMapping => {
                 b"BootInfo mapping has an unexpected page offset or page-table permissions\n"
+            }
+            Self::WxAuditFailed => {
+                b"Could not complete the bounded read-only W^X mapping inventory\n"
             }
             Self::InactiveAddressSpaceInvalid => {
                 b"Inactive address-space root failed validation\n"
@@ -387,13 +398,184 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidKernelCodeMapping);
     }
 
+    // Collect a bounded, read-only inventory of current-root mappings whose
+    // effective permissions include write or execute. Existing conflicts are
+    // reported, not repaired here: boot/direct-map aliases still need the separate
+    // transactional integration tracked by Issue #26. The recursive self-map is
+    // intentionally excluded because it is a paging-structure view, not a data map.
+    let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
+    let wx_audit = audit_active_root_wx_aliases(
+        boot_info,
+        root_table_physical,
+        recursive_index,
+        physical_address_bits,
+    )?;
+
     Ok(PageTableInspection {
         root_table_physical,
         validated_mappings: validated_load_pages
             .saturating_add(validated_stack_pages)
             .saturating_add(validated_boot_info_pages)
             .saturating_add(validated_memory_region_pages),
+        wx_audit,
     })
+}
+
+fn audit_active_root_wx_aliases(
+    boot_info: &BootInfo,
+    root_table_physical: u64,
+    recursive_index: u16,
+    physical_address_bits: u8,
+) -> Result<FrameWxAuditSummary, PagingError> {
+    if active_root_table_physical() != root_table_physical {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let mut audit = FrameWxAudit::<MAX_WX_AUDIT_RANGES>::new(physical_address_bits)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    let mut visited_path = [0u64; 4];
+    let mut table_count = 0usize;
+    audit_wx_table(
+        boot_info,
+        recursive_index,
+        physical_address_bits,
+        root_table_physical,
+        4,
+        0,
+        true,
+        true,
+        &mut visited_path,
+        0,
+        &mut table_count,
+        &mut audit,
+    )?;
+    Ok(audit.summary())
+}
+
+/// Walks one reachable paging-structure page without changing it.
+///
+/// The visited-path array rejects cycles, and the table-count and alias-range
+/// budgets make work and storage bounded. Physical aliases are compared by byte
+/// range, so 4 KiB entries can conflict with 2 MiB or 1 GiB mappings.
+#[allow(clippy::too_many_arguments)]
+fn audit_wx_table<const CAPACITY: usize>(
+    boot_info: &BootInfo,
+    recursive_index: u16,
+    physical_address_bits: u8,
+    table_physical: u64,
+    level: u8,
+    virtual_prefix: u64,
+    ancestors_writable: bool,
+    ancestors_executable: bool,
+    visited_path: &mut [u64; 4],
+    depth: usize,
+    table_count: &mut usize,
+    audit: &mut FrameWxAudit<CAPACITY>,
+) -> Result<(), PagingError> {
+    if !(1..=4).contains(&level)
+        || depth >= visited_path.len()
+        || visited_path[..depth].contains(&table_physical)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    *table_count = (*table_count)
+        .checked_add(1)
+        .filter(|count| *count <= MAX_WX_AUDIT_TABLES)
+        .ok_or(PagingError::WxAuditFailed)?;
+    visited_path[depth] = table_physical;
+
+    // A target address with the current path's indexes lets the existing checked
+    // editor validate access to this table through the recursive mapping. The
+    // editor rejects unreadable paths and unknown page-table frames.
+    let target_virtual_address = if level == 4 { 0 } else { virtual_prefix };
+    let mut editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        target_virtual_address,
+        recursive_index,
+    )
+    .map_err(|_| PagingError::WxAuditFailed)?;
+
+    for index in 0..PML4_ENTRY_COUNT {
+        // The root's recursive slot was validated independently before this walk.
+        // Skip it to avoid recursively inventorying the page-table view itself.
+        if level == 4 && index == usize::from(recursive_index) {
+            continue;
+        }
+        let entry = editor
+            .read_entry(table_physical, index, level)
+            .ok_or(PagingError::WxAuditFailed)?;
+        if entry == 0 {
+            continue;
+        }
+        if entry & PRESENT == 0 {
+            return Err(PagingError::WxAuditFailed);
+        }
+        if entry & PROTECTION_KEY_FIELD_MASK != 0 && level > 1 {
+            return Err(PagingError::WxAuditFailed);
+        }
+        if level == 4 && entry & LARGE_PAGE != 0 {
+            return Err(PagingError::WxAuditFailed);
+        }
+
+        let raw_physical = entry & PHYSICAL_ADDRESS_MASK;
+        if raw_physical >= (1u64 << physical_address_bits) {
+            return Err(PagingError::WxAuditFailed);
+        }
+        let writable = ancestors_writable && entry & WRITABLE != 0;
+        let executable = ancestors_executable && entry & NO_EXECUTE == 0;
+        let shift = 12 + (9 * (level - 1));
+        let virtual_start = if level == 4 {
+            let prefix = (index as u64) << 39;
+            if index >= LOWER_HALF_PML4_ENTRIES {
+                prefix | 0xffff_0000_0000_0000
+            } else {
+                prefix
+            }
+        } else {
+            virtual_prefix | ((index as u64) << shift)
+        };
+
+        let large_page = level > 1 && entry & LARGE_PAGE != 0;
+        if level == 1 || large_page {
+            let page_size = if large_page {
+                1u64 << shift
+            } else {
+                PAGE_SIZE
+            };
+            if large_page && raw_physical & ((page_size - 1) & !(1 << 12)) != 0 {
+                return Err(PagingError::WxAuditFailed);
+            }
+            let physical_start = raw_physical & !(page_size - 1);
+            audit
+                .record_alias(
+                    virtual_start,
+                    physical_start,
+                    page_size,
+                    FrameWxPermissions::new(writable, executable),
+                )
+                .map_err(|_| PagingError::WxAuditFailed)?;
+            continue;
+        }
+
+        let child_physical = raw_physical;
+        if child_physical == 0 || child_physical & (PAGE_SIZE - 1) != 0 {
+            return Err(PagingError::WxAuditFailed);
+        }
+        audit_wx_table(
+            boot_info,
+            recursive_index,
+            physical_address_bits,
+            child_physical,
+            level - 1,
+            virtual_start,
+            writable,
+            executable,
+            visited_path,
+            depth + 1,
+            table_count,
+            audit,
+        )?;
+    }
+    Ok(())
 }
 
 /// Copies a small metadata range from the bootloader-owned in-memory ELF image.
