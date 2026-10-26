@@ -4853,8 +4853,7 @@ pub fn verify_wx_sibling_large_page_precondition(
         || !writable_alias.writable
         || writable_alias.user_accessible
         || writable_alias.executable
-        || (writable_alias.page_size != (1u64 << 21)
-            && writable_alias.page_size != (1u64 << 30))
+        || (writable_alias.page_size != (1u64 << 21) && writable_alias.page_size != (1u64 << 30))
     {
         return Err(PagingError::LargePageDemotionFailed);
     }
