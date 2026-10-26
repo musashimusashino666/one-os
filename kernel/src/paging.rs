@@ -25,10 +25,9 @@ use oneos_core::{
     FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
     FrameWxPermissions, FrameWxRegistry, PagePermissions, PageTableEditor, PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    PublishedFrameReleaseError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
-    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
+    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
+    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
+    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
     MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -1255,9 +1254,7 @@ static KERNEL_WX_ALIASES: KernelWxAliasRegistry = KernelWxAliasRegistry::new();
 
 fn with_kernel_wx_registry<T>(
     physical_address_bits: u8,
-    operation: impl FnOnce(
-        &mut FrameWxRegistry<WX_ALIAS_REGISTRY_CAPACITY>,
-    ) -> Result<T, FrameWxError>,
+    operation: impl FnOnce(&mut FrameWxRegistry<WX_ALIAS_REGISTRY_CAPACITY>) -> Result<T, FrameWxError>,
 ) -> Result<T, FrameWxError> {
     let mut guard = KERNEL_WX_ALIASES.lock();
     if guard.is_none() {
