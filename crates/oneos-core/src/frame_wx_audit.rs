@@ -163,8 +163,12 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
         let mut writable_ranges = 0usize;
         let mut executable_ranges = 0usize;
         for alias in self.aliases[..self.alias_count].iter() {
-            writable_ranges += usize::from(alias.permissions.writable);
-            executable_ranges += usize::from(alias.permissions.executable);
+            if alias.permissions.writable {
+                writable_ranges += 1;
+            }
+            if alias.permissions.executable {
+                executable_ranges += 1;
+            }
         }
         FrameWxAuditSummary {
             tracked_alias_mappings: self.tracked_alias_mappings,
