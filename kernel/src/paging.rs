@@ -59,15 +59,15 @@ const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 // Bounds the read-only W^X walk. Exhaustion is an incomplete audit, never a clean result.
 const MAX_WX_AUDIT_RANGES: usize = 128;
 const MAX_WX_AUDIT_TABLES: usize = FRAME_WX_AUDIT_MAX_TABLES;
-const MAX_WX_AUDIT_ROOTS: usize = ADDRESS_SPACE_ROOT_CAPACITY;
+const MAX_WX_AUDIT_ROOTS: usize = ADDRESS_SPACE_ROOT_CAPACITY + 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
     pub root_table_physical: u64,
     pub validated_mappings: usize,
-    /// Read-only inventory of writable/executable aliases observed in the source boot root.
+    /// Read-only inventory of writable/executable aliases observed in the active root.
     pub wx_audit: FrameWxAuditSummary,
-    /// Explicit completeness status; the current bootstrap audit is intentionally partial.
+    /// Coverage status for the root-registry snapshot; only the active root is walked today.
     pub wx_audit_scope: FrameWxAuditScopeSummary,
 }
 
@@ -437,6 +437,12 @@ fn audit_active_root_wx_aliases(
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
+    // Root-registry mutations and this snapshot share the existing single-CPU,
+    // maskable-interrupts-disabled contract. Validate that precondition before
+    // treating the registry contents as a stable inventory.
+    KernelPageTableEditor::new_for_readonly_audit(boot_info, 0, recursive_index)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+
     let mut audit = FrameWxAudit::<MAX_WX_AUDIT_RANGES>::new(physical_address_bits)
         .map_err(|_| PagingError::WxAuditFailed)?;
     let mut scope = FrameWxAuditScope::<MAX_WX_AUDIT_ROOTS>::new(physical_address_bits)
@@ -444,6 +450,32 @@ fn audit_active_root_wx_aliases(
     scope
         .declare_root(root_table_physical)
         .map_err(|_| PagingError::WxAuditFailed)?;
+
+    // The active root may be the bootloader-owned root and is therefore not
+    // necessarily present in ADDRESS_SPACE_ROOT_FRAMES. Include it explicitly,
+    // then snapshot every other registered live kernel-created root. Any malformed
+    // or duplicate registry entry fails closed instead of shrinking the inventory.
+    let mut active_root_seen_in_registry = false;
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        let registered_root = slot.load(Ordering::Acquire);
+        if registered_root == 0 {
+            continue;
+        }
+        if registered_root == root_table_physical {
+            if active_root_seen_in_registry {
+                return Err(PagingError::WxAuditFailed);
+            }
+            active_root_seen_in_registry = true;
+            continue;
+        }
+        scope
+            .declare_root(registered_root)
+            .map_err(|_| PagingError::WxAuditFailed)?;
+    }
+    scope
+        .seal_root_inventory()
+        .map_err(|_| PagingError::WxAuditFailed)?;
+
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
     audit_wx_table(
@@ -463,9 +495,11 @@ fn audit_active_root_wx_aliases(
     scope
         .mark_root_audited(root_table_physical)
         .map_err(|_| PagingError::WxAuditFailed)?;
-    // This walker handles 2 MiB/1 GiB leaf extents. It does not seal the root
-    // inventory or claim coverage of recursive views, direct-map aliases, or
-    // shared mappings across all roots.
+    // Large-page extents are covered by the successful active-root walk. The
+    // root inventory is a stable snapshot of the active root plus all registered
+    // live kernel-created roots, but only the active root has been walked. Any
+    // inactive roots therefore remain unaccounted, and recursive views, direct-map
+    // aliases, and shared-mapping provenance are still missing by design.
     scope.account_source(FrameWxAuditSource::LargePageLeaves);
     Ok((audit.summary(), scope.summary()))
 }
