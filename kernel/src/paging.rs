@@ -700,7 +700,7 @@ impl RecursiveAliasSet {
         // SAFETY: the atomic lease grants this audit exclusive use of the fixed
         // BSS buffer. The function is called only under the kernel's documented
         // single-CPU, maskable-interrupts-disabled inspection contract.
-        let frames = unsafe { core::ptr::addr_of_mut!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>() };
+        let frames = core::ptr::addr_of_mut!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>();
         for index in 0..self.count {
             // SAFETY: index is strictly below count, which is only increased after
             // writing a slot below MAX_WX_AUDIT_RECURSIVE_FRAMES.
@@ -722,7 +722,7 @@ impl RecursiveAliasSet {
         audit: &mut FrameWxAudit<CAPACITY>,
     ) -> Result<(), PagingError> {
         // SAFETY: this set still owns the exclusive lease; all indices are below count.
-        let frames = unsafe { core::ptr::addr_of!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>() };
+        let frames = core::ptr::addr_of!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>();
         for index in 0..self.count {
             // SAFETY: index is below the successfully populated candidate count.
             let physical_frame = unsafe { ptr::read(frames.add(index)) };
