@@ -735,24 +735,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 }
 
-fn print_wx_conflict_diagnostic(
-    index: u64,
-    conflict: oneos_core::FrameWxAuditConflict,
-) {
+fn print_wx_conflict_diagnostic(index: u64, conflict: oneos_core::FrameWxAuditConflict) {
     interrupts::write_hex(b"ONE OS W^X CONFLICT INDEX: ", index);
     interrupts::write_hex(
         b"ONE OS W^X CONFLICT PHYSICAL START: ",
         conflict.physical_start,
     );
     interrupts::write_hex(b"ONE OS W^X CONFLICT LENGTH: ", conflict.length);
-    interrupts::write_hex(
-        b"ONE OS W^X CONFLICT VA A: ",
-        conflict.first_virtual_start,
-    );
-    interrupts::write_hex(
-        b"ONE OS W^X CONFLICT VA B: ",
-        conflict.second_virtual_start,
-    );
+    interrupts::write_hex(b"ONE OS W^X CONFLICT VA A: ", conflict.first_virtual_start);
+    interrupts::write_hex(b"ONE OS W^X CONFLICT VA B: ", conflict.second_virtual_start);
     let rights_a = (conflict.first_permissions.writable as u64)
         | ((conflict.first_permissions.executable as u64) << 1);
     let rights_b = (conflict.second_permissions.writable as u64)
