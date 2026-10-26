@@ -216,6 +216,43 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
         Ok(())
     }
 
+    /// Observes an additional W/X alias against the stored inventory without
+    /// consuming range capacity.
+    ///
+    /// This is used for recursive page-table views: the walker already inventories
+    /// all ordinary leaves, while each recursive alias only needs to be checked
+    /// against those leaves for a writable/executable physical overlap. Recursive
+    /// aliases must not be silently dropped due to the main range inventory being
+    /// full, so this path records conflict evidence but does not store the alias.
+    pub fn observe_alias(
+        &mut self,
+        virtual_start: u64,
+        physical_start: u64,
+        length: u64,
+        permissions: FrameWxPermissions,
+    ) -> Result<(), FrameWxAuditError> {
+        if !permissions.writable && !permissions.executable {
+            return Ok(());
+        }
+        validate_virtual_range(virtual_start, length)?;
+        self.validate_physical_range(physical_start, length)?;
+
+        let physical_end = physical_start + length;
+        if permissions.writable && permissions.executable {
+            self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+        }
+        for existing in self.aliases[..self.alias_count].iter().copied() {
+            let physical_overlap =
+                physical_start < existing.physical_end() && existing.physical_start < physical_end;
+            let conflicts = (permissions.writable && existing.permissions.executable)
+                || (permissions.executable && existing.permissions.writable);
+            if physical_overlap && conflicts {
+                self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the bounded audit summary.
     pub fn summary(&self) -> FrameWxAuditSummary {
         let mut writable_ranges = 0usize;
@@ -402,6 +439,29 @@ mod tests {
         );
         assert_eq!(audit.summary().tracked_alias_mappings, 1);
         assert_eq!(audit.summary().tracked_ranges, 1);
+    }
+
+    #[test]
+    fn observed_recursive_alias_detects_exec_overlap_without_consuming_capacity() {
+        let mut audit = FrameWxAudit::<1>::new(48).unwrap();
+        audit
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        let before = audit.summary();
+
+        audit
+            .observe_alias(
+                BASE_VA + (8 * PAGE),
+                BASE_PA,
+                PAGE,
+                permissions(true, false),
+            )
+            .unwrap();
+
+        let after = audit.summary();
+        assert!(after.conflicting_overlap_events > before.conflicting_overlap_events);
+        assert_eq!(after.tracked_alias_mappings, before.tracked_alias_mappings);
+        assert_eq!(after.tracked_ranges, before.tracked_ranges);
     }
 
     #[test]
