@@ -154,10 +154,7 @@ impl AliasRange {
     }
 }
 
-fn conflicting_intersection(
-    first: AliasRange,
-    second: AliasRange,
-) -> Option<FrameWxAuditConflict> {
+fn conflicting_intersection(first: AliasRange, second: AliasRange) -> Option<FrameWxAuditConflict> {
     let physical_start = first.physical_start.max(second.physical_start);
     let physical_end = first.physical_end().min(second.physical_end());
     let permissions_conflict = (first.permissions.writable && second.permissions.executable)
@@ -540,7 +537,9 @@ mod tests {
         assert!(after.conflicting_overlap_events > before.conflicting_overlap_events);
         assert_eq!(after.tracked_alias_mappings, before.tracked_alias_mappings);
         assert_eq!(after.tracked_ranges, before.tracked_ranges);
-        let conflict = after.first_conflict.expect("recursive alias conflict evidence");
+        let conflict = after
+            .first_conflict
+            .expect("recursive alias conflict evidence");
         assert_eq!(conflict.physical_start, BASE_PA);
         assert_eq!(conflict.length, PAGE);
         assert_eq!(conflict.first_virtual_start, BASE_VA);
