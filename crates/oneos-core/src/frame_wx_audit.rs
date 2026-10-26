@@ -11,6 +11,27 @@ use crate::{is_canonical_4level, PAGE_SIZE};
 const LOWER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
 const UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
 
+/// One concrete writable/executable physical overlap observed by the audit.
+///
+/// Virtual addresses identify the two alias views at the start of the overlapping
+/// physical interval. For a single mapping that is itself W+X, both virtual
+/// addresses and permission values refer to that same mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditConflict {
+    /// First physical byte of the overlapping interval.
+    pub physical_start: u64,
+    /// Length of the overlapping physical interval in bytes.
+    pub length: u64,
+    /// Virtual address corresponding to `physical_start` through the first alias.
+    pub first_virtual_start: u64,
+    /// Virtual address corresponding to `physical_start` through the second alias.
+    pub second_virtual_start: u64,
+    /// Effective permissions of the first alias.
+    pub first_permissions: FrameWxPermissions,
+    /// Effective permissions of the second alias.
+    pub second_permissions: FrameWxPermissions,
+}
+
 /// Summary of a bounded inventory of existing writable/executable aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameWxAuditSummary {
@@ -26,6 +47,9 @@ pub struct FrameWxAuditSummary {
     ///
     /// This is a diagnostic counter, not a count of conflicting bytes or unique frames.
     pub conflicting_overlap_events: u64,
+    /// First concrete overlap found, if any. This is diagnostic evidence, not an
+    /// exhaustive list of conflicting aliases.
+    pub first_conflict: Option<FrameWxAuditConflict>,
 }
 
 /// Error encountered while constructing or recording a W^X audit inventory.
@@ -101,6 +125,7 @@ pub struct FrameWxAudit<const CAPACITY: usize> {
     alias_count: usize,
     tracked_alias_mappings: u64,
     conflicting_overlap_events: u64,
+    first_conflict: Option<FrameWxAuditConflict>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +154,35 @@ impl AliasRange {
     }
 }
 
+fn conflicting_intersection(
+    first: AliasRange,
+    second: AliasRange,
+) -> Option<FrameWxAuditConflict> {
+    let physical_start = first.physical_start.max(second.physical_start);
+    let physical_end = first.physical_end().min(second.physical_end());
+    let permissions_conflict = (first.permissions.writable && second.permissions.executable)
+        || (first.permissions.executable && second.permissions.writable);
+    if physical_start >= physical_end || !permissions_conflict {
+        return None;
+    }
+
+    // Both ranges were validated on insertion/observation. The physical overlap
+    // lies within each range, so adding its offset to either validated virtual
+    // start cannot cross that range's checked canonical half-open boundary.
+    let first_virtual_start = (u128::from(first.virtual_start)
+        + u128::from(physical_start - first.physical_start)) as u64;
+    let second_virtual_start = (u128::from(second.virtual_start)
+        + u128::from(physical_start - second.physical_start)) as u64;
+    Some(FrameWxAuditConflict {
+        physical_start,
+        length: physical_end - physical_start,
+        first_virtual_start,
+        second_virtual_start,
+        first_permissions: first.permissions,
+        second_permissions: second.permissions,
+    })
+}
+
 impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
     /// Creates an empty audit inventory for the given CPU physical-address width.
     pub const fn new(physical_address_bits: u8) -> Result<Self, FrameWxAuditError> {
@@ -141,6 +195,7 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             alias_count: 0,
             tracked_alias_mappings: 0,
             conflicting_overlap_events: 0,
+            first_conflict: None,
         })
     }
 
@@ -186,21 +241,28 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             return Err(FrameWxAuditError::CapacityExhausted);
         }
 
+        let incoming = AliasRange {
+            virtual_start,
+            physical_start,
+            length,
+            permissions,
+        };
+        let own_conflict = conflicting_intersection(incoming, incoming);
+        let mut first_conflict = self.first_conflict.or(own_conflict);
         self.tracked_alias_mappings = self.tracked_alias_mappings.saturating_add(1);
-        if permissions.writable && permissions.executable {
+        if own_conflict.is_some() {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
         }
 
-        let physical_end = physical_start + length;
         for existing in self.aliases[..self.alias_count].iter().copied() {
-            let physical_overlap =
-                physical_start < existing.physical_end() && existing.physical_start < physical_end;
-            let conflicts = (permissions.writable && existing.permissions.executable)
-                || (permissions.executable && existing.permissions.writable);
-            if physical_overlap && conflicts {
+            if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+                if first_conflict.is_none() {
+                    first_conflict = Some(conflict);
+                }
             }
         }
+        self.first_conflict = first_conflict;
 
         if let Some(length) = merged_length {
             self.aliases[self.alias_count - 1].length = length;
@@ -235,39 +297,28 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             return Ok(());
         }
         validate_virtual_range(virtual_start, length)?;
-        self.observe_physical_alias(physical_start, length, permissions)
-    }
-
-    /// Observes an alias after its virtual address has been independently
-    /// validated, checking physical overlap without storing another range.
-    ///
-    /// This lets the kernel collect reachable recursive-table physical frames
-    /// during the page-table walk, then check them against the completed leaf
-    /// inventory after every executable mapping has been seen.
-    pub fn observe_physical_alias(
-        &mut self,
-        physical_start: u64,
-        length: u64,
-        permissions: FrameWxPermissions,
-    ) -> Result<(), FrameWxAuditError> {
-        if !permissions.writable && !permissions.executable {
-            return Ok(());
-        }
         self.validate_physical_range(physical_start, length)?;
 
-        let physical_end = physical_start + length;
-        if permissions.writable && permissions.executable {
+        let incoming = AliasRange {
+            virtual_start,
+            physical_start,
+            length,
+            permissions,
+        };
+        let own_conflict = conflicting_intersection(incoming, incoming);
+        let mut first_conflict = self.first_conflict.or(own_conflict);
+        if own_conflict.is_some() {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
         }
         for existing in self.aliases[..self.alias_count].iter().copied() {
-            let physical_overlap =
-                physical_start < existing.physical_end() && existing.physical_start < physical_end;
-            let conflicts = (permissions.writable && existing.permissions.executable)
-                || (permissions.executable && existing.permissions.writable);
-            if physical_overlap && conflicts {
+            if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+                if first_conflict.is_none() {
+                    first_conflict = Some(conflict);
+                }
             }
         }
+        self.first_conflict = first_conflict;
         Ok(())
     }
 
@@ -289,6 +340,7 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             writable_ranges,
             executable_ranges,
             conflicting_overlap_events: self.conflicting_overlap_events,
+            first_conflict: self.first_conflict,
         }
     }
 
