@@ -145,6 +145,7 @@ jobs:
           grep -Fq "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS" "$log"
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE FAULT MATCHED" "$log"
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS" "$log"
+          grep -Fq "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS" "$log"
 
       - name: Verify uncertain-CR3 root token leak policy in QEMU
         shell: bash
