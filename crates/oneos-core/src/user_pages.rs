@@ -992,7 +992,9 @@ mod tests {
             _virtual_address: u64,
             _physical_address: u64,
             _permissions: PagePermissions,
-        ) -> Result<(), PageTableMutationError> { Ok(()) }
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
 
         fn commit_wx_alias(&mut self, _root: u64, _virtual_address: u64) {}
 
@@ -1002,7 +1004,9 @@ mod tests {
             _virtual_address: u64,
             _physical_address: u64,
             _permissions: PagePermissions,
-        ) -> Result<(), PageTableMutationError> { Ok(()) }
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
 
         fn complete_wx_alias_removal(&mut self, _root: u64, _virtual_address: u64) {}
 
