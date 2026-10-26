@@ -349,12 +349,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         feature = "test-wx-runtime-audit"
     )))]
     {
-        if let Err(error) = paging::verify_large_page_demotion_smoke_test(boot_info) {
-            serial_write(b"\nONE OS LARGE PAGE DEMOTION SMOKE TEST FAILED\n");
-            serial_write(error.message());
-            halt_forever()
+        match paging::verify_large_page_demotion_smoke_test(boot_info) {
+            Ok(true) => serial_write(b"ONE OS LARGE PAGE DEMOTION SMOKE TEST READY\n"),
+            Ok(false) => serial_write(
+                b"ONE OS LARGE PAGE DEMOTION SMOKE TEST SKIPPED (DIRECT MAP ALREADY 4K)\n",
+            ),
+            Err(error) => {
+                serial_write(b"\nONE OS LARGE PAGE DEMOTION SMOKE TEST FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
         }
-        serial_write(b"ONE OS LARGE PAGE DEMOTION SMOKE TEST READY\n");
     }
 
     if let Err(error) = address_space::verify_root_initialization_smoke_test(boot_info) {
