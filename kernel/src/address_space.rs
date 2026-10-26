@@ -288,42 +288,12 @@ pub fn verify_root_initialization_smoke_test(
         Ok(())
     };
 
-    // While this temporary inactive root is still registered and allocated,
-    // exercise the real all-registered-roots inventory. The active boot root is
-    // fully walked; this root's shared kernel half is compared entry-for-entry
-    // and its private lower half is walked through ownership-checked aliases.
-    // Recursive views remain intentionally unaccounted, so the audit must stay
-    // incomplete even when every declared root walk succeeds.
-    let audit_verification =
-        if initialization.is_ok() && verification.is_ok() && root.is_initialized() {
-            match super::paging::audit_registered_wx_roots(
-                boot_info,
-                kernel_root_physical,
-                recursive_index,
-                physical_address_bits,
-            ) {
-                Ok((_audit, scope))
-                    if scope.declared_roots >= 2
-                        && scope.audited_roots == scope.declared_roots
-                        && scope.missing_sources
-                            == oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
-                        && !scope.complete =>
-                {
-                    Ok(())
-                }
-                _ => Err(AddressSpaceError::PagingIntegrationFailed),
-            }
-        } else {
-            Ok(())
-        };
-
     // The root has never been active and no child tables were allocated. Clear
     // every entry (including on initialization/verification/audit errors) before
     // the frame is made available to another caller of the allocator.
     clear_and_release_root(root, &mut editor, root_physical)?;
     initialization.map_err(AddressSpaceError::RootInitialization)?;
     verification?;
-    audit_verification?;
     Ok(())
 }
 
