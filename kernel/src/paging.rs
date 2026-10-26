@@ -486,7 +486,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     // editor validate access to this table through the recursive mapping. The
     // editor rejects unreadable paths and unknown page-table frames.
     let target_virtual_address = if level == 4 { 0 } else { virtual_prefix };
-    let editor = KernelPageTableEditor::new_with_recursive_index(
+    let editor = KernelPageTableEditor::new_for_readonly_audit(
         boot_info,
         target_virtual_address,
         recursive_index,
@@ -511,10 +511,14 @@ fn audit_wx_table<const CAPACITY: usize>(
         if entry & PRESENT == 0 {
             return Err(PagingError::WxAuditFailed);
         }
-        if entry & PROTECTION_KEY_FIELD_MASK != 0 && level > 1 {
+        // PML4 entries can never be large-page leaves. At lower levels, the
+        // large-page bit distinguishes a leaf (whose protection-key bits are
+        // valid when the CPU feature is enabled) from a non-leaf table pointer.
+        let large_page = level > 1 && entry & LARGE_PAGE != 0;
+        if level == 4 && large_page {
             return Err(PagingError::WxAuditFailed);
         }
-        if level == 4 && entry & LARGE_PAGE != 0 {
+        if level > 1 && !large_page && entry & PROTECTION_KEY_FIELD_MASK != 0 {
             return Err(PagingError::WxAuditFailed);
         }
 
@@ -536,7 +540,6 @@ fn audit_wx_table<const CAPACITY: usize>(
             virtual_prefix | ((index as u64) << shift)
         };
 
-        let large_page = level > 1 && entry & LARGE_PAGE != 0;
         if level == 1 || large_page {
             let page_size = if large_page { 1u64 << shift } else { PAGE_SIZE };
             if large_page && raw_physical & ((page_size - 1) & !(1 << 12)) != 0 {
@@ -962,6 +965,22 @@ fn validate_editor_recursive_mapping_entry(
     }
 }
 
+/// Validates the recursive mapping for reads without requiring the R/W bit.
+///
+/// The recursive slot must still be a present self-reference, supervisor-only,
+/// NX, and free of protection-key bits that are reserved on a PML4 entry.
+fn validate_readonly_recursive_mapping_entry(
+    recursive_index: u16,
+    root_table_physical: u64,
+) -> bool {
+    read_recursive_mapping_entry(recursive_index).is_some_and(|entry| {
+        recursive_entry_matches_root(entry, root_table_physical)
+            && entry & USER_ACCESSIBLE == 0
+            && entry & NO_EXECUTE != 0
+            && entry & PROTECTION_KEY_FIELD_MASK == 0
+    })
+}
+
 fn is_bootloader_owned_page(regions: &[MemoryRegion], page_physical: u64) -> bool {
     physical_page_is_in_allowed_region(page_physical, regions.len(), |index| {
         let region = regions[index];
@@ -1351,6 +1370,36 @@ impl<'a> KernelPageTableEditor<'a> {
         target_virtual_address: u64,
         recursive_index: u16,
     ) -> Result<Self, PagingError> {
+        Self::new_with_recursive_index_mode(
+            boot_info,
+            target_virtual_address,
+            recursive_index,
+            true,
+        )
+    }
+
+    /// Constructs an editor handle for a read-only audit without requiring R/W
+    /// permission on the recursive mapping. The mutation constructor above keeps
+    /// the stricter writable-alias invariant.
+    fn new_for_readonly_audit(
+        boot_info: &'a BootInfo,
+        target_virtual_address: u64,
+        recursive_index: u16,
+    ) -> Result<Self, PagingError> {
+        Self::new_with_recursive_index_mode(
+            boot_info,
+            target_virtual_address,
+            recursive_index,
+            false,
+        )
+    }
+
+    fn new_with_recursive_index_mode(
+        boot_info: &'a BootInfo,
+        target_virtual_address: u64,
+        recursive_index: u16,
+        require_writable_recursive_mapping: bool,
+    ) -> Result<Self, PagingError> {
         let flags: u64;
         // SAFETY: PUSHFQ reads the current flags register; no flags are changed.
         unsafe {
@@ -1395,11 +1444,20 @@ impl<'a> KernelPageTableEditor<'a> {
         if !valid_physical_page(root_table_physical, physical_address_bits) {
             return Err(PagingError::InvalidRootTable);
         }
-        if !validate_editor_recursive_mapping_entry(
-            recursive_index,
-            root_table_physical,
-            root_is_allocator_owned,
-        ) {
+        let recursive_mapping_valid = if require_writable_recursive_mapping {
+            // Mapping mutations require a writable recursive alias. Keep this
+            // invariant unchanged for every existing editor call site.
+            validate_editor_recursive_mapping_entry(
+                recursive_index,
+                root_table_physical,
+                root_is_allocator_owned,
+            )
+        } else {
+            // Auditing only reads page-table entries. Require a valid supervisor
+            // self-reference and NX, but do not confuse R/W=0 with unreadability.
+            validate_readonly_recursive_mapping_entry(recursive_index, root_table_physical)
+        };
+        if !recursive_mapping_valid {
             return Err(PagingError::InvalidRecursiveMapping);
         }
 
@@ -1538,6 +1596,61 @@ impl<'a> KernelPageTableEditor<'a> {
         Some(current_physical)
     }
 
+    /// Read-only variant of reachable_table_physical for the alias audit.
+    ///
+    /// It checks the same canonical path, present bits, frame addresses, table
+    /// ownership, and cycle constraints but deliberately does not require R/W.
+    /// x86 permits supervisor reads through read-only paging entries.
+    fn reachable_table_physical_readonly(&self, wanted_level: u8) -> Option<u64> {
+        if !(1..=4).contains(&wanted_level)
+            || !valid_physical_page(self.root_table_physical, self.physical_address_bits)
+            || !self.is_table_frame(self.root_table_physical)
+        {
+            return None;
+        }
+
+        let recursive_entry = read_recursive_mapping_entry(self.recursive_index)?;
+        if !recursive_entry_matches_root(recursive_entry, self.root_table_physical)
+            || recursive_entry & USER_ACCESSIBLE != 0
+            || recursive_entry & NO_EXECUTE == 0
+            || recursive_entry & PROTECTION_KEY_FIELD_MASK != 0
+        {
+            return None;
+        }
+
+        let mut current_physical = self.root_table_physical;
+        let mut visited = [0u64; 4];
+        visited[0] = current_physical;
+        for current_level in (wanted_level + 1..=4).rev() {
+            let table_alias = recursive_table_page_virtual_address(
+                self.recursive_index,
+                self.target_virtual_address,
+                current_level,
+            )?;
+            let index = virtual_index(self.target_virtual_address, current_level)?;
+            let pointer = entry_pointer_from_page(table_alias, index)?;
+            // SAFETY: the recursive alias index and root frame were validated;
+            // the target path is read only and each table page is checked below.
+            let entry = unsafe { ptr::read_volatile(pointer) };
+            if entry & PRESENT == 0
+                || entry & LARGE_PAGE != 0
+                || entry & PROTECTION_KEY_FIELD_MASK != 0
+            {
+                return None;
+            }
+            let next_physical = entry & PHYSICAL_ADDRESS_MASK;
+            if !valid_physical_page(next_physical, self.physical_address_bits)
+                || !self.is_table_frame(next_physical)
+                || visited[..(5 - current_level) as usize].contains(&next_physical)
+            {
+                return None;
+            }
+            visited[(4 - current_level) as usize + 1] = next_physical;
+            current_physical = next_physical;
+        }
+        Some(current_physical)
+    }
+
     fn entry_pointer(
         &mut self,
         table_physical: u64,
@@ -1581,7 +1694,7 @@ impl<'a> KernelPageTableEditor<'a> {
     fn audit_table_pointer(&self, table_physical: u64, level: u8) -> Option<*const u64> {
         if !(1..=4).contains(&level)
             || !valid_physical_page(table_physical, self.physical_address_bits)
-            || self.reachable_table_physical(level) != Some(table_physical)
+            || self.reachable_table_physical_readonly(level) != Some(table_physical)
         {
             return None;
         }
