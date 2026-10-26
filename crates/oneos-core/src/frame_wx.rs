@@ -257,6 +257,72 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
         })
     }
 
+    /// Returns the MAXPHYADDR bound used to validate this registry.
+    pub const fn physical_address_bits(&self) -> u8 {
+        self.physical_address_bits
+    }
+
+    /// Commits a unique reserved alias using its root/virtual-address key.
+    ///
+    /// This is intended for serialized kernel lifecycle hooks that cannot retain a
+    /// reservation token across a page-table publication boundary.
+    pub fn commit_alias_at(
+        &mut self,
+        root_physical: u64,
+        virtual_start: u64,
+    ) -> Result<(), FrameWxError> {
+        let slot = self.slot_for_mapping(root_physical, virtual_start)?;
+        let record = self.slots[slot];
+        if record.state != SlotState::Reserved {
+            return Err(FrameWxError::InvalidReservation);
+        }
+        self.slots[slot] = AliasRecord {
+            state: SlotState::Published,
+            ..record
+        };
+        Ok(())
+    }
+
+    /// Begins removal only if the physical extent and effective rights match.
+    pub fn begin_removal_for_alias(
+        &mut self,
+        root_physical: u64,
+        virtual_start: u64,
+        physical_start: u64,
+        length: u64,
+        permissions: FrameWxPermissions,
+    ) -> Result<(), FrameWxError> {
+        self.validate_physical_range(physical_start, length)?;
+        let slot = self.slot_for_mapping(root_physical, virtual_start)?;
+        let record = self.slots[slot];
+        if record.state != SlotState::Published
+            || record.physical_start != physical_start
+            || record.length != length
+            || record.permissions != permissions
+        {
+            return Err(FrameWxError::InvalidReservation);
+        }
+        self.slots[slot] = AliasRecord {
+            state: SlotState::Retiring,
+            ..record
+        };
+        Ok(())
+    }
+
+    /// Completes removal of the unique retiring alias at this root/VA key.
+    pub fn complete_removal_at(
+        &mut self,
+        root_physical: u64,
+        virtual_start: u64,
+    ) -> Result<(), FrameWxError> {
+        let slot = self.slot_for_mapping(root_physical, virtual_start)?;
+        if self.slots[slot].state != SlotState::Retiring {
+            return Err(FrameWxError::InvalidReservation);
+        }
+        self.slots[slot] = AliasRecord::EMPTY;
+        Ok(())
+    }
+
     /// Reserves one physical alias range before its page-table mapping is published.
     ///
     /// Length must be a nonzero multiple of 4 KiB. For a large-page alias, pass
@@ -545,6 +611,23 @@ impl<const CAPACITY: usize> FrameWxRegistry<CAPACITY> {
             return Err(FrameWxError::InvalidPhysicalRange);
         }
         Ok(())
+    }
+
+    fn slot_for_mapping(
+        &self,
+        root_physical: u64,
+        virtual_start: u64,
+    ) -> Result<usize, FrameWxError> {
+        self.validate_root(root_physical)?;
+        validate_virtual_range(virtual_start, PAGE_SIZE)?;
+        self.slots
+            .iter()
+            .position(|record| {
+                record.is_occupied()
+                    && record.root_physical == root_physical
+                    && record.virtual_start == virtual_start
+            })
+            .ok_or(FrameWxError::AliasNotFound)
     }
 
     fn validate_token(
@@ -1236,4 +1319,48 @@ mod tests {
             FrameWxError::AliasNotPublished
         );
     }
+    #[test]
+    fn key_based_lifecycle_checks_identity_and_retains_retiring_aliases() {
+        let mut registry = FrameWxRegistry::<4>::new(48).unwrap();
+        let root = ROOT_A;
+        let virtual_address = VA_A;
+        let physical = FRAME_A;
+        let writable = FrameWxPermissions::new(true, false);
+
+        registry
+            .reserve_alias_range(root, virtual_address, physical, PAGE_SIZE, writable)
+            .unwrap();
+        registry.commit_alias_at(root, virtual_address).unwrap();
+
+        assert_eq!(
+            registry.begin_removal_for_alias(
+                root,
+                virtual_address,
+                physical + PAGE_SIZE,
+                PAGE_SIZE,
+                writable,
+            ),
+            Err(FrameWxError::InvalidReservation)
+        );
+        assert_eq!(registry.frame_has_writable_alias(physical), Ok(true));
+
+        registry
+            .begin_removal_for_alias(root, virtual_address, physical, PAGE_SIZE, writable)
+            .unwrap();
+        assert_eq!(
+            registry.reserve_alias_range(
+                ROOT_B,
+                VA_B,
+                physical,
+                PAGE_SIZE,
+                FrameWxPermissions::new(false, true),
+            ),
+            Err(FrameWxError::PhysicalAliasWxConflict)
+        );
+
+        registry.complete_removal_at(root, virtual_address).unwrap();
+        assert_eq!(registry.occupied_slots(), 0);
+        assert_eq!(registry.frame_has_writable_alias(physical), Ok(false));
+    }
+
 }
