@@ -486,12 +486,15 @@ fn audit_wx_table<const CAPACITY: usize>(
     // editor validate access to this table through the recursive mapping. The
     // editor rejects unreadable paths and unknown page-table frames.
     let target_virtual_address = if level == 4 { 0 } else { virtual_prefix };
-    let mut editor = KernelPageTableEditor::new_with_recursive_index(
+    let editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
         target_virtual_address,
         recursive_index,
     )
     .map_err(|_| PagingError::WxAuditFailed)?;
+    let table_pointer = editor
+        .audit_table_pointer(table_physical, level)
+        .ok_or(PagingError::WxAuditFailed)?;
 
     for index in 0..PML4_ENTRY_COUNT {
         // The root's recursive slot was validated independently before this walk.
@@ -499,9 +502,9 @@ fn audit_wx_table<const CAPACITY: usize>(
         if level == 4 && index == usize::from(recursive_index) {
             continue;
         }
-        let entry = editor
-            .read_entry(table_physical, index, level)
-            .ok_or(PagingError::WxAuditFailed)?;
+        // SAFETY: audit_table_pointer validates the full page-table path and returns
+        // the aligned base of this exact reachable 4 KiB table; index is below 512.
+        let entry = unsafe { ptr::read_volatile(table_pointer.add(index)) };
         if entry == 0 {
             continue;
         }
@@ -1568,6 +1571,26 @@ impl<'a> KernelPageTableEditor<'a> {
             return None;
         }
         Some((pointer, false))
+    }
+
+    /// Returns a pointer to the first entry in one verified reachable table.
+    ///
+    /// The W^X audit reads all 512 entries through this pointer. Validating the
+    /// recursive path once per table avoids re-walking every ancestor for every
+    /// entry, while the caller remains read-only and checks the index bound.
+    fn audit_table_pointer(&self, table_physical: u64, level: u8) -> Option<*const u64> {
+        if !(1..=4).contains(&level)
+            || !valid_physical_page(table_physical, self.physical_address_bits)
+            || self.reachable_table_physical(level) != Some(table_physical)
+        {
+            return None;
+        }
+        let table_alias = recursive_table_page_virtual_address(
+            self.recursive_index,
+            self.target_virtual_address,
+            level,
+        )?;
+        Some(entry_pointer_from_page(table_alias, 0)?.cast_const())
     }
 
     fn mark_reachable_table_frames(&self) {
