@@ -1327,7 +1327,7 @@ mod tests {
         let physical = FRAME_A;
         let writable = FrameWxPermissions::new(true, false);
 
-        registry
+        let _reservation = registry
             .reserve_alias_range(root, virtual_address, physical, PAGE_SIZE, writable)
             .unwrap();
         registry.commit_alias_at(root, virtual_address).unwrap();
