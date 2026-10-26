@@ -14,7 +14,8 @@ use core::arch::asm;
 #[cfg(any(
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection",
-    feature = "test-vm-transitions"
+    feature = "test-vm-transitions",
+    feature = "test-wx-runtime-audit"
 ))]
 use core::arch::global_asm;
 use core::panic::PanicInfo;
@@ -81,6 +82,20 @@ use oneos_core::{validate_memory_map, MemoryMapError};
             feature = "test-supervisor-write-protection",
             feature = "test-nx-protection",
             feature = "test-vm-transitions"
+        )
+    ),
+    all(
+        feature = "test-wx-runtime-audit",
+        any(
+            feature = "test-exception",
+            feature = "test-general-protection",
+            feature = "test-page-fault",
+            feature = "test-double-fault",
+            feature = "test-ist",
+            feature = "test-supervisor-write-protection",
+            feature = "test-nx-protection",
+            feature = "test-vm-transitions",
+            feature = "test-root-leak-safety"
         )
     )
 ))]
@@ -175,6 +190,27 @@ unsafe extern "C" {
     static oneos_vm_test_transition_first_recovery: u8;
     static oneos_vm_test_transition_second_fault_ip: u8;
     static oneos_vm_test_transition_second_recovery: u8;
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+global_asm!(
+    ".global oneos_vm_test_wx_directmap_write",
+    ".global oneos_vm_test_wx_directmap_fault_ip",
+    ".global oneos_vm_test_wx_directmap_recovery",
+    "oneos_vm_test_wx_directmap_write:",
+    "mov rax, rdi",
+    "mov rdx, rsi",
+    "oneos_vm_test_wx_directmap_fault_ip:",
+    "mov qword ptr [rax], rdx",
+    "oneos_vm_test_wx_directmap_recovery:",
+    "ret",
+);
+
+#[cfg(feature = "test-wx-runtime-audit")]
+unsafe extern "C" {
+    fn oneos_vm_test_wx_directmap_write(target: u64, value: u64);
+    static oneos_vm_test_wx_directmap_fault_ip: u8;
+    static oneos_vm_test_wx_directmap_recovery: u8;
 }
 
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
@@ -319,7 +355,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_write(b"ONE OS W^X GLOBAL COVERAGE INCOMPLETE\n");
     }
     if paging_stats.wx_audit.conflicting_overlap_events > 0 {
-        serial_write(b"ONE OS W^X ALIAS OVERLAPS DETECTED (DIAGNOSTIC ONLY)\n");
+        serial_write(b"ONE OS W^X PRE-ACTIVATION READ-ONLY AUDIT DETECTED OVERLAPS\n");
         if let Some(conflict) = paging_stats.wx_audit.first_conflict {
             print_wx_conflict_diagnostic(0, conflict);
         }
@@ -360,6 +396,36 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 halt_forever()
             }
         }
+    }
+
+    // Restrict every validated executable PT_LOAD frame's physical-offset alias
+    // before a private kernel root is constructed. The later post-activation audit
+    // verifies that the shared upper-half aliases are conflict-free across roots.
+    #[cfg(not(any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault",
+        feature = "test-double-fault",
+        feature = "test-ist",
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection",
+        feature = "test-vm-transitions",
+        feature = "test-root-leak-safety"
+    )))]
+    {
+        let executable_pages = match paging::enforce_kernel_executable_alias_wx(boot_info) {
+            Ok(count) => count,
+            Err(error) => {
+                serial_write(b"\nONE OS KERNEL W^X DIRECT-MAP TRANSITION FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+        interrupts::write_hex(
+            b"ONE OS KERNEL W^X EXECUTABLE PAGES CHECKED: ",
+            executable_pages as u64,
+        );
+        serial_write(b"ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS\n");
     }
 
     if let Err(error) = address_space::verify_root_initialization_smoke_test(boot_info) {
@@ -718,6 +784,40 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         };
         serial_write(b"ONE OS ADDRESS SPACE SWITCH PASS\n");
+        #[cfg(feature = "test-wx-runtime-audit")]
+        {
+            let executable_address =
+                paging::enforce_kernel_executable_alias_wx as *const () as usize as u64;
+            let direct_alias = match paging::kernel_executable_direct_alias_for_test(
+                boot_info,
+                executable_address,
+                _active_root.recursive_index(),
+            ) {
+                Ok(address) => address,
+                Err(error) => {
+                    serial_write(b"\nONE OS W^X DIRECT-MAP WRITE PROTECTION SETUP FAILED\n");
+                    serial_write(error.message());
+                    halt_forever()
+                }
+            };
+            let expected_ip =
+                unsafe { core::ptr::addr_of!(oneos_vm_test_wx_directmap_fault_ip) as u64 };
+            let recovery_ip =
+                unsafe { core::ptr::addr_of!(oneos_vm_test_wx_directmap_recovery) as u64 };
+            interrupts::arm_expected_protection_page_fault(direct_alias, expected_ip, recovery_ip);
+
+            // SAFETY: the dedicated test deliberately writes through the
+            // validated RO/NX direct-map alias of an executable kernel page.
+            // The handler recovers only from the exact supervisor #PF (0x3).
+            unsafe {
+                oneos_vm_test_wx_directmap_write(direct_alias, 0x4f4e_455f_5758_5752);
+            }
+            if !interrupts::expected_protection_page_fault_was_seen() {
+                serial_write(b"\nONE OS W^X DIRECT-MAP WRITE PROTECTION FAILED\n");
+                halt_forever()
+            }
+            serial_write(b"ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS\n");
+        }
 
         // The active handle carries the private recursive index installed in
         // the new root. Exercise the exact initializer path after CR3 changes.

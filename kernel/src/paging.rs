@@ -4522,6 +4522,362 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
     Err(PagingError::NoUnusedVirtualAddress)
 }
 
+/// Restricts the physical-memory-offset aliases for every validated executable PT_LOAD page.
+///
+/// This must run while the bootloader root and its recursive index are active, before
+/// constructing the private kernel root. The upper-half/direct-map page tables are
+/// shared into later roots. Executable extents are derived from the validated ELF
+/// program headers and page-table translations, never from a VA == PA assumption.
+pub fn enforce_kernel_executable_alias_wx(boot_info: &BootInfo) -> Result<usize, PagingError> {
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    let root_table_physical = active_root_table_physical();
+    if root_table_physical == 0
+        || root_table_physical & (PAGE_SIZE - 1) != 0
+        || !is_bootloader_owned_page(regions, root_table_physical)
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRootTable);
+    }
+
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
+    if !(32..=52).contains(&physical_address_bits) {
+        return Err(PagingError::InvalidPhysicalAddressWidth {
+            bits: physical_address_bits,
+        });
+    }
+
+    let mut elf_header = [0u8; ELF64_HEADER_SIZE];
+    read_kernel_elf_bytes(
+        boot_info,
+        0,
+        &mut elf_header,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let (program_header_offset, program_header_size) =
+        elf64_program_header_table_range(&elf_header, boot_info.kernel_len)
+            .map_err(|_| PagingError::InvalidKernelElf)?;
+    let mut program_header_buffer = [0u8; MAX_ELF64_PROGRAM_HEADERS * ELF64_PROGRAM_HEADER_SIZE];
+    let program_headers = &mut program_header_buffer[..program_header_size];
+    read_kernel_elf_bytes(
+        boot_info,
+        program_header_offset,
+        program_headers,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let load_image = parse_elf64_load_segments(&elf_header, program_headers, boot_info.kernel_len)
+        .map_err(|_| PagingError::InvalidKernelElf)?;
+
+    let mut executable_pages_checked = 0usize;
+    for segment in load_image.load_segments() {
+        if !segment.executable() || segment.memory_size == 0 {
+            continue;
+        }
+        // A writable/executable PT_LOAD page cannot be repaired by downgrading
+        // only the direct-map alias; reject it rather than claiming W^X success.
+        if segment.writable() {
+            return Err(PagingError::InvalidKernelCodeMapping);
+        }
+        let load_start = boot_info
+            .kernel_image_offset
+            .checked_add(segment.virtual_address)
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        let load_end = load_start
+            .checked_add(segment.memory_size)
+            .filter(|end| *end > load_start)
+            .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        if !canonical_range_stays_in_one_half(load_start, load_end) {
+            return Err(PagingError::InvalidKernelLoadMapping);
+        }
+
+        let first_page = load_start & !(PAGE_SIZE - 1);
+        let last_page = (load_end - 1) & !(PAGE_SIZE - 1);
+        let mut virtual_page = first_page;
+        loop {
+            let translation = translate_virtual_address(
+                virtual_page,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )
+            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+            if translation.page_size != PAGE_SIZE
+                || translation.physical_address & (PAGE_SIZE - 1) != 0
+                || !is_kernel_backed_page(regions, translation.physical_address)
+                || translation.user_accessible
+                || translation.writable
+                || !translation.executable
+            {
+                return Err(PagingError::InvalidKernelLoadMapping);
+            }
+
+            let direct_alias = physical_memory_offset
+                .checked_add(translation.physical_address)
+                .filter(|address| {
+                    is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                })
+                .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+            restrict_physical_offset_alias_read_only_nx(
+                boot_info,
+                root_table_physical,
+                direct_alias,
+                translation.physical_address,
+            )?;
+
+            // Verify the effective permissions through a fresh page-table walk
+            // for every executable PT_LOAD page, not just the single CPU-fault
+            // sample exercised by the dedicated acceptance profile.
+            let mut verify_editor = KernelPageTableEditor::new(boot_info, direct_alias)?;
+            let verified =
+                translate_with_editor(&mut verify_editor, root_table_physical, direct_alias)
+                    .map_err(PagingError::Translation)?;
+            if verified.physical_address != translation.physical_address
+                || verified.page_size != PAGE_SIZE
+                || verified.writable
+                || verified.user_accessible
+                || verified.executable
+            {
+                return Err(PagingError::WxAuditFailed);
+            }
+
+            executable_pages_checked = executable_pages_checked
+                .checked_add(1)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+
+            if virtual_page == last_page {
+                break;
+            }
+            virtual_page = virtual_page
+                .checked_add(PAGE_SIZE)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        }
+    }
+
+    if executable_pages_checked == 0 {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+    Ok(executable_pages_checked)
+}
+
+/// Returns the physical-offset alias of a supervisor-only executable kernel
+/// mapping for the dedicated W^X CPU-enforcement test. The helper checks the
+/// live root, mapping permissions, and physical backing; it does not independently
+/// prove ELF PT_LOAD membership. The current caller passes a known kernel function
+/// address, and this helper never assumes VA == PA.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn kernel_executable_direct_alias_for_test(
+    boot_info: &BootInfo,
+    executable_virtual_address: u64,
+    recursive_index: u16,
+) -> Result<u64, PagingError> {
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    let root_table_physical = active_root_table_physical();
+    if !is_canonical_4level(executable_virtual_address)
+        || !is_safe_recursive_mapping_index(recursive_index)
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
+
+    // Page-table editors take a page-aligned target address. Keep the caller's
+    // code pointer only as a page selector; the permission check applies to the
+    // full executable leaf that contains it.
+    let executable_virtual_page = executable_virtual_address & !(PAGE_SIZE - 1);
+
+    // The active root is kernel-owned and may contain page-table frames in
+    // Usable regions, so use the checked kernel editor rather than the boot-only
+    // translator, which deliberately accepts only Bootloader-owned table frames.
+    let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_page,
+        recursive_index,
+    )?;
+    let executable = translate_with_editor(
+        &mut executable_editor,
+        root_table_physical,
+        executable_virtual_page,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable.page_size != PAGE_SIZE
+        || executable.writable
+        || executable.user_accessible
+        || !executable.executable
+    {
+        return Err(PagingError::InvalidKernelCodeMapping);
+    }
+    let physical_page = executable.physical_address & !(PAGE_SIZE - 1);
+    if !is_kernel_backed_page(regions, physical_page) {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let direct_alias = physical_memory_offset
+        .checked_add(physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut alias_editor =
+        KernelPageTableEditor::new_with_recursive_index(boot_info, direct_alias, recursive_index)?;
+    let alias = translate_with_editor(&mut alias_editor, root_table_physical, direct_alias)
+        .map_err(PagingError::Translation)?;
+    if alias.page_size != PAGE_SIZE
+        || alias.physical_address != physical_page
+        || alias.writable
+        || alias.user_accessible
+        || alias.executable
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    Ok(direct_alias)
+}
+
+/// Demotes a physical-offset leaf as needed, then removes write access using
+/// break-before-make so a stale writable TLB translation cannot survive the
+/// permission transition. It preserves the physical frame, cache/PAT/global and
+/// A/D state, and republishes the leaf as read-only + NX.
+fn restrict_physical_offset_alias_read_only_nx(
+    boot_info: &BootInfo,
+    root_table_physical: u64,
+    virtual_address: u64,
+    expected_physical_page: u64,
+) -> Result<(), PagingError> {
+    if !is_canonical_4level(virtual_address)
+        || virtual_address & (PAGE_SIZE - 1) != 0
+        || expected_physical_page & (PAGE_SIZE - 1) != 0
+        || active_root_table_physical() != root_table_physical
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    let mut demotions = 0usize;
+    loop {
+        let mut editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+        let translation = translate_with_editor(&mut editor, root_table_physical, virtual_address)
+            .map_err(PagingError::Translation)?;
+        if translation.physical_address != expected_physical_page || translation.user_accessible {
+            return Err(PagingError::WxAuditFailed);
+        }
+        if translation.page_size == PAGE_SIZE {
+            break;
+        }
+        if demotions >= 2
+            || (translation.page_size != (1u64 << 21) && translation.page_size != (1u64 << 30))
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        let receipt = demote_large_page_for_address(boot_info, virtual_address)?
+            .ok_or(PagingError::LargePageDemotionFailed)?;
+        let receipt_end = receipt
+            .physical_start
+            .checked_add(receipt.virtual_length)
+            .ok_or(PagingError::LargePageDemotionFailed)?;
+        if receipt.virtual_length != translation.page_size
+            || expected_physical_page < receipt.physical_start
+            || expected_physical_page >= receipt_end
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        demotions += 1;
+    }
+
+    let mut editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+    let (leaf_table_physical, leaf_index, leaf_entry) = {
+        let mut table_physical = root_table_physical;
+        let mut level = 4u8;
+        loop {
+            let index = virtual_index(virtual_address, level).ok_or(PagingError::WxAuditFailed)?;
+            let entry = editor
+                .read_entry(table_physical, index, level)
+                .ok_or(PagingError::WxAuditFailed)?;
+            if entry & PRESENT == 0 || (level == 4 && entry & LARGE_PAGE != 0) {
+                return Err(PagingError::WxAuditFailed);
+            }
+            if level == 1 {
+                break (table_physical, index, entry);
+            }
+            if entry & LARGE_PAGE != 0 {
+                return Err(PagingError::LargePageDemotionFailed);
+            }
+            table_physical = entry & PHYSICAL_ADDRESS_MASK;
+            if !valid_physical_page(table_physical, editor.physical_address_bits) {
+                return Err(PagingError::WxAuditFailed);
+            }
+            level = level.checked_sub(1).ok_or(PagingError::WxAuditFailed)?;
+        }
+    };
+
+    if leaf_entry & PHYSICAL_ADDRESS_MASK != expected_physical_page
+        || leaf_entry & PRESENT == 0
+        || leaf_entry & USER_ACCESSIBLE != 0
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    // Even if the PTE already advertises RO+NX, repeat the break-before-make
+    // sequence so a stale writable TLB entry cannot be mistaken for enforcement.
+    const ACCESSED_DIRTY_MASK: u64 = (1 << 5) | (1 << 6);
+    // First clear Present atomically. Retry only if the hardware monotonically
+    // sets A/D; any other mutation fails before the entry is made non-present.
+    compare_exchange_entry_with_ad_retry(
+        leaf_entry,
+        ATOMIC_ENTRY_CAS_MAX_ATTEMPTS,
+        |expected| expected & !PRESENT,
+        |expected, replacement| {
+            editor
+                .compare_exchange_entry(leaf_table_physical, leaf_index, 1, expected, replacement)
+                .unwrap_or(Err(expected))
+        },
+    )
+    .map_err(|_| PagingError::WxAuditFailed)?;
+
+    // Once Present is cleared, any inability to complete the transition must
+    // fail-stop: never return with a partially unpublished direct-map leaf.
+    if super::address_space::switch_address_space_flush_local_tlb(root_table_physical).is_err() {
+        panic!("W^X direct-map transition could not flush the retired writable translation");
+    }
+    let cleared = editor
+        .read_entry(leaf_table_physical, leaf_index, 1)
+        .unwrap_or_else(|| panic!("W^X direct-map leaf became inaccessible after invalidation"));
+    if cleared & PRESENT != 0
+        || cleared & !(PRESENT | ACCESSED_DIRTY_MASK)
+            != leaf_entry & !(PRESENT | ACCESSED_DIRTY_MASK)
+        || (cleared & ACCESSED_DIRTY_MASK & leaf_entry) != (leaf_entry & ACCESSED_DIRTY_MASK)
+    {
+        panic!("W^X direct-map leaf changed unexpectedly after invalidation");
+    }
+
+    let replacement = (cleared | PRESENT) & !WRITABLE | NO_EXECUTE;
+    editor.write_entry(leaf_table_physical, leaf_index, 1, replacement);
+    if super::address_space::switch_address_space_flush_local_tlb(root_table_physical).is_err() {
+        panic!("W^X direct-map transition could not flush the republished read-only translation");
+    }
+    let final_entry = editor
+        .read_entry(leaf_table_physical, leaf_index, 1)
+        .unwrap_or_else(|| panic!("W^X direct-map leaf became inaccessible after publication"));
+    if final_entry & PRESENT == 0
+        || final_entry & PHYSICAL_ADDRESS_MASK != expected_physical_page
+        || final_entry & WRITABLE != 0
+        || final_entry & NO_EXECUTE == 0
+        || final_entry & USER_ACCESSIBLE != 0
+    {
+        panic!("W^X direct-map leaf did not retain the expected read-only/NX mapping");
+    }
+    Ok(())
+}
+
 /// Exercises the live large-page demotion adapter against a real
 /// physical-memory-offset mapping. The smoke test insists the selected frame
 /// starts inside a large leaf, demotes 1 GiB -> 2 MiB -> 4 KiB as required, then

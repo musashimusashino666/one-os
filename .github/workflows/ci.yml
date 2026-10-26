@@ -118,6 +118,7 @@ jobs:
               --log "$log" \
               --exit-status "$status" \
               --require-large-page-demotion-smoke
+            grep -Fq "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS" "$log"
           done
 
       - name: Verify post-activation W^X audit diagnostics in QEMU
@@ -137,9 +138,13 @@ jobs:
           python3 tools/check_qemu_serial.py \
             --log "$log" \
             --exit-status "$status"
-          grep -Fq "ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)" "$log"
-          grep -Fq "ONE OS W^X RUNTIME CONFLICT EVENTS:" "$log"
+          grep -Fq "ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT)" "$log"
+          grep -Fq "ONE OS W^X RUNTIME CONFLICT EVENTS: 0x0000000000000000" "$log"
+          grep -Fq "ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE" "$log"
           grep -Fq "ONE OS W^X RUNTIME ACTIVE ROOT:" "$log"
+          grep -Fq "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS" "$log"
+          grep -Fq "ONE OS W^X DIRECT-MAP WRITE FAULT MATCHED" "$log"
+          grep -Fq "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS" "$log"
 
       - name: Verify uncertain-CR3 root token leak policy in QEMU
         shell: bash

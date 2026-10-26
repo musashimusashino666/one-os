@@ -11,7 +11,8 @@ use core::ptr;
 #[cfg(any(
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection",
-    feature = "test-vm-transitions"
+    feature = "test-vm-transitions",
+    feature = "test-wx-runtime-audit"
 ))]
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -213,7 +214,8 @@ error_handler!(general_protection_handler, 13, "general protection fault");
 #[cfg(not(any(
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection",
-    feature = "test-vm-transitions"
+    feature = "test-vm-transitions",
+    feature = "test-wx-runtime-audit"
 )))]
 extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: u64) -> ! {
     let fault_address: u64;
@@ -237,27 +239,32 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
 
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 static EXPECTED_PROTECTION_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 static EXPECTED_PROTECTION_FAULT_RIP: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 static EXPECTED_PROTECTION_FAULT_RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 static EXPECTED_PROTECTION_FAULT_ARMED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 
@@ -265,7 +272,8 @@ static EXPECTED_PROTECTION_FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 /// The ordinary production page-fault handler remains fail-stop.
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 pub(super) fn arm_expected_protection_page_fault(
     target: u64,
@@ -279,14 +287,15 @@ pub(super) fn arm_expected_protection_page_fault(
     EXPECTED_PROTECTION_FAULT_ARMED.store(true, Ordering::Release);
 }
 
-#[cfg(feature = "test-nx-protection")]
+#[cfg(any(feature = "test-nx-protection", feature = "test-wx-runtime-audit"))]
 pub(super) fn expected_protection_page_fault_was_seen() -> bool {
     EXPECTED_PROTECTION_FAULT_SEEN.load(Ordering::Acquire)
 }
 
 #[cfg(any(
     feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
+    feature = "test-nx-protection",
+    feature = "test-wx-runtime-audit"
 ))]
 extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: u64) {
     let fault_address: u64;
@@ -303,6 +312,8 @@ extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, err
     let expected_error_code = 0x3;
     #[cfg(feature = "test-nx-protection")]
     let expected_error_code = 0x11;
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let expected_error_code = 0x3;
 
     let armed = EXPECTED_PROTECTION_FAULT_ARMED.swap(false, Ordering::AcqRel);
     let previously_seen = EXPECTED_PROTECTION_FAULT_SEEN.swap(true, Ordering::AcqRel);
@@ -364,6 +375,27 @@ extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, err
                 ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
             }
             super::serial_write(b"ONE OS VM TEST NX FAULT MATCHED\n");
+            return;
+        }
+
+        #[cfg(feature = "test-wx-runtime-audit")]
+        {
+            if recovery_rip == 0 {
+                report_exception(
+                    Some(14),
+                    "invalid direct-map W^X test recovery state",
+                    frame,
+                    Some(error_code),
+                    Some(fault_address),
+                );
+            }
+            // SAFETY: this dedicated W^X test resumes only after the exact
+            // supervisor-write fault matched its armed target VA, faulting RIP,
+            // and complete page-fault error code (P=1, W=1, U/S=0).
+            unsafe {
+                ptr::write_volatile(ptr::addr_of_mut!(frame.instruction_pointer), recovery_rip);
+            }
+            super::serial_write(b"ONE OS W^X DIRECT-MAP WRITE FAULT MATCHED\n");
             return;
         }
     }
