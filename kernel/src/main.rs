@@ -401,6 +401,32 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
 
+    // The dedicated W^X regression must start from a large direct-map leaf.
+    // Otherwise a post-transition writable-sibling pass would not prove that
+    // splitting a 1 GiB/2 MiB mapping preserved unrelated writable data pages.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let wx_original_direct_map_page_size =
+        match paging::verify_wx_sibling_large_page_precondition(
+            boot_info,
+            core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64,
+            paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
+        ) {
+            Ok(page_size) => page_size,
+            Err(error) => {
+                serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+        };
+    #[cfg(feature = "test-wx-runtime-audit")]
+    {
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ",
+            wx_original_direct_map_page_size,
+        );
+        serial_write(b"ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS\n");
+    }
+
     // Restrict every validated executable PT_LOAD frame's physical-offset alias
     // before a private kernel root is constructed. The later post-activation audit
     // verifies that the shared upper-half aliases are conflict-free across roots.
@@ -828,6 +854,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 writable_virtual_address,
                 executable_address,
                 _active_root.recursive_index(),
+                wx_original_direct_map_page_size,
             ) {
                 Ok(address) => address,
                 Err(error) => {
@@ -840,23 +867,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             // mutable kernel data frame, remains writable and NX, and shares a
             // demoted 2 MiB physical region with the protected executable page.
             unsafe {
-                core::ptr::write_volatile(
-                    writable_direct_alias as *mut u64,
-                    0x4f4e_455f_5758_5041,
-                );
+                core::ptr::write_volatile(writable_direct_alias as *mut u64, 0x4f4e_455f_5758_5041);
             }
             // SAFETY: addr_of! forms a raw pointer without creating a reference;
             // the value is read only after the direct-map write in this
             // single-CPU, interrupts-disabled test.
             let observed = unsafe {
-                core::ptr::read_volatile(core::ptr::addr_of!(
-                    WX_WRITABLE_DATA_DIRECTMAP_SENTINEL
-                ))
+                core::ptr::read_volatile(core::ptr::addr_of!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL))
             };
             if observed != 0x4f4e_455f_5758_5041 {
                 serial_write(b"\nONE OS W^X WRITABLE SIBLING DIRECT-MAP FAILED\n");
                 halt_forever()
             }
+            serial_write(b"ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS\n");
             serial_write(b"ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS\n");
         }
 
