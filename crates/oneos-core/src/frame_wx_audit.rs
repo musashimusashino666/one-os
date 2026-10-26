@@ -11,6 +11,27 @@ use crate::{is_canonical_4level, PAGE_SIZE};
 const LOWER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
 const UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
 
+/// One concrete writable/executable physical overlap observed by the audit.
+///
+/// Virtual addresses identify the two alias views at the start of the overlapping
+/// physical interval. For a single mapping that is itself W+X, both virtual
+/// addresses and permission values refer to that same mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditConflict {
+    /// First physical byte of the overlapping interval.
+    pub physical_start: u64,
+    /// Length of the overlapping physical interval in bytes.
+    pub length: u64,
+    /// Virtual address corresponding to `physical_start` through the first alias.
+    pub first_virtual_start: u64,
+    /// Virtual address corresponding to `physical_start` through the second alias.
+    pub second_virtual_start: u64,
+    /// Effective permissions of the first alias.
+    pub first_permissions: FrameWxPermissions,
+    /// Effective permissions of the second alias.
+    pub second_permissions: FrameWxPermissions,
+}
+
 /// Summary of a bounded inventory of existing writable/executable aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameWxAuditSummary {
@@ -26,6 +47,8 @@ pub struct FrameWxAuditSummary {
     ///
     /// This is a diagnostic counter, not a count of conflicting bytes or unique frames.
     pub conflicting_overlap_events: u64,
+    /// First concrete overlap found, if any.
+    pub first_conflict: Option<FrameWxAuditConflict>,
 }
 
 /// Error encountered while constructing or recording a W^X audit inventory.
@@ -101,6 +124,7 @@ pub struct FrameWxAudit<const CAPACITY: usize> {
     alias_count: usize,
     tracked_alias_mappings: u64,
     conflicting_overlap_events: u64,
+    first_conflict: Option<FrameWxAuditConflict>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,7 +153,39 @@ impl AliasRange {
     }
 }
 
+fn conflicting_intersection(first: AliasRange, second: AliasRange) -> Option<FrameWxAuditConflict> {
+    let physical_start = first.physical_start.max(second.physical_start);
+    let physical_end = first.physical_end().min(second.physical_end());
+    let permissions_conflict = (first.permissions.writable && second.permissions.executable)
+        || (first.permissions.executable && second.permissions.writable);
+    if physical_start >= physical_end || !permissions_conflict {
+        return None;
+    }
+
+    // Both ranges were validated on insertion/observation. The physical overlap
+    // lies within each range, so adding its offset to either validated virtual
+    // start cannot cross that range's checked canonical half-open boundary.
+    let first_virtual_start = (u128::from(first.virtual_start)
+        + u128::from(physical_start - first.physical_start)) as u64;
+    let second_virtual_start = (u128::from(second.virtual_start)
+        + u128::from(physical_start - second.physical_start)) as u64;
+    Some(FrameWxAuditConflict {
+        physical_start,
+        length: physical_end - physical_start,
+        first_virtual_start,
+        second_virtual_start,
+        first_permissions: first.permissions,
+        second_permissions: second.permissions,
+    })
+}
+
 impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
+    fn remember_conflict(&mut self, conflict: FrameWxAuditConflict) {
+        if self.first_conflict.is_none() {
+            self.first_conflict = Some(conflict);
+        }
+    }
+
     /// Creates an empty audit inventory for the given CPU physical-address width.
     pub const fn new(physical_address_bits: u8) -> Result<Self, FrameWxAuditError> {
         if physical_address_bits < 32 || physical_address_bits > 52 {
@@ -141,6 +197,7 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             alias_count: 0,
             tracked_alias_mappings: 0,
             conflicting_overlap_events: 0,
+            first_conflict: None,
         })
     }
 
@@ -186,19 +243,26 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             return Err(FrameWxAuditError::CapacityExhausted);
         }
 
+        let incoming = AliasRange {
+            virtual_start,
+            physical_start,
+            length,
+            permissions,
+        };
+        let own_conflict = conflicting_intersection(incoming, incoming);
         self.tracked_alias_mappings = self.tracked_alias_mappings.saturating_add(1);
-        if permissions.writable && permissions.executable {
+        if let Some(conflict) = own_conflict {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+            self.remember_conflict(conflict);
         }
 
-        let physical_end = physical_start + length;
-        for existing in self.aliases[..self.alias_count].iter().copied() {
-            let physical_overlap =
-                physical_start < existing.physical_end() && existing.physical_start < physical_end;
-            let conflicts = (permissions.writable && existing.permissions.executable)
-                || (permissions.executable && existing.permissions.writable);
-            if physical_overlap && conflicts {
+        // Copy each candidate out of the inventory before mutating the
+        // summary fields on self; this keeps the immutable array borrow short.
+        for index in 0..self.alias_count {
+            let existing = self.aliases[index];
+            if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+                self.remember_conflict(conflict);
             }
         }
 
@@ -213,6 +277,50 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             permissions,
         };
         self.alias_count += 1;
+        Ok(())
+    }
+
+    /// Observes an additional W/X alias against the stored inventory without
+    /// consuming range capacity.
+    ///
+    /// This is used for recursive page-table views: the walker already inventories
+    /// all ordinary leaves, while each recursive alias only needs to be checked
+    /// against those leaves for a writable/executable physical overlap. Recursive
+    /// aliases must not be silently dropped due to the main range inventory being
+    /// full, so this path records conflict evidence but does not store the alias.
+    pub fn observe_alias(
+        &mut self,
+        virtual_start: u64,
+        physical_start: u64,
+        length: u64,
+        permissions: FrameWxPermissions,
+    ) -> Result<(), FrameWxAuditError> {
+        if !permissions.writable && !permissions.executable {
+            return Ok(());
+        }
+        validate_virtual_range(virtual_start, length)?;
+        self.validate_physical_range(physical_start, length)?;
+
+        let incoming = AliasRange {
+            virtual_start,
+            physical_start,
+            length,
+            permissions,
+        };
+        let own_conflict = conflicting_intersection(incoming, incoming);
+        if let Some(conflict) = own_conflict {
+            self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+            self.remember_conflict(conflict);
+        }
+        // Copy each candidate out of the inventory before mutating the
+        // summary fields on self; this keeps the immutable array borrow short.
+        for index in 0..self.alias_count {
+            let existing = self.aliases[index];
+            if let Some(conflict) = conflicting_intersection(existing, incoming) {
+                self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+                self.remember_conflict(conflict);
+            }
+        }
         Ok(())
     }
 
@@ -234,6 +342,7 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             writable_ranges,
             executable_ranges,
             conflicting_overlap_events: self.conflicting_overlap_events,
+            first_conflict: self.first_conflict,
         }
     }
 
@@ -344,7 +453,15 @@ mod tests {
                 permissions(true, false),
             )
             .unwrap();
-        assert!(audit.summary().conflicting_overlap_events > 0);
+        let summary = audit.summary();
+        assert!(summary.conflicting_overlap_events > 0);
+        let conflict = summary.first_conflict.expect("large-page overlap evidence");
+        assert_eq!(conflict.physical_start, LARGE_BASE_PA + (1 << 21));
+        assert_eq!(conflict.length, 1 << 21);
+        assert_eq!(conflict.first_virtual_start, BASE_VA + (1 << 21));
+        assert_eq!(conflict.second_virtual_start, BASE_VA + (1 << 30));
+        assert_eq!(conflict.first_permissions, permissions(false, true));
+        assert_eq!(conflict.second_permissions, permissions(true, false));
     }
 
     #[test]
@@ -405,12 +522,50 @@ mod tests {
     }
 
     #[test]
+    fn observed_recursive_alias_detects_exec_overlap_without_consuming_capacity() {
+        let mut audit = FrameWxAudit::<1>::new(48).unwrap();
+        audit
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        let before = audit.summary();
+
+        audit
+            .observe_alias(
+                BASE_VA + (8 * PAGE),
+                BASE_PA,
+                PAGE,
+                permissions(true, false),
+            )
+            .unwrap();
+
+        let after = audit.summary();
+        assert!(after.conflicting_overlap_events > before.conflicting_overlap_events);
+        assert_eq!(after.tracked_alias_mappings, before.tracked_alias_mappings);
+        assert_eq!(after.tracked_ranges, before.tracked_ranges);
+        let conflict = after
+            .first_conflict
+            .expect("recursive alias conflict evidence");
+        assert_eq!(conflict.physical_start, BASE_PA);
+        assert_eq!(conflict.length, PAGE);
+        assert_eq!(conflict.first_virtual_start, BASE_VA);
+        assert_eq!(conflict.second_virtual_start, BASE_VA + (8 * PAGE));
+        assert_eq!(conflict.first_permissions, permissions(false, true));
+        assert_eq!(conflict.second_permissions, permissions(true, false));
+    }
+
+    #[test]
     fn reports_a_single_mapping_that_is_both_writable_and_executable() {
         let mut audit = FrameWxAudit::<1>::new(48).unwrap();
         audit
             .record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, true))
             .unwrap();
-        assert_eq!(audit.summary().conflicting_overlap_events, 1);
+        let summary = audit.summary();
+        assert_eq!(summary.conflicting_overlap_events, 1);
+        let conflict = summary.first_conflict.expect("self-conflict evidence");
+        assert_eq!(conflict.first_virtual_start, BASE_VA);
+        assert_eq!(conflict.second_virtual_start, BASE_VA);
+        assert_eq!(conflict.first_permissions, permissions(true, true));
+        assert_eq!(conflict.second_permissions, permissions(true, true));
     }
 
     #[test]

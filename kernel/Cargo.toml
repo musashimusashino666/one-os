@@ -22,6 +22,8 @@ test-nx-protection = []
 test-vm-transitions = []
 # Dedicated smoke image for uncertain-CR3 root-token leak policy.
 test-root-leak-safety = []
+# Dedicated QEMU image for full post-activation W^X audit diagnostics.
+test-wx-runtime-audit = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

@@ -23,6 +23,7 @@ mod frame_allocator;
 mod frame_registry;
 mod frame_wx;
 mod frame_wx_audit;
+mod frame_wx_audit_scope;
 mod large_page;
 mod memory_policy;
 mod page_table;
@@ -57,8 +58,12 @@ pub use frame_wx::{
     FrameWxReservation, FrameWxReservationError,
 };
 pub use frame_wx_audit::{
-    FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary, FrameWxAuditTableBudget,
-    FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+    FrameWxAudit, FrameWxAuditConflict, FrameWxAuditError, FrameWxAuditSummary,
+    FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+};
+pub use frame_wx_audit_scope::{
+    FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditScopeSummary, FrameWxAuditSource,
+    FRAME_WX_AUDIT_REQUIRED_SOURCES,
 };
 pub use large_page::{LargePageDemotion, LargePageDemotionError};
 pub use memory_policy::{

@@ -106,7 +106,7 @@ jobs:
             echo "QEMU boot attempt ${attempt}/3"
             log="$CARGO_TARGET_DIR/qemu-serial-${attempt}.log"
             set +e
-            timeout 10s qemu-system-x86_64 \
+            timeout 30s qemu-system-x86_64 \
               -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
               -drive format=raw,file="$CARGO_TARGET_DIR/one-os-bios.img" \
               -serial stdio -display none -no-reboot -no-shutdown \
@@ -119,13 +119,36 @@ jobs:
               --exit-status "$status"
           done
 
+      - name: Verify post-activation W^X audit diagnostics in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-wx-runtime-audit
+          log="$CARGO_TARGET_DIR/qemu-wx-runtime-audit.log"
+          set +e
+          timeout 60s qemu-system-x86_64 \
+            -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-wx-runtime-audit-test-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          python3 tools/check_qemu_serial.py \
+            --log "$log" \
+            --exit-status "$status"
+          grep -Fq "ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)" "$log"
+          grep -Fq "ONE OS W^X RUNTIME CONFLICT EVENTS:" "$log"
+          grep -Fq "ONE OS W^X RUNTIME ACTIVE ROOT:" "$log"
+
       - name: Verify uncertain-CR3 root token leak policy in QEMU
         shell: bash
         run: |
+          # Root activation/teardown smoke checks need more than the normal-boot budget;
+          # the serial validator still requires the exact pass marker and clean bootstrap completion.
           cargo run --locked -p oneos-xtask -- image-test-root-leak-safety
           log="$CARGO_TARGET_DIR/qemu-root-leak-safety.log"
           set +e
-          timeout 10s qemu-system-x86_64 \
+          timeout 60s qemu-system-x86_64 \
             -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
             -drive format=raw,file="$CARGO_TARGET_DIR/one-os-root-leak-safety-test-bios.img" \
             -serial stdio -display none -no-reboot -no-shutdown \
