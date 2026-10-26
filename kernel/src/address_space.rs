@@ -1633,6 +1633,7 @@ fn translate_active_alias(
                 && matches!(super::memory::is_frame_allocated(table_physical), Ok(true))
         } else {
             is_region_page(regions, table_physical, MemoryRegionKind::Bootloader)
+                || super::paging::registered_published_page_table_frame(table_physical)
         };
         if current_level == 0
             || (current_level == 4 && table_physical != root_physical)
