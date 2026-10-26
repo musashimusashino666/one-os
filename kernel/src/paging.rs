@@ -665,6 +665,8 @@ enum AuditRootRange {
 static WX_AUDIT_RECURSIVE_FRAMES_BUSY: AtomicBool = AtomicBool::new(false);
 static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
+static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
+    [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 
 /// Physical frames whose writable recursive aliases must be checked after the
 /// complete ordinary leaf inventory has been collected. Shared page-table frames
@@ -712,7 +714,15 @@ impl RecursiveAliasSet {
             return Err(PagingError::WxAuditFailed);
         }
         // SAFETY: the exclusive lease is held and count is below the fixed capacity.
-        unsafe { ptr::write(frames.add(self.count), physical_frame) };
+        unsafe {
+            ptr::write(frames.add(self.count), physical_frame);
+            ptr::write(
+                core::ptr::addr_of_mut!(WX_AUDIT_RECURSIVE_VIRTUALS)
+                    .cast::<u64>()
+                    .add(self.count),
+                recursive_virtual_address,
+            );
+        }
         self.count += 1;
         Ok(())
     }
@@ -723,11 +733,15 @@ impl RecursiveAliasSet {
     ) -> Result<(), PagingError> {
         // SAFETY: this set still owns the exclusive lease; all indices are below count.
         let frames = core::ptr::addr_of!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>();
+        let virtuals = core::ptr::addr_of!(WX_AUDIT_RECURSIVE_VIRTUALS).cast::<u64>();
         for index in 0..self.count {
             // SAFETY: index is below the successfully populated candidate count.
             let physical_frame = unsafe { ptr::read(frames.add(index)) };
+            // SAFETY: the same index was populated with the validated recursive VA.
+            let virtual_address = unsafe { ptr::read(virtuals.add(index)) };
             audit
-                .observe_physical_alias(
+                .observe_alias(
+                    virtual_address,
                     physical_frame,
                     PAGE_SIZE,
                     FrameWxPermissions::new(true, false),
