@@ -36,7 +36,9 @@ INVALID_MAP_MARKER = "ONE OS MEMORY MAP INVALID"
 EXCEPTION_MARKER = "ONE OS EXCEPTION"
 
 
-def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
+def validate_serial_output(
+    log: str, exit_status: int, require_large_page_demotion_smoke: bool = False
+) -> tuple[bool, str]:
     """Return whether QEMU reached bootstrap completion without panicking."""
     if ALLOCATOR_FAILED_MARKER in log:
         return False, f"Physical frame allocator failure marker found: {ALLOCATOR_FAILED_MARKER}"
@@ -150,23 +152,24 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
     ):
         return False, "runtime address-space switching and user-frame zeroing verification must follow CR3 activation in order"
 
-    demotion_outcomes = [
-        marker for marker in (DEMOTION_READY_MARKER, DEMOTION_SKIPPED_MARKER)
-        if marker in log
-    ]
-    if len(demotion_outcomes) != 1:
-        return False, (
-            "expected exactly one large-page demotion smoke outcome "
-            f"({DEMOTION_READY_MARKER} or {DEMOTION_SKIPPED_MARKER})"
-        )
-    demotion_marker = demotion_outcomes[0]
-    if log.count(demotion_marker) != 1:
-        return False, f"expected exactly one large-page demotion smoke marker: {demotion_marker}"
-    demotion_index = log.find(demotion_marker)
-    mutation_index = log.find(MUTATION_READY_MARKER)
-    address_space_index = log.find(ADDRESS_SPACE_READY_MARKER)
-    if not mutation_index < demotion_index < address_space_index:
-        return False, "Large-page demotion smoke outcome must follow mapping mutation and precede root initialization"
+    if require_large_page_demotion_smoke:
+        demotion_outcomes = [
+            marker for marker in (DEMOTION_READY_MARKER, DEMOTION_SKIPPED_MARKER)
+            if marker in log
+        ]
+        if len(demotion_outcomes) != 1:
+            return False, (
+                "expected exactly one large-page demotion smoke outcome "
+                f"({DEMOTION_READY_MARKER} or {DEMOTION_SKIPPED_MARKER})"
+            )
+        demotion_marker = demotion_outcomes[0]
+        if log.count(demotion_marker) != 1:
+            return False, f"expected exactly one large-page demotion smoke marker: {demotion_marker}"
+        demotion_index = log.find(demotion_marker)
+        mutation_index = log.find(MUTATION_READY_MARKER)
+        address_space_index = log.find(ADDRESS_SPACE_READY_MARKER)
+        if not mutation_index < demotion_index < address_space_index:
+            return False, "Large-page demotion smoke outcome must follow mapping mutation and precede root initialization"
 
     return True, "QEMU reached bootstrap completion; private-root user-frame zeroing passed without a panic"
 
@@ -175,6 +178,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", required=True, type=Path, help="QEMU serial log path")
     parser.add_argument("--exit-status", required=True, type=int, help="QEMU command status")
+    parser.add_argument(
+        "--require-large-page-demotion-smoke",
+        action="store_true",
+        help="require exactly one live-demotion smoke pass/skip marker (normal boot only)",
+    )
     args = parser.parse_args()
 
     try:
@@ -182,7 +190,9 @@ def main() -> int:
     except OSError as error:
         parser.error(f"cannot read QEMU serial log: {error}")
 
-    valid, message = validate_serial_output(log, args.exit_status)
+    valid, message = validate_serial_output(
+        log, args.exit_status, args.require_large_page_demotion_smoke
+    )
     print(message)
     return 0 if valid else 1
 
