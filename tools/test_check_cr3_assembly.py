@@ -389,7 +389,7 @@ class ActivationAssemblyTests(unittest.TestCase):
         """
         valid, message = validate_cr3_asm_memory_order(source)
         self.assertFalse(valid)
-        self.assertIn("must bind to validated root_physical or the checked active CR3", message)
+        self.assertIn("the template operand must bind directly to in(reg) root_physical, or to the checked active CR3", message)
 
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
