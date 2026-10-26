@@ -110,6 +110,7 @@ pub enum PagingError {
     InvalidStackMapping,
     InvalidBootInfoMapping,
     WxAuditFailed,
+    #[cfg(feature = "test-wx-runtime-audit")]
     WxSiblingFrameUnavailable,
     Translation(PageTableError),
     InactiveAddressSpaceInvalid,
@@ -154,6 +155,7 @@ impl PagingError {
             Self::WxAuditFailed => {
                 b"Could not complete the bounded read-only W^X mapping inventory\n"
             }
+            #[cfg(feature = "test-wx-runtime-audit")]
             Self::WxSiblingFrameUnavailable => {
                 b"No unused Usable sibling frame could be reserved in the executable page's 2 MiB region\n"
             }
