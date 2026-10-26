@@ -648,10 +648,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
                 b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
                 conflict.physical_start,
             );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME CONFLICT LENGTH: ",
-                conflict.length,
-            );
+            super::interrupts::write_hex(b"ONE OS W^X RUNTIME CONFLICT LENGTH: ", conflict.length);
             super::interrupts::write_hex(
                 b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
                 conflict.first_virtual_start,
