@@ -138,7 +138,9 @@ pub enum PageTableMutationError {
     NonCanonicalVirtualAddress,
     UnalignedVirtualAddress,
     InvalidRootTable,
-    InvalidPhysicalAddressWidth { bits: u8 },
+    InvalidPhysicalAddressWidth {
+        bits: u8,
+    }
     InvalidPhysicalAddress,
     MappedFrameIsReserved,
     FrameNotAllocated,
@@ -146,15 +148,27 @@ pub enum PageTableMutationError {
     ExecutableAliasConflict,
     UserAddressOutsideUserHalf,
     UserMappingRequiresZeroedFrame,
-    TableUnavailable { level: u8 },
-    NotMapped { level: u8 },
-    MalformedEntry { level: u8 },
-    LargePageConflict { level: u8 },
-    RecursiveTableReference { level: u8 },
+    TableUnavailable {
+        level: u8,
+    }
+    NotMapped {
+        level: u8,
+    }
+    MalformedEntry {
+        level: u8,
+    }
+    LargePageConflict {
+        level: u8,
+    }
+    RecursiveTableReference {
+        level: u8,
+    }
     InvalidPageTableFrame,
     AllocationFailed,
     AlreadyMapped,
-    AncestorPermissionConflict { level: u8 },
+    AncestorPermissionConflict {
+        level: u8,
+    }
     /// The physical-frame W^X alias registry denied or could not validate a mutation.
     WxAliasRegistryFailure,
 }
@@ -512,7 +526,8 @@ pub fn unmap_4k<E: PageTableEditor>(
     effective_user &= leaf & USER_ACCESSIBLE != 0;
     effective_executable &= leaf & NO_EXECUTE == 0;
 
-    let permissions = PagePermissions::new(effective_writable, effective_user, effective_executable);
+    let permissions =
+        PagePermissions::new(effective_writable, effective_user, effective_executable);
     let tracks_wx_alias = permissions.writable || permissions.executable;
     if tracks_wx_alias {
         editor.begin_wx_alias_removal(
@@ -814,7 +829,9 @@ mod tests {
             _virtual_address: u64,
             _physical_address: u64,
             _permissions: PagePermissions,
-        ) -> Result<(), PageTableMutationError> { Ok(()) }
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
 
         fn commit_wx_alias(&mut self, _root: u64, _virtual_address: u64) {}
 
@@ -824,7 +841,9 @@ mod tests {
             _virtual_address: u64,
             _physical_address: u64,
             _permissions: PagePermissions,
-        ) -> Result<(), PageTableMutationError> { Ok(()) }
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
 
         fn complete_wx_alias_removal(&mut self, _root: u64, _virtual_address: u64) {}
 
@@ -1813,5 +1832,4 @@ mod tests {
         unmap_4k(root, 0x8000, &mut tables).unwrap();
         assert_eq!(tables.wx_registry.occupied_slots(), 0);
     }
-
 }
