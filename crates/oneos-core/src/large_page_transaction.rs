@@ -147,9 +147,7 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     virtual_base: u64,
 ) -> Result<LargePageDemotionReceipt, LargePageDemotionTransactionError> {
     let physical_address_bits = editor.physical_address_bits();
-    if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS)
-        .contains(&physical_address_bits)
-    {
+    if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS).contains(&physical_address_bits) {
         return Err(LargePageDemotionTransactionError::InvalidPhysicalAddressWidth);
     }
 
@@ -196,11 +194,7 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     }
 
     let child_level = plan.child_level();
-    if !editor.reserve_table_publication(
-        root_table_physical,
-        child_table_physical,
-        child_level,
-    ) {
+    if !editor.reserve_table_publication(root_table_physical, child_table_physical, child_level) {
         editor.release_unpublished_table(child_table_physical);
         return Err(LargePageDemotionTransactionError::TablePublicationReservationFailed);
     }
@@ -400,13 +394,23 @@ mod tests {
         assert_eq!(receipt.child_level, 1);
         assert_eq!(receipt.virtual_length, 1 << 21);
         assert_eq!(receipt.physical_start, physical_base);
-        assert_eq!(editor.entry(PARENT, 0), CHILD | PRESENT | WRITABLE | NO_EXECUTE);
-        assert_eq!(editor.entry(CHILD, 0) & PHYSICAL_ADDRESS_MASK, physical_base);
+        assert_eq!(
+            editor.entry(PARENT, 0),
+            CHILD | PRESENT | WRITABLE | NO_EXECUTE
+        );
+        assert_eq!(
+            editor.entry(CHILD, 0) & PHYSICAL_ADDRESS_MASK,
+            physical_base
+        );
         assert_eq!(
             editor.entry(CHILD, 511) & PHYSICAL_ADDRESS_MASK,
             physical_base + 511 * PAGE_SIZE
         );
-        assert_ne!(editor.entry(CHILD, 0) & (1 << 7), 0, "4 KiB PAT moves to bit 7");
+        assert_ne!(
+            editor.entry(CHILD, 0) & (1 << 7),
+            0,
+            "4 KiB PAT moves to bit 7"
+        );
         assert_ne!(editor.entry(CHILD, 0) & WRITE_THROUGH, 0);
         assert_ne!(editor.entry(CHILD, 0) & CACHE_DISABLE, 0);
         assert_ne!(editor.entry(CHILD, 0) & GLOBAL, 0);
@@ -427,11 +431,11 @@ mod tests {
 
         assert_eq!(receipt.child_level, 2);
         assert_eq!(receipt.virtual_length, 1 << 30);
+        assert_eq!(editor.entry(PARENT, 1), CHILD | PRESENT | USER_ACCESSIBLE);
         assert_eq!(
-            editor.entry(PARENT, 1),
-            CHILD | PRESENT | USER_ACCESSIBLE
+            editor.allocated_child()[0] & PHYSICAL_ADDRESS_MASK,
+            physical_base
         );
-        assert_eq!(editor.allocated_child()[0] & PHYSICAL_ADDRESS_MASK, physical_base);
         assert_eq!(
             editor.allocated_child()[511] & PHYSICAL_ADDRESS_MASK,
             physical_base + 511 * (1 << 21)
@@ -447,14 +451,7 @@ mod tests {
         editor.fail_allocation = true;
 
         assert_eq!(
-            demote_large_page(
-                &mut editor,
-                ROOT,
-                PARENT,
-                2,
-                0,
-                0xffff_8000_0000_0000
-            ),
+            demote_large_page(&mut editor, ROOT, PARENT, 2, 0, 0xffff_8000_0000_0000),
             Err(LargePageDemotionTransactionError::TableAllocationFailed)
         );
         assert_eq!(editor.entry(PARENT, 0), source);
@@ -469,14 +466,7 @@ mod tests {
         editor.fail_reservation = true;
 
         assert_eq!(
-            demote_large_page(
-                &mut editor,
-                ROOT,
-                PARENT,
-                2,
-                0,
-                0xffff_8000_0000_0000
-            ),
+            demote_large_page(&mut editor, ROOT, PARENT, 2, 0, 0xffff_8000_0000_0000),
             Err(LargePageDemotionTransactionError::TablePublicationReservationFailed)
         );
         assert_eq!(editor.entry(PARENT, 0), source);
@@ -491,14 +481,7 @@ mod tests {
         editor.change_parent_on_second_read = true;
 
         assert_eq!(
-            demote_large_page(
-                &mut editor,
-                ROOT,
-                PARENT,
-                2,
-                0,
-                0xffff_8000_0000_0000
-            ),
+            demote_large_page(&mut editor, ROOT, PARENT, 2, 0, 0xffff_8000_0000_0000),
             Err(LargePageDemotionTransactionError::ParentEntryChanged)
         );
         assert_eq!(editor.entry(PARENT, 0), 0);
