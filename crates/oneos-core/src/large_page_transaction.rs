@@ -16,7 +16,6 @@ const ACCESSED: u64 = 1 << 5;
 const DIRTY: u64 = 1 << 6;
 const ACCESSED_DIRTY_MASK: u64 = ACCESSED | DIRTY;
 const NO_EXECUTE: u64 = 1 << 63;
-const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PAGE_SIZE: u64 = 1 << 12;
 const ENTRIES_PER_TABLE: usize = 512;
 const MIN_PHYSICAL_ADDRESS_BITS: u8 = 32;
@@ -34,8 +33,11 @@ const MAX_PHYSICAL_ADDRESS_BITS: u8 = 52;
 /// contract: an inconsistent registry or failed invalidation must fail-stop.
 ///
 /// `invalidate_local_range` must remove every local translation covering the
-/// supplied range, not merely invalidate the first 4 KiB address. Remote CPUs
-/// and SMP synchronization are deliberately outside this primitive.
+/// supplied range, not merely invalidate the first 4 KiB address. On its first
+/// invocation, after Present is cleared, it must also ensure no prior page walk
+/// can subsequently update A/D bits in the retired large-page entry. A second
+/// invocation follows child-pointer publication. Remote CPUs and SMP
+/// synchronization are deliberately outside this primitive.
 pub trait LargePageDemotionEditor {
     /// Physical-address width of the CPU whose tables this editor accesses.
     fn physical_address_bits(&self) -> u8;
@@ -296,7 +298,9 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     // children with the final observed A/D state. Conservatively copying A/D to
     // all children prevents loss of access/dirty information for any subpage.
     let final_source = invalidated_parent | PRESENT;
-    let final_plan = match LargePageDemotion::new(final_source, source_level, physical_address_bits) {
+    let final_plan = match
+        LargePageDemotion::new(final_source, source_level, physical_address_bits)
+    {
         Ok(plan) => plan,
         Err(_) => panic!("invalidated large-page source no longer validates"),
     };
@@ -447,7 +451,10 @@ mod tests {
             expected: u64,
             replacement: u64,
         ) -> Result<(), u64> {
-            if table == PARENT && self.change_parent_before_compare_exchange && !self.parent_change_injected {
+            if table == PARENT
+                && self.change_parent_before_compare_exchange
+                && !self.parent_change_injected
+            {
                 self.tables.get_mut(&PARENT).expect("parent table")[index] = 0;
                 self.parent_change_injected = true;
             }
@@ -668,7 +675,10 @@ mod tests {
                 "child {index} must not lose hardware A/D state"
             );
         }
-        assert_eq!(editor.invalidations, vec![(virtual_base, 1 << 21), (virtual_base, 1 << 21)]);
+        assert_eq!(
+            editor.invalidations,
+            vec![(virtual_base, 1 << 21), (virtual_base, 1 << 21)]
+        );
         assert!(editor.freed.is_empty());
     }
 
