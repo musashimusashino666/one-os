@@ -41,6 +41,9 @@ const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
+const ACCESSED: u64 = 1 << 5;
+const DIRTY: u64 = 1 << 6;
+const ACCESSED_DIRTY_MASK: u64 = ACCESSED | DIRTY;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
@@ -1954,6 +1957,79 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         Some(unsafe { ptr::read_volatile(pointer) })
     }
 
+    /// Performs a strong atomic update of one validated page-table entry.
+    ///
+    /// This RMW allows the caller to observe hardware Accessed/Dirty changes
+    /// instead of racing them with a read-then-write sequence. It does not
+    /// invalidate translations or make a multi-entry page-table transaction
+    /// safe by itself. Callers must retain the editor's single-CPU,
+    /// interrupts-disabled, PCID-disabled mutation preconditions.
+    fn compare_exchange_entry(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+        expected: u64,
+        replacement: u64,
+    ) -> Option<Result<(), u64>> {
+        let (pointer, reachable) = self.entry_pointer(table_physical, index, level)?;
+        // SAFETY: entry_pointer validates a naturally aligned pointer to one
+        // page-table entry. AtomicU64::compare_exchange compiles to an x86_64
+        // locked compare-exchange, so hardware-updated A/D bits cause a failed
+        // comparison instead of being silently overwritten by this RMW.
+        let result = {
+            let atomic_entry = unsafe { AtomicU64::from_ptr(pointer) };
+            atomic_entry
+                .compare_exchange(expected, replacement, Ordering::AcqRel, Ordering::Acquire)
+                .map(|_| ())
+                .map_err(|observed| observed)
+        };
+        if result.is_ok() && reachable {
+            self.mark_reachable_table_frames();
+        }
+        Some(result)
+    }
+
+    /// Smoke-checks the atomic entry primitive without changing the entry.
+    ///
+    /// Retries only when the observed difference is a monotonic hardware A/D
+    /// update. This verifies the concrete editor's CAS path, but deliberately
+    /// does not claim to prove large-page break-before-make or TLB quiescence.
+    fn verify_atomic_entry_compare_exchange(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+    ) -> bool {
+        let Some(mut expected) = self.read_entry(table_physical, index, level) else {
+            return false;
+        };
+        for _ in 0..8 {
+            match self.compare_exchange_entry(
+                table_physical,
+                index,
+                level,
+                expected,
+                expected,
+            ) {
+                Some(Ok(())) => return true,
+                Some(Err(observed)) => {
+                    let expected_ad = expected & ACCESSED_DIRTY_MASK;
+                    let observed_ad = observed & ACCESSED_DIRTY_MASK;
+                    if observed & !ACCESSED_DIRTY_MASK != expected & !ACCESSED_DIRTY_MASK
+                        || observed_ad & expected_ad != expected_ad
+                        || observed_ad == expected_ad
+                    {
+                        return false;
+                    }
+                    expected = observed;
+                }
+                None => return false,
+            }
+        }
+        false
+    }
+
     fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64) {
         let (pointer, reachable) = self
             .entry_pointer(table_physical, index, level)
@@ -3717,9 +3793,19 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 }
                 // SAFETY: the same validated mapping is immediately read back.
                 let observed = unsafe { ptr::read_volatile(candidate as *const u64) };
+                let atomic_entry_update_correctly =
+                    if let (Some(table_physical), Some(index)) = (
+                        editor.reachable_table_physical(1),
+                        virtual_index(candidate, 1),
+                    ) {
+                        editor.verify_atomic_entry_compare_exchange(table_physical, index, 1)
+                    } else {
+                        false
+                    };
                 let translation =
                     translate_with_editor(&mut editor, root_table_physical, candidate);
-                let mapped_correctly = observed == MAPPING_SMOKE_SENTINEL
+                let mapped_correctly = atomic_entry_update_correctly
+                    && observed == MAPPING_SMOKE_SENTINEL
                     && translation.is_ok_and(|result| {
                         result.physical_address == data_physical
                             && result.page_size == PAGE_SIZE
