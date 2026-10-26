@@ -114,6 +114,30 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
         validate_virtual_range(virtual_start, length)?;
         self.validate_physical_range(physical_start, length)?;
 
+        // Preflight the representation change before touching counters or records.
+        // A capacity/arithmetic error therefore leaves the audit state unchanged.
+        let merged_length = if self.alias_count > 0 {
+            let previous = self.aliases[self.alias_count - 1];
+            if previous.permissions == permissions
+                && previous.virtual_end() == u128::from(virtual_start)
+                && previous.physical_end() == physical_start
+            {
+                Some(
+                    previous
+                        .length
+                        .checked_add(length)
+                        .ok_or(FrameWxAuditError::InvalidPhysicalRange)?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if merged_length.is_none() && self.alias_count == CAPACITY {
+            return Err(FrameWxAuditError::CapacityExhausted);
+        }
+
         self.tracked_alias_mappings = self.tracked_alias_mappings.saturating_add(1);
         if permissions.writable && permissions.executable {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
@@ -131,22 +155,9 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             }
         }
 
-        if self.alias_count > 0 {
-            let previous = &mut self.aliases[self.alias_count - 1];
-            if previous.permissions == permissions
-                && previous.virtual_end() == u128::from(virtual_start)
-                && previous.physical_end() == physical_start
-            {
-                previous.length = previous
-                    .length
-                    .checked_add(length)
-                    .ok_or(FrameWxAuditError::InvalidPhysicalRange)?;
-                return Ok(());
-            }
-        }
-
-        if self.alias_count == CAPACITY {
-            return Err(FrameWxAuditError::CapacityExhausted);
+        if let Some(length) = merged_length {
+            self.aliases[self.alias_count - 1].length = length;
+            return Ok(());
         }
         self.aliases[self.alias_count] = AliasRange {
             virtual_start,
