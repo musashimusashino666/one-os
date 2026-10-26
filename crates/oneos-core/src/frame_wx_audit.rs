@@ -451,7 +451,15 @@ mod tests {
                 permissions(true, false),
             )
             .unwrap();
-        assert!(audit.summary().conflicting_overlap_events > 0);
+        let summary = audit.summary();
+        assert!(summary.conflicting_overlap_events > 0);
+        let conflict = summary.first_conflict.expect("large-page overlap evidence");
+        assert_eq!(conflict.physical_start, LARGE_BASE_PA + (1 << 21));
+        assert_eq!(conflict.length, 1 << 21);
+        assert_eq!(conflict.first_virtual_start, BASE_VA + (1 << 21));
+        assert_eq!(conflict.second_virtual_start, BASE_VA + (1 << 30));
+        assert_eq!(conflict.first_permissions, permissions(false, true));
+        assert_eq!(conflict.second_permissions, permissions(true, false));
     }
 
     #[test]
@@ -532,6 +540,13 @@ mod tests {
         assert!(after.conflicting_overlap_events > before.conflicting_overlap_events);
         assert_eq!(after.tracked_alias_mappings, before.tracked_alias_mappings);
         assert_eq!(after.tracked_ranges, before.tracked_ranges);
+        let conflict = after.first_conflict.expect("recursive alias conflict evidence");
+        assert_eq!(conflict.physical_start, BASE_PA);
+        assert_eq!(conflict.length, PAGE);
+        assert_eq!(conflict.first_virtual_start, BASE_VA);
+        assert_eq!(conflict.second_virtual_start, BASE_VA + (8 * PAGE));
+        assert_eq!(conflict.first_permissions, permissions(false, true));
+        assert_eq!(conflict.second_permissions, permissions(true, false));
     }
 
     #[test]
@@ -540,7 +555,13 @@ mod tests {
         audit
             .record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, true))
             .unwrap();
-        assert_eq!(audit.summary().conflicting_overlap_events, 1);
+        let summary = audit.summary();
+        assert_eq!(summary.conflicting_overlap_events, 1);
+        let conflict = summary.first_conflict.expect("self-conflict evidence");
+        assert_eq!(conflict.first_virtual_start, BASE_VA);
+        assert_eq!(conflict.second_virtual_start, BASE_VA);
+        assert_eq!(conflict.first_permissions, permissions(true, true));
+        assert_eq!(conflict.second_permissions, permissions(true, true));
     }
 
     #[test]
