@@ -428,7 +428,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     })
 }
 
-fn audit_active_root_wx_aliases(
+pub(super) fn audit_registered_wx_roots(
     boot_info: &BootInfo,
     root_table_physical: u64,
     recursive_index: u16,
@@ -437,40 +437,54 @@ fn audit_active_root_wx_aliases(
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
-    // Root-registry mutations and this snapshot share the existing single-CPU,
-    // maskable-interrupts-disabled contract. Validate that precondition before
-    // treating the registry contents as a stable inventory.
-    KernelPageTableEditor::new_for_readonly_audit(boot_info, 0, recursive_index)
-        .map_err(|_| PagingError::WxAuditFailed)?;
 
+    // All root and table-registry mutations use the current single-CPU,
+    // maskable-interrupts-disabled contract. Refuse to snapshot otherwise.
+    let mut active_editor =
+        KernelPageTableEditor::new_for_readonly_audit(boot_info, 0, recursive_index)
+            .map_err(|_| PagingError::WxAuditFailed)?;
     let mut audit = FrameWxAudit::<MAX_WX_AUDIT_RANGES>::new(physical_address_bits)
         .map_err(|_| PagingError::WxAuditFailed)?;
     let mut scope = FrameWxAuditScope::<MAX_WX_AUDIT_ROOTS>::new(physical_address_bits)
         .map_err(|_| PagingError::WxAuditFailed)?;
+
+    let active_root_pointer = active_editor
+        .audit_table_pointer(root_table_physical, 4)
+        .ok_or(PagingError::WxAuditFailed)?;
+    if find_root_recursive_index(active_root_pointer, root_table_physical, physical_address_bits)?
+        != recursive_index
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
     scope
         .declare_root(root_table_physical)
         .map_err(|_| PagingError::WxAuditFailed)?;
 
-    // The active root may be the bootloader-owned root and is therefore not
-    // necessarily present in ADDRESS_SPACE_ROOT_FRAMES. Include it explicitly,
-    // then snapshot every other registered live kernel-created root. Any malformed
-    // or duplicate registry entry fails closed instead of shrinking the inventory.
-    let mut active_root_seen_in_registry = false;
+    // Snapshot registered roots into bounded local storage before sealing the
+    // inventory. Reject malformed, duplicate, stale, or unowned entries rather
+    // than silently shrinking the declared root set.
+    let mut registered_roots = [0u64; ADDRESS_SPACE_ROOT_CAPACITY];
+    let mut registered_root_count = 0usize;
     for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
         let registered_root = slot.load(Ordering::Acquire);
         if registered_root == 0 {
             continue;
         }
-        if registered_root == root_table_physical {
-            if active_root_seen_in_registry {
-                return Err(PagingError::WxAuditFailed);
-            }
-            active_root_seen_in_registry = true;
-            continue;
+        if !valid_physical_page(registered_root, physical_address_bits)
+            || !is_address_space_root_frame(registered_root)
+            || !matches!(super::memory::is_frame_allocated(registered_root), Ok(true))
+            || registered_roots[..registered_root_count].contains(&registered_root)
+        {
+            return Err(PagingError::WxAuditFailed);
         }
-        scope
-            .declare_root(registered_root)
-            .map_err(|_| PagingError::WxAuditFailed)?;
+        registered_roots[registered_root_count] = registered_root;
+        registered_root_count += 1;
+        if registered_root != root_table_physical {
+            scope
+                .declare_root(registered_root)
+                .map_err(|_| PagingError::WxAuditFailed)?;
+        }
     }
     scope
         .seal_root_inventory()
@@ -478,15 +492,21 @@ fn audit_active_root_wx_aliases(
 
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
+
+    // Walk the active root in full. Its non-recursive PML4 entries are the
+    // reference for the shared kernel half in every kernel-created root.
     audit_wx_table(
         boot_info,
         recursive_index,
         physical_address_bits,
         root_table_physical,
+        recursive_index,
+        root_table_physical,
         4,
         0,
         true,
         true,
+        false,
         &mut visited_path,
         0,
         &mut table_budget,
@@ -495,13 +515,123 @@ fn audit_active_root_wx_aliases(
     scope
         .mark_root_audited(root_table_physical)
         .map_err(|_| PagingError::WxAuditFailed)?;
-    // Large-page extents are covered by the successful active-root walk. The
-    // root inventory is a stable snapshot of the active root plus all registered
-    // live kernel-created roots, but only the active root has been walked. Any
-    // inactive roots therefore remain unaccounted, and recursive views, direct-map
-    // aliases, and shared-mapping provenance are still missing by design.
+
+    // Inactive roots inherit the upper-half mappings and keep private lower-half
+    // tables. Verify every shared upper PML4 entry against the active root, then
+    // walk every present lower-half mapping through a validated physical-offset
+    // alias and per-root table-ownership records.
+    for registered_root in registered_roots[..registered_root_count].iter().copied() {
+        if registered_root == root_table_physical {
+            continue;
+        }
+
+        let target_root_alias = active_editor
+            .offset_alias(registered_root)
+            .ok_or(PagingError::WxAuditFailed)?;
+        if target_root_alias as usize & (PAGE_SIZE as usize - 1) != 0 {
+            return Err(PagingError::WxAuditFailed);
+        }
+        let target_root_pointer = target_root_alias.cast::<u64>().cast_const();
+        let target_recursive_index =
+            find_root_recursive_index(target_root_pointer, registered_root, physical_address_bits)?;
+        if target_recursive_index < LOWER_HALF_PML4_ENTRIES as u16
+            || target_recursive_index == recursive_index
+        {
+            return Err(PagingError::WxAuditFailed);
+        }
+        validate_shared_kernel_half(
+            active_root_pointer,
+            target_root_pointer,
+            recursive_index,
+            target_recursive_index,
+        )?;
+
+        audit_wx_table(
+            boot_info,
+            recursive_index,
+            physical_address_bits,
+            registered_root,
+            target_recursive_index,
+            registered_root,
+            4,
+            0,
+            true,
+            true,
+            true,
+            &mut visited_path,
+            0,
+            &mut table_budget,
+            &mut audit,
+        )?;
+        scope
+            .mark_root_audited(registered_root)
+            .map_err(|_| PagingError::WxAuditFailed)?;
+    }
+
+    // Account sources only after their corresponding evidence exists:
+    // the active root's full non-recursive tree was walked, every registered
+    // inactive root's private lower half was walked, and shared kernel-half
+    // entries were validated against the active root. Recursive views remain
+    // excluded and therefore keep the global-coverage result incomplete.
+    scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias);
+    scope.account_source(FrameWxAuditSource::SharedKernelMappings);
     scope.account_source(FrameWxAuditSource::LargePageLeaves);
+
     Ok((audit.summary(), scope.summary()))
+}
+
+fn find_root_recursive_index(
+    root_pointer: *const u64,
+    root_physical: u64,
+    physical_address_bits: u8,
+) -> Result<u16, PagingError> {
+    if !valid_physical_page(root_physical, physical_address_bits) {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let mut found = None;
+    for index in 0..PML4_ENTRY_COUNT {
+        // SAFETY: the caller has already validated this complete PML4 page.
+        let entry = unsafe { ptr::read_volatile(root_pointer.add(index)) };
+        if entry & PRESENT == 0 || entry & PHYSICAL_ADDRESS_MASK != root_physical {
+            continue;
+        }
+        if entry & LARGE_PAGE != 0
+            || entry & USER_ACCESSIBLE != 0
+            || entry & NO_EXECUTE == 0
+            || entry & PROTECTION_KEY_FIELD_MASK != 0
+            || found.is_some()
+        {
+            return Err(PagingError::WxAuditFailed);
+        }
+        found = Some(index as u16);
+    }
+    found.ok_or(PagingError::WxAuditFailed)
+}
+
+fn validate_shared_kernel_half(
+    active_root_pointer: *const u64,
+    target_root_pointer: *const u64,
+    active_recursive_index: u16,
+    target_recursive_index: u16,
+) -> Result<(), PagingError> {
+    if active_recursive_index == target_recursive_index {
+        return Err(PagingError::WxAuditFailed);
+    }
+    for index in LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT {
+        if index == usize::from(active_recursive_index)
+            || index == usize::from(target_recursive_index)
+        {
+            continue;
+        }
+        // SAFETY: both root pointers refer to complete validated PML4 frames.
+        let active_entry = unsafe { ptr::read_volatile(active_root_pointer.add(index)) };
+        // SAFETY: same as above for the target root.
+        let target_entry = unsafe { ptr::read_volatile(target_root_pointer.add(index)) };
+        if active_entry != target_entry {
+            return Err(PagingError::WxAuditFailed);
+        }
+    }
+    Ok(())
 }
 
 /// Walks one reachable paging-structure page without changing it.
@@ -510,15 +640,19 @@ fn audit_active_root_wx_aliases(
 /// budgets make work and storage bounded. Physical aliases are compared by byte
 /// range, so 4 KiB entries can conflict with 2 MiB or 1 GiB mappings.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn audit_wx_table<const CAPACITY: usize>(
     boot_info: &BootInfo,
-    recursive_index: u16,
+    active_recursive_index: u16,
     physical_address_bits: u8,
+    audit_root_physical: u64,
+    audit_root_recursive_index: u16,
     table_physical: u64,
     level: u8,
     virtual_prefix: u64,
     ancestors_writable: bool,
     ancestors_executable: bool,
+    lower_half_only: bool,
     visited_path: &mut [u64; 4],
     depth: usize,
     table_budget: &mut FrameWxAuditTableBudget<MAX_WX_AUDIT_TABLES>,
@@ -535,37 +669,44 @@ fn audit_wx_table<const CAPACITY: usize>(
         .map_err(|_| PagingError::WxAuditFailed)?;
     visited_path[depth] = table_physical;
 
-    // A target address with the current path's indexes lets the existing checked
-    // editor validate access to this table through the recursive mapping. The
-    // editor rejects unreadable paths and unknown page-table frames.
+    // The active root is read through its checked recursive alias. For an
+    // inactive root, only its root frame and ownership-registered private
+    // lower-half tables may be read through a validated physical-offset alias.
     let target_virtual_address = if level == 4 { 0 } else { virtual_prefix };
-    let editor = KernelPageTableEditor::new_for_readonly_audit(
+    let mut editor = KernelPageTableEditor::new_for_readonly_audit(
         boot_info,
         target_virtual_address,
-        recursive_index,
+        active_recursive_index,
     )
     .map_err(|_| PagingError::WxAuditFailed)?;
     let table_pointer = editor
-        .audit_table_pointer(table_physical, level)
+        .audit_table_pointer_for_root(
+            audit_root_physical,
+            table_physical,
+            level,
+            virtual_prefix,
+        )
         .ok_or(PagingError::WxAuditFailed)?;
 
-    for index in 0..PML4_ENTRY_COUNT {
-        // The root's recursive slot was validated independently before this walk.
-        // Skip it to avoid recursively inventorying the page-table view itself.
-        if level == 4 && index == usize::from(recursive_index) {
+    let entry_count = if level == 4 && lower_half_only {
+        LOWER_HALF_PML4_ENTRIES
+    } else {
+        PML4_ENTRY_COUNT
+    };
+    for index in 0..entry_count {
+        // Each root's recursive slot is omitted: recursive page-table views are
+        // a separate source that must not be confused with ordinary leaf maps.
+        if level == 4 && index == usize::from(audit_root_recursive_index) {
             continue;
         }
-        // SAFETY: audit_table_pointer validates the full page-table path and returns
-        // the aligned base of this exact reachable 4 KiB table; index is below 512.
+        // SAFETY: the table-pointer helper validated the complete table frame;
+        // index is below both the selected entry bound and the PML4 entry count.
         let entry = unsafe { ptr::read_volatile(table_pointer.add(index)) };
         // Non-present entries may carry OS-defined software metadata.
-        // Ignore all their other bits instead of treating them as malformed mappings.
+        // Ignore their other bits rather than treating them as malformed mappings.
         if entry & PRESENT == 0 {
             continue;
         }
-        // PML4 entries can never be large-page leaves. At lower levels, the
-        // large-page bit distinguishes a leaf (whose protection-key bits are
-        // valid when the CPU feature is enabled) from a non-leaf table pointer.
         let large_page = level > 1 && entry & LARGE_PAGE != 0;
         if level == 4 && large_page {
             return Err(PagingError::WxAuditFailed);
@@ -615,13 +756,16 @@ fn audit_wx_table<const CAPACITY: usize>(
         }
         audit_wx_table(
             boot_info,
-            recursive_index,
+            active_recursive_index,
             physical_address_bits,
+            audit_root_physical,
+            audit_root_recursive_index,
             child_physical,
             level - 1,
             virtual_start,
             writable,
             executable,
+            lower_half_only,
             visited_path,
             depth + 1,
             table_budget,
@@ -1949,6 +2093,57 @@ impl<'a> KernelPageTableEditor<'a> {
             level,
         )?;
         Some(entry_pointer_from_page(table_alias, 0)?.cast_const())
+    }
+
+    /// Returns a validated read-only pointer to a table owned by the audit root.
+    ///
+    /// Active-root tables are reached only through the recursive alias. Inactive
+    /// roots are accessed through the physical-memory offset only when the root
+    /// is registered and allocated, or a private lower-half table has a matching
+    /// root-and-level ownership record.
+    fn audit_table_pointer_for_root(
+        &mut self,
+        audit_root_physical: u64,
+        table_physical: u64,
+        level: u8,
+        virtual_prefix: u64,
+    ) -> Option<*const u64> {
+        if audit_root_physical == self.root_table_physical {
+            return self.audit_table_pointer(table_physical, level);
+        }
+        if !(1..=4).contains(&level)
+            || !valid_physical_page(table_physical, self.physical_address_bits)
+        {
+            return None;
+        }
+
+        if level == 4 {
+            if table_physical != audit_root_physical
+                || !is_address_space_root_frame(audit_root_physical)
+                || !matches!(
+                    super::memory::is_frame_allocated(audit_root_physical),
+                    Ok(true)
+                )
+            {
+                return None;
+            }
+        } else if virtual_prefix >= 0x0000_8000_0000_0000
+            || TABLE_FRAMES
+                .lock()
+                .published_table_level_for_root(audit_root_physical, table_physical)
+                != Some(level)
+        {
+            // This walker deliberately audits only the inactive root's private
+            // lower half. Shared kernel-half tables are read through the active
+            // recursive mapping after their PML4 entries were compared.
+            return None;
+        }
+
+        let alias = self.offset_alias(table_physical)?;
+        if alias as usize & (size_of::<u64>() - 1) != 0 {
+            return None;
+        }
+        Some(alias.cast::<u64>().cast_const())
     }
 
     fn mark_reachable_table_frames(&self) {
