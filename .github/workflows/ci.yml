@@ -154,10 +154,21 @@ jobs:
           from pathlib import Path
 
           log = Path(sys.argv[1]).read_text()
-          label = "ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: "
-          matches = re.findall(rf"^{re.escape(label)}(0x[0-9a-fA-F]+)$", log, re.MULTILINE)
-          if len(matches) != 1 or int(matches[0], 16) not in (1 << 21, 1 << 30):
-              raise SystemExit("expected exactly one original 2 MiB or 1 GiB direct-map leaf")
+          def parse_unique_hex(label):
+              matches = re.findall(rf"^{re.escape(label)}(0x[0-9a-fA-F]+)$", log, re.MULTILINE)
+              if len(matches) != 1:
+                  raise SystemExit(f"expected exactly one diagnostic for {label!r}")
+              return int(matches[0], 16)
+
+          original_page_size = parse_unique_hex("ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ")
+          executable_physical_page = parse_unique_hex("ONE OS W^X EXECUTABLE PHYSICAL PAGE: ")
+          sibling_physical_page = parse_unique_hex("ONE OS W^X SIBLING DATA FRAME PHYSICAL: ")
+          if original_page_size not in (1 << 21, 1 << 30):
+              raise SystemExit("expected original 2 MiB or 1 GiB direct-map leaf")
+          if executable_physical_page == sibling_physical_page:
+              raise SystemExit("W^X sibling frame aliases the executable physical frame")
+          if (executable_physical_page & ~((1 << 21) - 1)) != (sibling_physical_page & ~((1 << 21) - 1)):
+              raise SystemExit("W^X sibling frame is not in the executable page's 2 MiB physical region")
           markers = [
               "ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS",
               "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS",

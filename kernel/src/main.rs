@@ -289,7 +289,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // so this test does not assume a static data symbol is physically near code.
     #[cfg(feature = "test-wx-runtime-audit")]
     let (
-        wx_executable_physical_page,
+        _wx_executable_physical_page,
         wx_sibling_test_physical_page,
         wx_original_direct_map_page_size,
     ) = match paging::verify_wx_sibling_large_page_precondition(
