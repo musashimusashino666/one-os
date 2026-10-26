@@ -294,7 +294,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"ONE OS W^X AUDIT CONFLICT EVENTS: ",
         paging_stats.wx_audit.conflicting_overlap_events,
     );
-    serial_write(b"ONE OS W^X ALIAS INVENTORY COMPLETE (ACTIVE ROOT ONLY)\n");
+    serial_write(b"ONE OS W^X ALIAS WALK FINISHED (ACTIVE ROOT ONLY)\n");
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT ROOTS DECLARED: ",
+        paging_stats.wx_audit_scope.declared_roots as u64,
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT ROOTS WALKED: ",
+        paging_stats.wx_audit_scope.audited_roots as u64,
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT MISSING SOURCE MASK: ",
+        paging_stats.wx_audit_scope.missing_sources as u64,
+    );
+    if !paging_stats.wx_audit_scope.complete {
+        serial_write(b"ONE OS W^X GLOBAL COVERAGE INCOMPLETE\n");
+    }
     if paging_stats.wx_audit.conflicting_overlap_events > 0 {
         serial_write(b"ONE OS W^X ALIAS OVERLAPS DETECTED (DIAGNOSTIC ONLY)\n");
     }
