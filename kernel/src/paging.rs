@@ -2987,6 +2987,7 @@ impl<'editor, 'boot> KernelLargePageDemotionEditor<'editor, 'boot> {
     ) -> Result<Self, PagingError> {
         let root_table_physical = editor.root_table_physical;
         if root_table_physical != active_root_table_physical()
+            || virtual_base < 0xffff_8000_0000_0000
             || !(2..=3).contains(&source_level)
             || parent_index >= PML4_ENTRY_COUNT
             || editor.reachable_table_physical(source_level) != Some(parent_table_physical)
@@ -4525,7 +4526,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 /// physical-memory-offset mapping. The smoke test insists the selected frame
 /// starts inside a large leaf, demotes 1 GiB -> 2 MiB -> 4 KiB as required, then
 /// verifies the physical translation and effective permissions are preserved.
-pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError> {
+pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<bool, PagingError> {
     let data_frame =
         super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let data_physical = data_frame.physical_address();
@@ -4547,9 +4548,15 @@ pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<(),
             || !initial.writable
             || initial.user_accessible
             || initial.executable
-            || initial.page_size <= PAGE_SIZE
+            || initial.page_size < PAGE_SIZE
         {
             return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // A bootloader may already have split this direct-map area. Do not fail
+        // a valid boot or claim to have tested demotion when no large leaf exists.
+        if initial.page_size == PAGE_SIZE {
+            return Ok(false);
         }
 
         let expected_permissions = (
@@ -4560,10 +4567,14 @@ pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<(),
         let mut current = initial;
         let mut completed_demotions = 0usize;
         while current.page_size > PAGE_SIZE && completed_demotions < 2 {
+            let expected_physical_start = current
+                .physical_address
+                .checked_sub(virtual_address & (current.page_size - 1))
+                .ok_or(PagingError::LargePageDemotionFailed)?;
             let receipt = demote_large_page_for_address(boot_info, virtual_address)?
                 .ok_or(PagingError::LargePageDemotionFailed)?;
             if receipt.virtual_length != current.page_size
-                || receipt.physical_start != (data_physical & !(current.page_size - 1))
+                || receipt.physical_start != expected_physical_start
             {
                 return Err(PagingError::LargePageDemotionFailed);
             }
@@ -4601,7 +4612,7 @@ pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<(),
         if observed != DEMOTION_SMOKE_SENTINEL {
             return Err(PagingError::LargePageDemotionFailed);
         }
-        Ok(())
+        Ok(true)
     })();
 
     let release_result = release_data_frame(data_frame);
