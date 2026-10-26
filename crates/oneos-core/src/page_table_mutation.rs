@@ -100,6 +100,34 @@ pub trait PageTableEditor {
     /// kernel, shared-address-space, and large-page aliases.
     fn executable_mapping_allowed(&self, physical_address: u64) -> bool;
 
+    /// Reserves a writable/executable physical alias before any page-table entry is
+    /// published. Called only if at least one of those permissions is requested.
+    /// Errors must leave the page-table tree unchanged.
+    fn reserve_wx_alias(
+        &mut self,
+        root_table_physical: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError>;
+
+    /// Commits the reserved alias after the page-table hierarchy is published.
+    /// This callback is infallible by contract; inconsistent state must fail-stop.
+    fn commit_wx_alias(&mut self, root_table_physical: u64, virtual_address: u64);
+
+    /// Marks the registered alias retiring before clearing its PTE and verifies identity.
+    fn begin_wx_alias_removal(
+        &mut self,
+        root_table_physical: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError>;
+
+    /// Completes retirement after the PTE is cleared and stale translations cannot be used.
+    /// This callback is infallible by contract; inconsistent state must fail-stop.
+    fn complete_wx_alias_removal(&mut self, root_table_physical: u64, virtual_address: u64);
+
     /// Releases a page-table frame allocated by allocate_table.
     fn free_table(&mut self, physical_address: u64);
 }
@@ -110,7 +138,9 @@ pub enum PageTableMutationError {
     NonCanonicalVirtualAddress,
     UnalignedVirtualAddress,
     InvalidRootTable,
-    InvalidPhysicalAddressWidth { bits: u8 },
+    InvalidPhysicalAddressWidth {
+        bits: u8,
+    },
     InvalidPhysicalAddress,
     MappedFrameIsReserved,
     FrameNotAllocated,
@@ -118,15 +148,29 @@ pub enum PageTableMutationError {
     ExecutableAliasConflict,
     UserAddressOutsideUserHalf,
     UserMappingRequiresZeroedFrame,
-    TableUnavailable { level: u8 },
-    NotMapped { level: u8 },
-    MalformedEntry { level: u8 },
-    LargePageConflict { level: u8 },
-    RecursiveTableReference { level: u8 },
+    TableUnavailable {
+        level: u8,
+    },
+    NotMapped {
+        level: u8,
+    },
+    MalformedEntry {
+        level: u8,
+    },
+    LargePageConflict {
+        level: u8,
+    },
+    RecursiveTableReference {
+        level: u8,
+    },
     InvalidPageTableFrame,
     AllocationFailed,
     AlreadyMapped,
-    AncestorPermissionConflict { level: u8 },
+    AncestorPermissionConflict {
+        level: u8,
+    },
+    /// The physical-frame W^X alias registry denied or could not validate a mutation.
+    WxAliasRegistryFailure,
 }
 
 impl PageTableMutationError {
@@ -300,6 +344,19 @@ pub(crate) fn map_4k<E: PageTableEditor>(
         allocated[allocation_index] = physical;
     }
 
+    let tracks_wx_alias = permissions.writable || permissions.executable;
+    if tracks_wx_alias {
+        if let Err(error) = editor.reserve_wx_alias(
+            root_table_physical,
+            virtual_address,
+            physical_address,
+            permissions,
+        ) {
+            release_allocated(&allocated, allocation_count, editor);
+            return Err(error);
+        }
+    }
+
     let leaf_entry = physical_address
         | PRESENT
         | if permissions.writable { WRITABLE } else { 0 }
@@ -347,6 +404,9 @@ pub(crate) fn map_4k<E: PageTableEditor>(
         );
     } else {
         editor.write_entry(tables[3], indices[3], 1, leaf_entry);
+    }
+    if tracks_wx_alias {
+        editor.commit_wx_alias(root_table_physical, virtual_address);
     }
     Ok(())
 }
@@ -466,10 +526,27 @@ pub fn unmap_4k<E: PageTableEditor>(
     effective_user &= leaf & USER_ACCESSIBLE != 0;
     effective_executable &= leaf & NO_EXECUTE == 0;
 
+    let permissions =
+        PagePermissions::new(effective_writable, effective_user, effective_executable);
+    let tracks_wx_alias = permissions.writable || permissions.executable;
+    if tracks_wx_alias {
+        editor.begin_wx_alias_removal(
+            root_table_physical,
+            virtual_address,
+            leaf_physical_address,
+            permissions,
+        )?;
+    }
+
     editor.write_entry(table_physical, indices[3], 1, 0);
+    if tracks_wx_alias {
+        // The editor invalidates the active translation or proves this root is inactive
+        // under the current single-CPU, PCID-disabled address-space switch contract.
+        editor.complete_wx_alias_removal(root_table_physical, virtual_address);
+    }
     Ok(UnmappedPage {
         physical_address: leaf_physical_address,
-        permissions: PagePermissions::new(effective_writable, effective_user, effective_executable),
+        permissions,
     })
 }
 
@@ -540,7 +617,10 @@ mod tests {
         PageTableMutationError, UnmappedPage, LARGE_PAGE, NO_EXECUTE, PHYSICAL_ADDRESS_FIELD_MASK,
         PRESENT, PROTECTION_KEY_FIELD_MASK, USER_ACCESSIBLE, WRITABLE,
     };
-    use crate::{translate_4level, FrameToken, PageTableError, PageTableFrameRegistry, PAGE_SIZE};
+    use crate::{
+        translate_4level, FrameToken, FrameWxPermissions, FrameWxRegistry, PageTableError,
+        PageTableFrameRegistry, PAGE_SIZE,
+    };
     use std::boxed::Box;
     use std::collections::BTreeMap;
     use std::vec;
@@ -553,6 +633,7 @@ mod tests {
         physical_address_bits: u8,
         allow_executable_mappings: bool,
         unallocated_frames: Vec<u64>,
+        wx_registry: FrameWxRegistry<64>,
     }
 
     impl TestTables {
@@ -566,6 +647,7 @@ mod tests {
                 physical_address_bits: 48,
                 allow_executable_mappings: true,
                 unallocated_frames: Vec::new(),
+                wx_registry: FrameWxRegistry::new(48).expect("test W^X registry"),
             }
         }
 
@@ -593,6 +675,55 @@ mod tests {
 
         fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
             self.allow_executable_mappings
+        }
+
+        fn reserve_wx_alias(
+            &mut self,
+            root: u64,
+            virtual_address: u64,
+            physical_address: u64,
+            permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            self.wx_registry
+                .reserve_alias_range(
+                    root,
+                    virtual_address,
+                    physical_address,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(permissions.writable, permissions.executable),
+                )
+                .map(|_| ())
+                .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+        }
+
+        fn commit_wx_alias(&mut self, root: u64, virtual_address: u64) {
+            self.wx_registry
+                .commit_alias_at(root, virtual_address)
+                .expect("mapped alias reservation must commit");
+        }
+
+        fn begin_wx_alias_removal(
+            &mut self,
+            root: u64,
+            virtual_address: u64,
+            physical_address: u64,
+            permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            self.wx_registry
+                .begin_removal_for_alias(
+                    root,
+                    virtual_address,
+                    physical_address,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(permissions.writable, permissions.executable),
+                )
+                .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+        }
+
+        fn complete_wx_alias_removal(&mut self, root: u64, virtual_address: u64) {
+            self.wx_registry
+                .complete_removal_at(root, virtual_address)
+                .expect("retiring alias must complete after unmap");
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
@@ -689,6 +820,32 @@ mod tests {
         fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
             true
         }
+
+        // This backend focuses on page-table-frame ownership. Alias lifecycle
+        // behavior is covered by TestTables and FrameWxRegistry tests.
+        fn reserve_wx_alias(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
+
+        fn commit_wx_alias(&mut self, _root: u64, _virtual_address: u64) {}
+
+        fn begin_wx_alias_removal(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
+
+        fn complete_wx_alias_removal(&mut self, _root: u64, _virtual_address: u64) {}
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
             if let Some(page) = self.pages.get_mut(&table) {
@@ -1568,6 +1725,15 @@ mod tests {
         let permissions = PagePermissions::new(true, false, false);
         map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
 
+        // This test deliberately rewrites the synthetic PTE below. Keep the test
+        // registry aligned with that synthetic state so the unmap exercises the
+        // physical-zero translation rather than rejecting an untracked frame change.
+        let removal = tables
+            .wx_registry
+            .begin_removal(root, virtual_address)
+            .unwrap();
+        tables.wx_registry.complete_removal(removal).unwrap();
+
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
@@ -1579,6 +1745,17 @@ mod tests {
         let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let leaf = tables.read_any(l2, indices[3]).unwrap();
         tables.pages.get_mut(&l2).unwrap()[indices[3]] = leaf & !PHYSICAL_ADDRESS_FIELD_MASK;
+        let reservation = tables
+            .wx_registry
+            .reserve_alias_range(
+                root,
+                virtual_address,
+                0,
+                PAGE_SIZE,
+                FrameWxPermissions::new(true, false),
+            )
+            .unwrap();
+        tables.wx_registry.commit_alias(reservation).unwrap();
 
         let present_zero_mapping = tables.read_any(l2, indices[3]).unwrap();
         assert_ne!(present_zero_mapping & PRESENT, 0);
@@ -1631,5 +1808,48 @@ mod tests {
             unmap(&mut tables, root, 0xffff_8000_1234_5000),
             Err(PageTableMutationError::NotMapped { level: 4 })
         );
+    }
+    #[test]
+    fn mapping_lifecycle_hooks_reject_writable_executable_alias_before_publication() {
+        let root = 0x1000;
+        let physical = 0x80_000;
+        let mut tables = TestTables::new(root);
+
+        map(
+            &mut tables,
+            root,
+            0x4000,
+            physical,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            map(
+                &mut tables,
+                root,
+                0x8000,
+                physical,
+                PagePermissions::new(false, false, true),
+            ),
+            Err(PageTableMutationError::WxAliasRegistryFailure)
+        );
+        assert_eq!(
+            translate_4level(0x8000, root, |table, index| tables.read_any(table, index)),
+            Err(PageTableError::NotPresent { level: 1 })
+        );
+
+        // A denied executable reservation must not strand a pending entry.
+        map(
+            &mut tables,
+            root,
+            0x8000,
+            physical,
+            PagePermissions::new(true, false, false),
+        )
+        .unwrap();
+        unmap_4k(root, 0x4000, &mut tables).unwrap();
+        unmap_4k(root, 0x8000, &mut tables).unwrap();
+        assert_eq!(tables.wx_registry.occupied_slots(), 0);
     }
 }

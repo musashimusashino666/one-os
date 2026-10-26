@@ -984,6 +984,32 @@ mod tests {
             false
         }
 
+        // This host model tests user-page ownership separately. The end-to-end
+        // mutation lifecycle is exercised by the dedicated PageTableEditor test backend.
+        fn reserve_wx_alias(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
+
+        fn commit_wx_alias(&mut self, _root: u64, _virtual_address: u64) {}
+
+        fn begin_wx_alias_removal(
+            &mut self,
+            _root: u64,
+            _virtual_address: u64,
+            _physical_address: u64,
+            _permissions: PagePermissions,
+        ) -> Result<(), PageTableMutationError> {
+            Ok(())
+        }
+
+        fn complete_wx_alias_removal(&mut self, _root: u64, _virtual_address: u64) {}
+
         fn free_table(&mut self, physical_address: u64) {
             if let Some(table) = self.tables.iter_mut().find(|table| {
                 table.physical_address == physical_address

@@ -22,12 +22,12 @@ use oneos_core::{
     unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
-    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxAuditTableBudget,
-    FrameWxPermissions, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
-    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
+    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
+    FrameWxPermissions, FrameWxRegistry, PagePermissions, PageTableEditor, PageTableError,
+    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
+    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
+    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
+    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
     MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -45,6 +45,8 @@ const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const TABLE_FRAME_CAPACITY: usize = 512;
+// Keep lazy initialization bounded on the bootstrap kernel stack; exhaustion fails closed.
+const WX_ALIAS_REGISTRY_CAPACITY: usize = 64;
 const ADDRESS_SPACE_ROOT_CAPACITY: usize = 16;
 const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
@@ -1193,6 +1195,141 @@ impl TableFrameRegistry {
 
 static TABLE_FRAMES: TableFrameRegistry = TableFrameRegistry::new();
 
+struct KernelWxAliasRegistry {
+    held: AtomicBool,
+    registry: core::cell::UnsafeCell<Option<FrameWxRegistry<WX_ALIAS_REGISTRY_CAPACITY>>>,
+}
+
+// SAFETY: every access to the optional registry is protected by this non-blocking
+// guard. Page-table mutations remain single-CPU with maskable interrupts disabled;
+// this lock is not an SMP synchronization protocol.
+unsafe impl Sync for KernelWxAliasRegistry {}
+
+struct KernelWxAliasRegistryGuard<'a> {
+    owner: &'a KernelWxAliasRegistry,
+}
+
+impl core::ops::Deref for KernelWxAliasRegistryGuard<'_> {
+    type Target = Option<FrameWxRegistry<WX_ALIAS_REGISTRY_CAPACITY>>;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the guard owns the registry access token.
+        unsafe { &*self.owner.registry.get() }
+    }
+}
+
+impl core::ops::DerefMut for KernelWxAliasRegistryGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the guard owns the exclusive registry access token.
+        unsafe { &mut *self.owner.registry.get() }
+    }
+}
+
+impl Drop for KernelWxAliasRegistryGuard<'_> {
+    fn drop(&mut self) {
+        self.owner.held.store(false, Ordering::Release);
+    }
+}
+
+impl KernelWxAliasRegistry {
+    const fn new() -> Self {
+        Self {
+            held: AtomicBool::new(false),
+            registry: core::cell::UnsafeCell::new(None),
+        }
+    }
+
+    fn lock(&self) -> KernelWxAliasRegistryGuard<'_> {
+        if self
+            .held
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            panic!("concurrent kernel W^X alias registry access");
+        }
+        KernelWxAliasRegistryGuard { owner: self }
+    }
+}
+
+static KERNEL_WX_ALIASES: KernelWxAliasRegistry = KernelWxAliasRegistry::new();
+
+fn with_kernel_wx_registry<T>(
+    physical_address_bits: u8,
+    operation: impl FnOnce(&mut FrameWxRegistry<WX_ALIAS_REGISTRY_CAPACITY>) -> Result<T, FrameWxError>,
+) -> Result<T, FrameWxError> {
+    let mut guard = KERNEL_WX_ALIASES.lock();
+    if guard.is_none() {
+        *guard = Some(FrameWxRegistry::new(physical_address_bits)?);
+    }
+    let registry = guard
+        .as_mut()
+        .expect("W^X registry initialization must produce a value");
+    if registry.physical_address_bits() != physical_address_bits {
+        return Err(FrameWxError::InvalidPhysicalAddressWidth);
+    }
+    operation(registry)
+}
+
+fn reserve_kernel_wx_alias(
+    root: u64,
+    virtual_address: u64,
+    physical_address: u64,
+    permissions: PagePermissions,
+    physical_address_bits: u8,
+) -> Result<(), PageTableMutationError> {
+    with_kernel_wx_registry(physical_address_bits, |registry| {
+        registry
+            .reserve_alias_range(
+                root,
+                virtual_address,
+                physical_address,
+                PAGE_SIZE,
+                FrameWxPermissions::new(permissions.writable, permissions.executable),
+            )
+            .map(|_| ())
+    })
+    .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+}
+
+fn commit_kernel_wx_alias(root: u64, virtual_address: u64, physical_address_bits: u8) {
+    if with_kernel_wx_registry(physical_address_bits, |registry| {
+        registry.commit_alias_at(root, virtual_address)
+    })
+    .is_err()
+    {
+        panic!("published mapping has no matching W^X reservation");
+    }
+}
+
+fn begin_kernel_wx_alias_removal(
+    root: u64,
+    virtual_address: u64,
+    physical_address: u64,
+    permissions: PagePermissions,
+    physical_address_bits: u8,
+) -> Result<(), PageTableMutationError> {
+    with_kernel_wx_registry(physical_address_bits, |registry| {
+        registry.begin_removal_for_alias(
+            root,
+            virtual_address,
+            physical_address,
+            PAGE_SIZE,
+            FrameWxPermissions::new(permissions.writable, permissions.executable),
+        )
+    })
+    .map_err(|_| PageTableMutationError::WxAliasRegistryFailure)
+}
+
+fn complete_kernel_wx_alias_removal(root: u64, virtual_address: u64, physical_address_bits: u8) {
+    if with_kernel_wx_registry(physical_address_bits, |registry| {
+        registry.complete_removal_at(root, virtual_address)
+    })
+    .is_err()
+    {
+        panic!("detached mapping has no matching retiring W^X alias");
+    }
+}
+
 // Address-space roots are page tables too, but their ownership is held by
 // AddressSpaceRoot/ActiveAddressSpaceRoot rather than TABLE_FRAMES. Track every
 // live kernel-created root frame so leaf mapping and user-frame zeroing reject
@@ -1755,6 +1892,60 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         false
     }
 
+    fn reserve_wx_alias(
+        &mut self,
+        root: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError> {
+        if root != self.root_table_physical || root != active_root_table_physical() {
+            return Err(PageTableMutationError::WxAliasRegistryFailure);
+        }
+        reserve_kernel_wx_alias(
+            root,
+            virtual_address,
+            physical_address,
+            permissions,
+            self.physical_address_bits,
+        )
+    }
+
+    fn commit_wx_alias(&mut self, root: u64, virtual_address: u64) {
+        if root != self.root_table_physical || root != active_root_table_physical() {
+            panic!("active W^X alias committed against an unexpected root");
+        }
+        commit_kernel_wx_alias(root, virtual_address, self.physical_address_bits);
+    }
+
+    fn begin_wx_alias_removal(
+        &mut self,
+        root: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError> {
+        if root != self.root_table_physical || root != active_root_table_physical() {
+            return Err(PageTableMutationError::WxAliasRegistryFailure);
+        }
+        begin_kernel_wx_alias_removal(
+            root,
+            virtual_address,
+            physical_address,
+            permissions,
+            self.physical_address_bits,
+        )
+    }
+
+    fn complete_wx_alias_removal(&mut self, root: u64, virtual_address: u64) {
+        if root != self.root_table_physical || root != active_root_table_physical() {
+            panic!("active W^X alias removal used against an unexpected root");
+        }
+        // The PTE has already been cleared; invalidate before releasing the alias.
+        invalidate_local_tlb(virtual_address);
+        complete_kernel_wx_alias_removal(root, virtual_address, self.physical_address_bits);
+    }
+
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
         let (pointer, _reachable) = self.entry_pointer(table_physical, index, level)?;
         // SAFETY: entry_pointer validated the alias and alignment. Reachable
@@ -2146,6 +2337,72 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
     fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
         // No alias-wide executable publication is implemented yet.
         false
+    }
+
+    fn reserve_wx_alias(
+        &mut self,
+        root: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError> {
+        if root != self.target_root_physical
+            || active_root_table_physical() != self.active_root_physical
+            || root == self.active_root_physical
+        {
+            return Err(PageTableMutationError::WxAliasRegistryFailure);
+        }
+        reserve_kernel_wx_alias(
+            root,
+            virtual_address,
+            physical_address,
+            permissions,
+            self.physical_address_bits,
+        )
+    }
+
+    fn commit_wx_alias(&mut self, root: u64, virtual_address: u64) {
+        if root != self.target_root_physical
+            || active_root_table_physical() != self.active_root_physical
+            || root == self.active_root_physical
+        {
+            panic!("inactive W^X alias committed against an unexpected root");
+        }
+        commit_kernel_wx_alias(root, virtual_address, self.physical_address_bits);
+    }
+
+    fn begin_wx_alias_removal(
+        &mut self,
+        root: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError> {
+        if root != self.target_root_physical
+            || active_root_table_physical() != self.active_root_physical
+            || root == self.active_root_physical
+        {
+            return Err(PageTableMutationError::WxAliasRegistryFailure);
+        }
+        begin_kernel_wx_alias_removal(
+            root,
+            virtual_address,
+            physical_address,
+            permissions,
+            self.physical_address_bits,
+        )
+    }
+
+    fn complete_wx_alias_removal(&mut self, root: u64, virtual_address: u64) {
+        if root != self.target_root_physical
+            || active_root_table_physical() != self.active_root_physical
+            || root == self.active_root_physical
+        {
+            panic!("inactive W^X alias removal used against an unexpected root");
+        }
+        // The target is inactive. PCID is disabled and address-space switching
+        // flushes non-global translations before the inactive root can be reused.
+        complete_kernel_wx_alias_removal(root, virtual_address, self.physical_address_bits);
     }
 
     fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
