@@ -165,6 +165,25 @@ impl<T: FrameToken, const CAPACITY: usize> PageTableFrameRegistry<T, CAPACITY> {
         })
     }
 
+    /// Returns whether a frame is published for shared/kernel-half use rather than
+    /// assigned to a private address-space root. This is intentionally stricter than
+    /// `contains() && !contains_unpublished()`: a detached or private-root-owned
+    /// table must not be accepted by a shared-root page-table walk.
+    pub fn contains_published_unowned(&self, physical_address: u64) -> bool {
+        self.slots.iter().any(|slot| {
+            matches!(
+                slot,
+                FrameSlot::Owned {
+                    token,
+                    published: true,
+                    owner_root_physical: None,
+                    owner_table_level: None,
+                    detached: false,
+                } if token.frame_address() == physical_address
+            )
+        })
+    }
+
     /// Marks a frame as published when the registry cannot establish a private
     /// address-space owner. Such a frame remains non-releasable through
     /// `take_unpublished`; it cannot be reclaimed by the root-scoped API.
@@ -783,6 +802,7 @@ mod tests {
         registry.mark_published(0x8000).unwrap();
         assert!(registry.contains(0x8000));
         assert!(!registry.contains_unpublished(0x8000));
+        assert!(registry.contains_published_unowned(0x8000));
         assert_eq!(
             registry.take_unpublished(0x8000),
             Err(FrameRegistryError::PublishedFrame)
@@ -853,6 +873,7 @@ mod tests {
         // SAFETY: this test models publication under one exclusive private root.
         unsafe { registry.mark_published_for_root(0x1000, 0x8000, 2) }.unwrap();
         assert!(registry.contains_published_for_root(0x1000, 0x8000));
+        assert!(!registry.contains_published_unowned(0x8000));
         assert_eq!(registry.published_count_for_root(0x1000), Ok(1));
         assert!(!registry.contains_published_for_root(0x2000, 0x8000));
         assert!(!registry.contains_published_for_root(0, 0x8000));
