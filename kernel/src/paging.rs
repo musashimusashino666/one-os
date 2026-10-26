@@ -52,7 +52,7 @@ const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
 // Refuse malformed BootInfo ranges that would make bootstrap page auditing unbounded.
 const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 // Bounds the read-only W^X walk. Exhaustion is an incomplete audit, never a clean result.
-const MAX_WX_AUDIT_RANGES: usize = 512;
+const MAX_WX_AUDIT_RANGES: usize = 128;
 const MAX_WX_AUDIT_TABLES: usize = 16_384;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
