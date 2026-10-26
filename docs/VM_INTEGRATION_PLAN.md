@@ -57,6 +57,14 @@ large-page demotion, or establish system-wide W^X. Ordinary `write_entry` and th
 existing local `INVLPG` helper must not be treated as a substitute for a reviewed
 break-before-make protocol.
 
+The retry decision is now factored into the host-testable
+`compare_exchange_entry_with_ad_retry` helper. Regression tests cover monotonic
+Accessed/Dirty changes followed by success, unexpected non-A/D changes, A/D-bit
+clearing or no-progress failures, and retry-budget exhaustion. These tests validate
+the decision logic with controlled observations; they do not simulate hardware
+page walkers or establish a real-machine quiescence guarantee. The concrete kernel
+smoke check uses an eight-attempt bound and fails closed if it cannot complete.
+
 ## Large-page live-kernel integration gate (not implemented)
 
 The host-testable large-page transaction proposal in PR #43 is not wired into the

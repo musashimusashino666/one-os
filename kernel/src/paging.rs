@@ -14,8 +14,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    bootstrap_mapping_page_count, elf64_program_header_table_range, initialize_user_frame,
-    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry,
+    elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
+    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
     recursive_table_page_virtual_address, reserve_bootstrap_backing_frame, translate_4level,
@@ -27,8 +28,8 @@ use oneos_core::{
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
-    MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    ZeroedFrame, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
+    FRAME_WX_AUDIT_MAX_TABLES, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -41,9 +42,6 @@ const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
-const ACCESSED: u64 = 1 << 5;
-const DIRTY: u64 = 1 << 6;
-const ACCESSED_DIRTY_MASK: u64 = ACCESSED | DIRTY;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
@@ -1824,36 +1822,28 @@ impl<'a> KernelPageTableEditor<'a> {
 
     /// Smoke-checks the atomic entry primitive without changing the entry.
     ///
-    /// Retries only when the observed difference is a monotonic hardware A/D
-    /// update. This verifies the concrete editor's CAS path, but deliberately
-    /// does not claim to prove large-page break-before-make or TLB quiescence.
+    /// The retry policy is shared with host-testable logic. This verifies the
+    /// concrete editor's CAS path, but does not prove large-page break-before-make
+    /// ordering or TLB/page-walk quiescence.
     fn verify_atomic_entry_compare_exchange(
         &mut self,
         table_physical: u64,
         index: usize,
         level: u8,
     ) -> bool {
-        let Some(mut expected) = self.read_entry(table_physical, index, level) else {
+        let Some(initial) = self.read_entry(table_physical, index, level) else {
             return false;
         };
-        for _ in 0..8 {
-            match self.compare_exchange_entry(table_physical, index, level, expected, expected) {
-                Some(Ok(())) => return true,
-                Some(Err(observed)) => {
-                    let expected_ad = expected & ACCESSED_DIRTY_MASK;
-                    let observed_ad = observed & ACCESSED_DIRTY_MASK;
-                    if observed & !ACCESSED_DIRTY_MASK != expected & !ACCESSED_DIRTY_MASK
-                        || observed_ad & expected_ad != expected_ad
-                        || observed_ad == expected_ad
-                    {
-                        return false;
-                    }
-                    expected = observed;
-                }
-                None => return false,
-            }
-        }
-        false
+        compare_exchange_entry_with_ad_retry(
+            initial,
+            ATOMIC_ENTRY_CAS_MAX_ATTEMPTS,
+            |expected| expected,
+            |expected, replacement| {
+                self.compare_exchange_entry(table_physical, index, level, expected, replacement)
+                    .unwrap_or(Err(expected))
+            },
+        )
+        .is_ok()
     }
 
     fn entry_pointer(
