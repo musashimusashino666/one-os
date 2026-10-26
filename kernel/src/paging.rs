@@ -23,8 +23,10 @@ use oneos_core::{
     unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
-    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
-    FrameWxPermissions, FrameWxRegistry, PagePermissions, PageTableEditor, PageTableError,
+    FrameRegistryError, FrameWxAudit, FrameWxAuditScope, FrameWxAuditScopeError,
+    FrameWxAuditScopeSummary, FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget,
+    FrameWxError, FrameWxPermissions, FrameWxRegistry, PagePermissions, PageTableEditor,
+    PageTableError,
     PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
@@ -58,14 +60,16 @@ const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 // Bounds the read-only W^X walk. Exhaustion is an incomplete audit, never a clean result.
 const MAX_WX_AUDIT_RANGES: usize = 128;
 const MAX_WX_AUDIT_TABLES: usize = FRAME_WX_AUDIT_MAX_TABLES;
+const MAX_WX_AUDIT_ROOTS: usize = ADDRESS_SPACE_ROOT_CAPACITY;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
     pub root_table_physical: u64,
     pub validated_mappings: usize,
-    /// Read-only audit of writable/executable aliases in the source boot root.
-    /// This excludes the recursive page-table view and does not cover other roots.
+    /// Read-only inventory of writable/executable aliases observed in the source boot root.
     pub wx_audit: FrameWxAuditSummary,
+    /// Explicit completeness status; the current bootstrap audit is intentionally partial.
+    pub wx_audit_scope: FrameWxAuditScopeSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -407,7 +411,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     // transactional integration tracked by Issue #26. The recursive self-map is
     // intentionally excluded because it is a paging-structure view, not a data map.
     let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
-    let wx_audit = audit_active_root_wx_aliases(
+    let (wx_audit, wx_audit_scope) = audit_active_root_wx_aliases(
         boot_info,
         root_table_physical,
         recursive_index,
@@ -421,6 +425,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
             .saturating_add(validated_boot_info_pages)
             .saturating_add(validated_memory_region_pages),
         wx_audit,
+        wx_audit_scope,
     })
 }
 
@@ -429,11 +434,16 @@ fn audit_active_root_wx_aliases(
     root_table_physical: u64,
     recursive_index: u16,
     physical_address_bits: u8,
-) -> Result<FrameWxAuditSummary, PagingError> {
+) -> Result<(FrameWxAuditSummary, FrameWxAuditScopeSummary), PagingError> {
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
     let mut audit = FrameWxAudit::<MAX_WX_AUDIT_RANGES>::new(physical_address_bits)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    let mut scope = FrameWxAuditScope::<MAX_WX_AUDIT_ROOTS>::new(physical_address_bits)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    scope
+        .declare_root(root_table_physical)
         .map_err(|_| PagingError::WxAuditFailed)?;
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
@@ -451,7 +461,14 @@ fn audit_active_root_wx_aliases(
         &mut table_budget,
         &mut audit,
     )?;
-    Ok(audit.summary())
+    scope
+        .mark_root_audited(root_table_physical)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    // This walker handles 2 MiB/1 GiB leaf extents. It does not seal the root
+    // inventory or claim coverage of recursive views, direct-map aliases, or
+    // shared mappings across all roots.
+    scope.account_source(FrameWxAuditSource::LargePageLeaves);
+    Ok((audit.summary(), scope.summary()))
 }
 
 /// Walks one reachable paging-structure page without changing it.
