@@ -110,6 +110,7 @@ pub enum PagingError {
     InvalidStackMapping,
     InvalidBootInfoMapping,
     WxAuditFailed,
+    WxSiblingFrameUnavailable,
     Translation(PageTableError),
     InactiveAddressSpaceInvalid,
     InactivePageTableUnavailable,
@@ -152,6 +153,9 @@ impl PagingError {
             }
             Self::WxAuditFailed => {
                 b"Could not complete the bounded read-only W^X mapping inventory\n"
+            }
+            Self::WxSiblingFrameUnavailable => {
+                b"No unused Usable sibling frame could be reserved in the executable page's 2 MiB region\n"
             }
             Self::InactiveAddressSpaceInvalid => {
                 b"Inactive address-space root failed validation\n"
@@ -4745,19 +4749,19 @@ pub fn kernel_executable_direct_alias_for_test(
     Ok(direct_alias)
 }
 
-/// Verifies that the dedicated W^X test begins with a real large-page direct-map
-/// alias spanning both the executable kernel page and a writable data-page sibling.
+/// Selects and reserves a writable sibling data frame in the executable page's
+/// physical 2 MiB region before the allocator's first allocation attempt.
 ///
-/// Call this before `enforce_kernel_executable_alias_wx`. Returning the original
-/// large-leaf size proves that the later writable-sibling assertion exercises the
-/// demotion path, rather than passing on a direct map that was already split into 4 KiB
-/// leaves.
+/// The writable PT_LOAD may have been copied to unrelated physical memory by the
+/// bootloader. Do not assume a static .data symbol is physically near kernel code.
+/// Instead, select an unused Usable frame in the same 2 MiB region, verify that its
+/// physical-offset alias is covered by the same pre-existing writable large leaf,
+/// then reserve it so later allocations cannot claim it.
 #[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_wx_sibling_large_page_precondition(
     boot_info: &BootInfo,
-    writable_virtual_address: u64,
     executable_virtual_address: u64,
-) -> Result<u64, PagingError> {
+) -> Result<(u64, u64, u64), PagingError> {
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
@@ -4766,14 +4770,12 @@ pub fn verify_wx_sibling_large_page_precondition(
     let regions: &[MemoryRegion] = &boot_info.memory_regions;
     let root_table_physical = active_root_table_physical();
     if root_table_physical == 0
-        || !is_canonical_4level(writable_virtual_address)
         || !is_canonical_4level(executable_virtual_address)
         || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
     {
         return Err(PagingError::InvalidRecursiveMapping);
     }
 
-    let writable_virtual_page = writable_virtual_address & !(PAGE_SIZE - 1);
     let executable_virtual_page = executable_virtual_address & !(PAGE_SIZE - 1);
     let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
@@ -4793,73 +4795,20 @@ pub fn verify_wx_sibling_large_page_precondition(
     {
         return Err(PagingError::InvalidKernelCodeMapping);
     }
+
     let executable_physical_page = executable.physical_address & !(PAGE_SIZE - 1);
     if !is_kernel_backed_page(regions, executable_physical_page) {
         return Err(PagingError::InvalidKernelLoadMapping);
-    }
-
-    let mut writable_editor = KernelPageTableEditor::new_with_recursive_index(
-        boot_info,
-        writable_virtual_page,
-        recursive_index,
-    )?;
-    let writable = translate_with_editor(
-        &mut writable_editor,
-        root_table_physical,
-        writable_virtual_page,
-    )
-    .map_err(PagingError::Translation)?;
-    if writable.page_size != PAGE_SIZE
-        || !writable.writable
-        || writable.user_accessible
-        || writable.executable
-    {
-        return Err(PagingError::InvalidKernelLoadMapping);
-    }
-    let writable_physical_page = writable.physical_address & !(PAGE_SIZE - 1);
-    if writable_physical_page == executable_physical_page
-        || !is_kernel_backed_page(regions, writable_physical_page)
-        || writable_physical_page & !((1u64 << 21) - 1)
-            != executable_physical_page & !((1u64 << 21) - 1)
-    {
-        return Err(PagingError::WxAuditFailed);
     }
 
     let physical_memory_offset = match boot_info.physical_memory_offset {
         Optional::Some(offset) => offset,
         Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
     };
-    let writable_direct_alias = physical_memory_offset
-        .checked_add(writable_physical_page)
-        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
-        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
     let executable_direct_alias = physical_memory_offset
         .checked_add(executable_physical_page)
         .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
         .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-
-    let mut writable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
-        boot_info,
-        writable_direct_alias,
-        recursive_index,
-    )?;
-    let writable_alias = translate_with_editor(
-        &mut writable_alias_editor,
-        root_table_physical,
-        writable_direct_alias,
-    )
-    .map_err(PagingError::Translation)?;
-    if writable_alias.physical_address != writable_physical_page
-        || !writable_alias.writable
-        || writable_alias.user_accessible
-        || writable_alias.executable
-        || (writable_alias.page_size != (1u64 << 21) && writable_alias.page_size != (1u64 << 30))
-    {
-        return Err(PagingError::LargePageDemotionFailed);
-    }
-
-    // The executable page must be in this same pre-existing large leaf. It is
-    // deliberately still writable/NX through the direct map before transition.
     let mut executable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
         executable_direct_alias,
@@ -4872,28 +4821,123 @@ pub fn verify_wx_sibling_large_page_precondition(
     )
     .map_err(PagingError::Translation)?;
     if executable_alias.physical_address != executable_physical_page
-        || executable_alias.page_size != writable_alias.page_size
         || !executable_alias.writable
         || executable_alias.user_accessible
         || executable_alias.executable
+        || (executable_alias.page_size != (1u64 << 21)
+            && executable_alias.page_size != (1u64 << 30))
     {
         return Err(PagingError::LargePageDemotionFailed);
     }
 
-    Ok(writable_alias.page_size)
+    // The W^X transition demotes the 2 MiB subregion containing the executable
+    // frame. Pick a separate free frame in that exact subregion, even when the
+    // covering direct-map leaf is initially 1 GiB.
+    let sibling_region_start = executable_physical_page & !((1u64 << 21) - 1);
+    let sibling_region_end = sibling_region_start
+        .checked_add(1u64 << 21)
+        .ok_or(PagingError::WxSiblingFrameUnavailable)?;
+    super::interrupts::write_hex(
+        b"ONE OS W^X EXECUTABLE PHYSICAL PAGE: ",
+        executable_physical_page,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X SIBLING PHYSICAL REGION START: ",
+        sibling_region_start,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X SIBLING PHYSICAL REGION END: ",
+        sibling_region_end,
+    );
+
+    let mut selected_sibling = None;
+    for region in regions {
+        if !matches!(region.kind, MemoryRegionKind::Usable) {
+            continue;
+        }
+        let start = region.start.max(sibling_region_start).max(PAGE_SIZE);
+        let end = region.end.min(sibling_region_end);
+        let Some(aligned_start) = start
+            .checked_add(PAGE_SIZE - 1)
+            .map(|address| address & !(PAGE_SIZE - 1))
+        else {
+            continue;
+        };
+        let aligned_end = end & !(PAGE_SIZE - 1);
+        let mut candidate_physical_page = aligned_start;
+        while candidate_physical_page < aligned_end {
+            if !super::memory::is_frame_allocated(candidate_physical_page)
+                .map_err(|_| PagingError::WxSiblingFrameUnavailable)?
+            {
+                let candidate_direct_alias = physical_memory_offset
+                    .checked_add(candidate_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                let mut candidate_editor = KernelPageTableEditor::new_with_recursive_index(
+                    boot_info,
+                    candidate_direct_alias,
+                    recursive_index,
+                )?;
+                let candidate_alias = translate_with_editor(
+                    &mut candidate_editor,
+                    root_table_physical,
+                    candidate_direct_alias,
+                )
+                .map_err(PagingError::Translation)?;
+                if candidate_alias.physical_address == candidate_physical_page
+                    && candidate_alias.writable
+                    && !candidate_alias.user_accessible
+                    && !candidate_alias.executable
+                    && candidate_alias.page_size == executable_alias.page_size
+                    && candidate_direct_alias & !(candidate_alias.page_size - 1)
+                        == executable_direct_alias & !(executable_alias.page_size - 1)
+                {
+                    // This is intentionally before the allocator's first
+                    // allocate_frame call. A permanent reservation retains the
+                    // frame for this dedicated boot test without a releasable token.
+                    match super::memory::reserve_frame(candidate_physical_page) {
+                        Ok(true) => {
+                            selected_sibling = Some(candidate_physical_page);
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(_) => return Err(PagingError::WxSiblingFrameUnavailable),
+                    }
+                }
+            }
+            candidate_physical_page = candidate_physical_page
+                .checked_add(PAGE_SIZE)
+                .ok_or(PagingError::WxSiblingFrameUnavailable)?;
+        }
+        if selected_sibling.is_some() {
+            break;
+        }
+    }
+
+    let Some(sibling_physical_page) = selected_sibling else {
+        super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE SIBLING FRAME FOUND\n");
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    };
+
+    Ok((
+        executable_physical_page,
+        sibling_physical_page,
+        executable_alias.page_size,
+    ))
 }
 
-/// Returns the writable physical-offset alias of a mutable kernel data page that
-/// shares a demoted 2 MiB physical region with an executable kernel page.
+/// Returns the writable physical-offset alias of a test-owned Usable data frame
+/// selected in the same 2 MiB physical region as an executable kernel page.
 ///
-/// This test-only check proves that the executable-page W^X transition does not
-/// make neighboring non-executable data read-only or executable. It validates
-/// both original mappings, their physical relationship, and the effective rights
-/// of the direct-map leaf before the caller writes through it.
+/// The precondition helper reserves this frame before the allocator's first
+/// allocation. After the W^X transition this function verifies that the direct-map
+/// leaf has been split to 4 KiB and remains writable, supervisor-only, and NX.
 #[cfg(feature = "test-wx-runtime-audit")]
 pub fn kernel_writable_sibling_direct_alias_for_test(
     boot_info: &BootInfo,
-    writable_virtual_address: u64,
+    writable_physical_page: u64,
     executable_virtual_address: u64,
     recursive_index: u16,
     original_large_page_size: u64,
@@ -4901,15 +4945,27 @@ pub fn kernel_writable_sibling_direct_alias_for_test(
     let regions: &[MemoryRegion] = &boot_info.memory_regions;
     let root_table_physical = active_root_table_physical();
     if (original_large_page_size != (1u64 << 21) && original_large_page_size != (1u64 << 30))
-        || !is_canonical_4level(writable_virtual_address)
+        || writable_physical_page == 0
+        || writable_physical_page & (PAGE_SIZE - 1) != 0
         || !is_canonical_4level(executable_virtual_address)
         || !is_safe_recursive_mapping_index(recursive_index)
         || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
     {
         return Err(PagingError::InvalidRecursiveMapping);
     }
+    let sibling_end = writable_physical_page
+        .checked_add(PAGE_SIZE)
+        .ok_or(PagingError::WxSiblingFrameUnavailable)?;
+    if !regions.iter().any(|region| {
+        matches!(region.kind, MemoryRegionKind::Usable)
+            && writable_physical_page >= region.start
+            && sibling_end <= region.end
+    }) || !super::memory::is_frame_allocated(writable_physical_page)
+        .map_err(|_| PagingError::WxSiblingFrameUnavailable)?
+    {
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    }
 
-    let writable_virtual_page = writable_virtual_address & !(PAGE_SIZE - 1);
     let executable_virtual_page = executable_virtual_address & !(PAGE_SIZE - 1);
     let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
@@ -4930,35 +4986,20 @@ pub fn kernel_writable_sibling_direct_alias_for_test(
         return Err(PagingError::InvalidKernelCodeMapping);
     }
     let executable_physical_page = executable.physical_address & !(PAGE_SIZE - 1);
-    if !is_kernel_backed_page(regions, executable_physical_page) {
-        return Err(PagingError::InvalidKernelLoadMapping);
-    }
-
-    let mut writable_editor = KernelPageTableEditor::new_with_recursive_index(
-        boot_info,
-        writable_virtual_page,
-        recursive_index,
-    )?;
-    let writable = translate_with_editor(
-        &mut writable_editor,
-        root_table_physical,
-        writable_virtual_page,
-    )
-    .map_err(PagingError::Translation)?;
-    if writable.page_size != PAGE_SIZE
-        || !writable.writable
-        || writable.user_accessible
-        || writable.executable
-    {
-        return Err(PagingError::InvalidKernelLoadMapping);
-    }
-    let writable_physical_page = writable.physical_address & !(PAGE_SIZE - 1);
-    if writable_physical_page == executable_physical_page
-        || !is_kernel_backed_page(regions, writable_physical_page)
+    if !is_kernel_backed_page(regions, executable_physical_page)
+        || writable_physical_page == executable_physical_page
         || writable_physical_page & !((1u64 << 21) - 1)
             != executable_physical_page & !((1u64 << 21) - 1)
     {
-        return Err(PagingError::WxAuditFailed);
+        super::interrupts::write_hex(
+            b"ONE OS W^X POSTCHECK EXECUTABLE PHYSICAL PAGE: ",
+            executable_physical_page,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X POSTCHECK SIBLING DATA PHYSICAL PAGE: ",
+            writable_physical_page,
+        );
+        return Err(PagingError::WxSiblingFrameUnavailable);
     }
 
     let physical_memory_offset = match boot_info.physical_memory_offset {
@@ -4982,10 +5023,7 @@ pub fn kernel_writable_sibling_direct_alias_for_test(
         return Err(PagingError::WxAuditFailed);
     }
 
-    direct_alias
-        .checked_add(writable_virtual_address & (PAGE_SIZE - 1))
-        .filter(|address| is_canonical_4level(*address))
-        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)
+    Ok(direct_alias)
 }
 
 /// Demotes a physical-offset leaf as needed, then removes write access using
