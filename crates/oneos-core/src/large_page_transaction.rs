@@ -356,6 +356,9 @@ mod tests {
     const PRESENT: u64 = 1;
     const WRITABLE: u64 = 1 << 1;
     const USER_ACCESSIBLE: u64 = 1 << 2;
+    const ACCESSED: u64 = 1 << 5;
+    const DIRTY: u64 = 1 << 6;
+    const ACCESSED_DIRTY_MASK: u64 = ACCESSED | DIRTY;
     const WRITE_THROUGH: u64 = 1 << 3;
     const CACHE_DISABLE: u64 = 1 << 4;
     const LARGE_PAGE: u64 = 1 << 7;
@@ -374,8 +377,13 @@ mod tests {
         next_table: u64,
         fail_allocation: bool,
         fail_reservation: bool,
-        change_parent_on_second_read: bool,
-        parent_reads: usize,
+        change_parent_before_compare_exchange: bool,
+        parent_change_injected: bool,
+        inject_accessed_on_first_compare_exchange: bool,
+        accessed_injected: bool,
+        inject_dirty_during_first_invalidation: bool,
+        dirty_injected: bool,
+        parent_index: usize,
         reservations: Vec<(u64, u8)>,
         published: Vec<(u64, u8)>,
         freed: Vec<u64>,
@@ -395,8 +403,13 @@ mod tests {
                 next_table: CHILD,
                 fail_allocation: false,
                 fail_reservation: false,
-                change_parent_on_second_read: false,
-                parent_reads: 0,
+                change_parent_before_compare_exchange: false,
+                parent_change_injected: false,
+                inject_accessed_on_first_compare_exchange: false,
+                accessed_injected: false,
+                inject_dirty_during_first_invalidation: false,
+                dirty_injected: false,
+                parent_index,
                 reservations: Vec::new(),
                 published: Vec::new(),
                 freed: Vec::new(),
@@ -419,15 +432,38 @@ mod tests {
         }
 
         fn read_entry(&mut self, table: u64, index: usize, _level: u8) -> Option<u64> {
-            if table == PARENT && self.parent_reads == 1 && self.change_parent_on_second_read {
-                self.tables.get_mut(&PARENT)?[index] = 0;
-            }
-            self.parent_reads += 1;
             self.tables.get(&table).map(|entries| entries[index])
         }
 
         fn write_entry(&mut self, table: u64, index: usize, _level: u8, value: u64) {
             self.tables.get_mut(&table).expect("validated table")[index] = value;
+        }
+
+        fn compare_exchange_entry(
+            &mut self,
+            table: u64,
+            index: usize,
+            _level: u8,
+            expected: u64,
+            replacement: u64,
+        ) -> Result<(), u64> {
+            if table == PARENT && self.change_parent_before_compare_exchange && !self.parent_change_injected {
+                self.tables.get_mut(&PARENT).expect("parent table")[index] = 0;
+                self.parent_change_injected = true;
+            }
+            if table == PARENT
+                && self.inject_accessed_on_first_compare_exchange
+                && !self.accessed_injected
+            {
+                self.tables.get_mut(&PARENT).expect("parent table")[index] |= ACCESSED;
+                self.accessed_injected = true;
+            }
+            let current = *self.tables.get(&table)?.get(index)?;
+            if current != expected {
+                return Err(current);
+            }
+            self.tables.get_mut(&table).expect("validated table")[index] = replacement;
+            Ok(())
         }
 
         fn allocate_table(&mut self) -> Option<u64> {
@@ -460,6 +496,13 @@ mod tests {
         }
 
         fn invalidate_local_range(&mut self, start: u64, length: u64) {
+            if self.inject_dirty_during_first_invalidation && !self.dirty_injected {
+                let parent = self.tables.get_mut(&PARENT).expect("parent table");
+                if parent[self.parent_index] & PRESENT == 0 {
+                    parent[self.parent_index] |= DIRTY;
+                    self.dirty_injected = true;
+                }
+            }
             self.invalidations.push((start, length));
         }
     }
@@ -508,7 +551,10 @@ mod tests {
         assert_ne!(editor.entry(CHILD, 0) & GLOBAL, 0);
         assert_eq!(editor.published, vec![(CHILD, 1)]);
         assert!(editor.reservations.is_empty());
-        assert_eq!(editor.invalidations, vec![(virtual_base, 1 << 21)]);
+        assert_eq!(
+            editor.invalidations,
+            vec![(virtual_base, 1 << 21), (virtual_base, 1 << 21)]
+        );
         assert!(editor.freed.is_empty());
     }
 
@@ -516,24 +562,33 @@ mod tests {
     fn demotes_1g_leaf_into_512_2m_leaves() {
         let virtual_base = 0x4000_0000;
         let physical_base = 0x4000_0000;
-        let source = physical_base | PRESENT | LARGE_PAGE | USER_ACCESSIBLE;
+        let source = physical_base | PRESENT | LARGE_PAGE | LARGE_PAGE_PAT | USER_ACCESSIBLE;
         let mut editor = MockEditor::new(1, source);
 
         let receipt = demote_large_page(&mut editor, ROOT, PARENT, 3, 1, virtual_base).unwrap();
 
         assert_eq!(receipt.child_level, 2);
         assert_eq!(receipt.virtual_length, 1 << 30);
+        assert_eq!(receipt.physical_start, physical_base);
         assert_eq!(editor.entry(PARENT, 1), CHILD | PRESENT | USER_ACCESSIBLE);
         assert_eq!(
-            editor.allocated_child()[0] & PHYSICAL_ADDRESS_MASK,
+            editor.allocated_child()[0] & PHYSICAL_ADDRESS_MASK & !((1 << 21) - 1),
             physical_base
         );
         assert_eq!(
-            editor.allocated_child()[511] & PHYSICAL_ADDRESS_MASK,
+            editor.allocated_child()[511] & PHYSICAL_ADDRESS_MASK & !((1 << 21) - 1),
             physical_base + 511 * (1 << 21)
         );
         assert_ne!(editor.allocated_child()[511] & LARGE_PAGE, 0);
-        assert_eq!(editor.invalidations, vec![(virtual_base, 1 << 30)]);
+        assert_ne!(
+            editor.allocated_child()[0] & LARGE_PAGE_PAT,
+            0,
+            "large-page PAT remains at bit 12 in 2 MiB children"
+        );
+        assert_eq!(
+            editor.invalidations,
+            vec![(virtual_base, 1 << 30), (virtual_base, 1 << 30)]
+        );
     }
 
     #[test]
@@ -570,7 +625,7 @@ mod tests {
     fn refuses_to_overwrite_a_parent_changed_during_staging() {
         let source = 0x0200_0000 | PRESENT | LARGE_PAGE;
         let mut editor = MockEditor::new(0, source);
-        editor.change_parent_on_second_read = true;
+        editor.change_parent_before_compare_exchange = true;
 
         assert_eq!(
             demote_large_page(&mut editor, ROOT, PARENT, 2, 0, 0xffff_8000_0000_0000),
@@ -580,6 +635,36 @@ mod tests {
         assert_eq!(editor.freed, vec![CHILD]);
         assert!(editor.published.is_empty());
         assert!(editor.invalidations.is_empty());
+    }
+
+    #[test]
+    fn recovers_hardware_accessed_and_dirty_updates_before_publishing_children() {
+        let virtual_base = 0xffff_8000_0000_0000;
+        let physical_base = 0x0200_0000;
+        let source = physical_base | PRESENT | LARGE_PAGE | WRITABLE;
+        let mut editor = MockEditor::new(0, source);
+        editor.inject_accessed_on_first_compare_exchange = true;
+        editor.inject_dirty_during_first_invalidation = true;
+
+        let receipt = demote_large_page(&mut editor, ROOT, PARENT, 2, 0, virtual_base).unwrap();
+
+        assert_eq!(receipt.physical_start, physical_base);
+        assert!(editor.accessed_injected);
+        assert!(editor.dirty_injected);
+        assert_eq!(
+            editor.entry(PARENT, 0) & ACCESSED_DIRTY_MASK,
+            ACCESSED,
+            "accessed state is conservatively retained on the new table pointer"
+        );
+        for index in 0..512 {
+            assert_eq!(
+                editor.entry(CHILD, index) & ACCESSED_DIRTY_MASK,
+                ACCESSED_DIRTY_MASK,
+                "child {index} must not lose hardware A/D state"
+            );
+        }
+        assert_eq!(editor.invalidations, vec![(virtual_base, 1 << 21), (virtual_base, 1 << 21)]);
+        assert!(editor.freed.is_empty());
     }
 
     #[test]
