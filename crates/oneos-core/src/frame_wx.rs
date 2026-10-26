@@ -1362,5 +1362,4 @@ mod tests {
         assert_eq!(registry.occupied_slots(), 0);
         assert_eq!(registry.frame_has_writable_alias(physical), Ok(false));
     }
-
 }
