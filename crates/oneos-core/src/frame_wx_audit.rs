@@ -145,13 +145,12 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
 
         let physical_end = physical_start + length;
         for existing in self.aliases[..self.alias_count].iter().copied() {
-            let physical_overlap = physical_start < existing.physical_end()
-                && existing.physical_start < physical_end;
+            let physical_overlap =
+                physical_start < existing.physical_end() && existing.physical_start < physical_end;
             let conflicts = (permissions.writable && existing.permissions.executable)
                 || (permissions.executable && existing.permissions.writable);
             if physical_overlap && conflicts {
-                self.conflicting_overlap_events =
-                    self.conflicting_overlap_events.saturating_add(1);
+                self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
             }
         }
 
@@ -253,12 +252,7 @@ mod tests {
     fn detects_overlapping_aliases_in_either_insertion_order() {
         let mut executable_first = FrameWxAudit::<8>::new(48).unwrap();
         executable_first
-            .record_alias(
-                BASE_VA,
-                BASE_PA,
-                1 << 21,
-                permissions(false, true),
-            )
+            .record_alias(BASE_VA, BASE_PA, 1 << 21, permissions(false, true))
             .unwrap();
         executable_first
             .record_alias(
@@ -280,12 +274,7 @@ mod tests {
             )
             .unwrap();
         writable_first
-            .record_alias(
-                BASE_VA,
-                BASE_PA,
-                1 << 21,
-                permissions(false, true),
-            )
+            .record_alias(BASE_VA, BASE_PA, 1 << 21, permissions(false, true))
             .unwrap();
         assert!(writable_first.summary().conflicting_overlap_events > 0);
     }
@@ -294,12 +283,7 @@ mod tests {
     fn detects_writable_executable_overlap_with_large_page_extents() {
         let mut audit = FrameWxAudit::<8>::new(48).unwrap();
         audit
-            .record_alias(
-                BASE_VA,
-                LARGE_BASE_PA,
-                1 << 30,
-                permissions(false, true),
-            )
+            .record_alias(BASE_VA, LARGE_BASE_PA, 1 << 30, permissions(false, true))
             .unwrap();
         audit
             .record_alias(
@@ -382,12 +366,7 @@ mod tests {
     fn rejects_a_range_that_crosses_the_canonical_hole() {
         let mut audit = FrameWxAudit::<1>::new(48).unwrap();
         assert_eq!(
-            audit.record_alias(
-                0x0000_7fff_ffff_f000,
-                0,
-                PAGE * 2,
-                permissions(true, false),
-            ),
+            audit.record_alias(0x0000_7fff_ffff_f000, 0, PAGE * 2, permissions(true, false),),
             Err(FrameWxAuditError::InvalidVirtualRange)
         );
     }
