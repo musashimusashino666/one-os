@@ -4745,6 +4745,109 @@ pub fn kernel_executable_direct_alias_for_test(
     Ok(direct_alias)
 }
 
+/// Returns the writable physical-offset alias of a mutable kernel data page that
+/// shares a demoted 2 MiB physical region with an executable kernel page.
+///
+/// This test-only check proves that the executable-page W^X transition does not
+/// make neighboring non-executable data read-only or executable. It validates
+/// both original mappings, their physical relationship, and the effective rights
+/// of the direct-map leaf before the caller writes through it.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn kernel_writable_sibling_direct_alias_for_test(
+    boot_info: &BootInfo,
+    writable_virtual_address: u64,
+    executable_virtual_address: u64,
+    recursive_index: u16,
+) -> Result<u64, PagingError> {
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    let root_table_physical = active_root_table_physical();
+    if !is_canonical_4level(writable_virtual_address)
+        || !is_canonical_4level(executable_virtual_address)
+        || !is_safe_recursive_mapping_index(recursive_index)
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
+
+    let writable_virtual_page = writable_virtual_address & !(PAGE_SIZE - 1);
+    let executable_virtual_page = executable_virtual_address & !(PAGE_SIZE - 1);
+    let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_page,
+        recursive_index,
+    )?;
+    let executable = translate_with_editor(
+        &mut executable_editor,
+        root_table_physical,
+        executable_virtual_page,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable.page_size != PAGE_SIZE
+        || executable.writable
+        || executable.user_accessible
+        || !executable.executable
+    {
+        return Err(PagingError::InvalidKernelCodeMapping);
+    }
+    let executable_physical_page = executable.physical_address & !(PAGE_SIZE - 1);
+    if !is_kernel_backed_page(regions, executable_physical_page) {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    let mut writable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        writable_virtual_page,
+        recursive_index,
+    )?;
+    let writable = translate_with_editor(
+        &mut writable_editor,
+        root_table_physical,
+        writable_virtual_page,
+    )
+    .map_err(PagingError::Translation)?;
+    if writable.page_size != PAGE_SIZE
+        || !writable.writable
+        || writable.user_accessible
+        || writable.executable
+    {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+    let writable_physical_page = writable.physical_address & !(PAGE_SIZE - 1);
+    if writable_physical_page == executable_physical_page
+        || !is_kernel_backed_page(regions, writable_physical_page)
+        || writable_physical_page & !((1u64 << 21) - 1)
+            != executable_physical_page & !((1u64 << 21) - 1)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let direct_alias = physical_memory_offset
+        .checked_add(writable_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut alias_editor =
+        KernelPageTableEditor::new_with_recursive_index(boot_info, direct_alias, recursive_index)?;
+    let alias = translate_with_editor(&mut alias_editor, root_table_physical, direct_alias)
+        .map_err(PagingError::Translation)?;
+    if alias.page_size != PAGE_SIZE
+        || alias.physical_address != writable_physical_page
+        || !alias.writable
+        || alias.user_accessible
+        || alias.executable
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    direct_alias
+        .checked_add(writable_virtual_address & (PAGE_SIZE - 1))
+        .filter(|address| is_canonical_4level(*address))
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)
+}
+
 /// Demotes a physical-offset leaf as needed, then removes write access using
 /// break-before-make so a stale writable TLB translation cannot survive the
 /// permission transition. It preserves the physical frame, cache/PAT/global and
