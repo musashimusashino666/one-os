@@ -330,6 +330,19 @@ pub(crate) fn map_4k<E: PageTableEditor>(
         allocated[allocation_index] = physical;
     }
 
+    let tracks_wx_alias = permissions.writable || permissions.executable;
+    if tracks_wx_alias {
+        if let Err(error) = editor.reserve_wx_alias(
+            root_table_physical,
+            virtual_address,
+            physical_address,
+            permissions,
+        ) {
+            release_allocated(&allocated, allocation_count, editor);
+            return Err(error);
+        }
+    }
+
     let leaf_entry = physical_address
         | PRESENT
         | if permissions.writable { WRITABLE } else { 0 }
@@ -377,6 +390,9 @@ pub(crate) fn map_4k<E: PageTableEditor>(
         );
     } else {
         editor.write_entry(tables[3], indices[3], 1, leaf_entry);
+    }
+    if tracks_wx_alias {
+        editor.commit_wx_alias(root_table_physical, virtual_address);
     }
     Ok(())
 }
