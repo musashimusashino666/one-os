@@ -16,6 +16,7 @@ extern crate std;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod address_space;
+mod bootstrap_mapping_audit;
 mod elf64;
 mod frame_allocator;
 mod frame_registry;
@@ -29,6 +30,10 @@ pub use address_space::{
     validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot,
     AddressSpaceRootDeactivationError, AddressSpaceRootEditor, AddressSpaceRootError,
     AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+};
+pub use bootstrap_mapping_audit::{
+    bootstrap_mapping_page_count, reserve_bootstrap_backing_frame, BootstrapBackingKind,
+    BootstrapFrameReservationError, BootstrapMappingRangeError,
 };
 pub use elf64::{
     elf64_program_header_table_range, parse_elf64_load_segments, Elf64Error, Elf64LoadImage,

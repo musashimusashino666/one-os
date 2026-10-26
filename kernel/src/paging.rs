@@ -14,19 +14,20 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
-    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    bootstrap_mapping_page_count, elf64_program_header_table_range, initialize_user_frame,
+    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, translate_4level, unmap_4k, unmap_all_user_data_pages,
-    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
-    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot, Elf64LoadImage,
-    Frame, FrameRegistryError, PagePermissions, PageTableEditor, PageTableError,
-    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
-    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS,
-    PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    recursive_table_page_virtual_address, reserve_bootstrap_backing_frame, translate_4level,
+    unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
+    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
+    AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
+    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE,
+    USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -39,10 +40,6 @@ const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const PRESENT: u64 = 1;
 const LARGE_PAGE: u64 = 1 << 7;
-#[cfg(any(
-    feature = "test-supervisor-write-protection",
-    feature = "test-nx-protection"
-))]
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
@@ -52,6 +49,8 @@ const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
 const FIRST_CANDIDATE_PML4_INDEX: u16 = 256;
 const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
+// Refuse malformed BootInfo ranges that would make bootstrap page auditing unbounded.
+const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
@@ -90,6 +89,7 @@ pub enum PagingError {
     InvalidKernelElf,
     InvalidKernelLoadMapping,
     KernelFrameReservationFailed,
+    BootstrapFrameReservationFailed,
     InvalidKernelCodeMapping,
     InvalidStackMapping,
     InvalidBootInfoMapping,
@@ -121,6 +121,9 @@ impl PagingError {
             Self::InvalidKernelElf => b"Kernel ELF header or PT_LOAD metadata is malformed or inaccessible\n",
             Self::InvalidKernelLoadMapping => b"A kernel PT_LOAD page has a missing, conflicting, or unexpected translation or permission\n",
             Self::KernelFrameReservationFailed => b"A loaded kernel frame in Usable memory could not be permanently reserved before allocation\n",
+            Self::BootstrapFrameReservationFailed => {
+                b"A boot stack or BootInfo backing frame in Usable memory could not be reserved before allocation\n"
+            }
             Self::InvalidKernelCodeMapping => {
                 b"Kernel code translation is outside the ELF backing interval or has unexpected page-table permissions\n"
             }
@@ -330,6 +333,45 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidStackMapping);
     }
 
+    // Validate every page intersecting these live bootstrap objects, not only
+    // the page containing RSP/the BootInfo pointer. Any Usable-backed pages are
+    // pinned before the first allocator allocation so they cannot be reused.
+    let validated_stack_pages = validate_bootstrap_data_mapping_range(
+        boot_info.kernel_stack_bottom,
+        boot_info.kernel_stack_len,
+        root_table_physical,
+        recursive_index,
+        regions,
+        PagingError::InvalidStackMapping,
+    )?;
+    let boot_info_length =
+        u64::try_from(size_of::<BootInfo>()).map_err(|_| PagingError::InvalidBootInfoMapping)?;
+    let validated_boot_info_pages = validate_bootstrap_data_mapping_range(
+        boot_info_address,
+        boot_info_length,
+        root_table_physical,
+        recursive_index,
+        regions,
+        PagingError::InvalidBootInfoMapping,
+    )?;
+    // BootInfo stores the memory map through a slice pointer; its entries live
+    // outside the BootInfo struct and must not be assumed to share its backing.
+    let memory_regions_address = boot_info.memory_regions.as_ptr() as usize as u64;
+    let memory_regions_bytes = boot_info
+        .memory_regions
+        .len()
+        .checked_mul(size_of::<MemoryRegion>())
+        .and_then(|length| u64::try_from(length).ok())
+        .ok_or(PagingError::InvalidBootInfoMapping)?;
+    let validated_memory_region_pages = validate_bootstrap_data_mapping_range(
+        memory_regions_address,
+        memory_regions_bytes,
+        root_table_physical,
+        recursive_index,
+        regions,
+        PagingError::InvalidBootInfoMapping,
+    )?;
+
     let code_translation =
         translate_virtual_address(code_address, root_table_physical, recursive_index, regions)
             .map_err(PagingError::Translation)?;
@@ -345,35 +387,12 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         return Err(PagingError::InvalidKernelCodeMapping);
     }
 
-    let stack_translation =
-        translate_virtual_address(stack_pointer, root_table_physical, recursive_index, regions)
-            .map_err(PagingError::Translation)?;
-    if !translation_preserves_page_offset(stack_pointer, stack_translation)
-        || !stack_translation.writable
-        || stack_translation.user_accessible
-        || stack_translation.executable
-    {
-        return Err(PagingError::InvalidStackMapping);
-    }
-
-    let boot_info_translation = translate_virtual_address(
-        boot_info_address,
-        root_table_physical,
-        recursive_index,
-        regions,
-    )
-    .map_err(PagingError::Translation)?;
-    if !translation_preserves_page_offset(boot_info_address, boot_info_translation)
-        || !boot_info_translation.writable
-        || boot_info_translation.user_accessible
-        || boot_info_translation.executable
-    {
-        return Err(PagingError::InvalidBootInfoMapping);
-    }
-
     Ok(PageTableInspection {
         root_table_physical,
-        validated_mappings: validated_load_pages.saturating_add(3),
+        validated_mappings: validated_load_pages
+            .saturating_add(validated_stack_pages)
+            .saturating_add(validated_boot_info_pages)
+            .saturating_add(validated_memory_region_pages),
     })
 }
 
@@ -502,6 +521,69 @@ fn reserve_kernel_load_frame(
             }
         }
         _ => Err(PagingError::InvalidKernelLoadMapping),
+    }
+}
+
+/// Validates every 4 KiB page touched by a live bootstrap data range.
+///
+/// The mapping must preserve the virtual/physical page offset and be writable,
+/// supervisor-only, and NX. A frame may be either Bootloader-owned or Usable;
+/// Usable frames are permanently reserved before the allocator can reuse them.
+fn validate_bootstrap_data_mapping_range(
+    virtual_start: u64,
+    length: u64,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+    mapping_error: PagingError,
+) -> Result<usize, PagingError> {
+    // Shared host-tested preflight rejects overflow, non-canonical ranges, and
+    // excessive page counts before the hardware page-table walker is invoked.
+    let page_count =
+        bootstrap_mapping_page_count(virtual_start, length, MAX_BOOTSTRAP_MAPPING_PAGES)
+            .map_err(|_| mapping_error)?;
+    let first_virtual_page = virtual_start & !(PAGE_SIZE - 1);
+    let mut virtual_page = first_virtual_page;
+    for page_index in 0..page_count {
+        let translation =
+            translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
+                .map_err(|_| mapping_error)?;
+        if !translation_preserves_page_offset(virtual_page, translation)
+            || !translation.writable
+            || translation.user_accessible
+            || translation.executable
+        {
+            return Err(mapping_error);
+        }
+
+        let physical_page = translation.physical_address & !(PAGE_SIZE - 1);
+        reserve_bootstrap_frame(regions, physical_page, mapping_error)?;
+        if page_index + 1 < page_count {
+            virtual_page = virtual_page.checked_add(PAGE_SIZE).ok_or(mapping_error)?;
+        }
+    }
+    Ok(page_count)
+}
+
+/// Accepts only fully backed Bootloader/Usable pages. Usable pages are pinned
+/// because the active stack, BootInfo, and memory-map array must outlive the allocator.
+fn reserve_bootstrap_frame(
+    regions: &[MemoryRegion],
+    physical_page: u64,
+    mapping_error: PagingError,
+) -> Result<(), PagingError> {
+    let kind = match kernel_backing_region_kind(regions, physical_page) {
+        Some(MemoryRegionKind::Bootloader) => BootstrapBackingKind::Bootloader,
+        Some(MemoryRegionKind::Usable) => BootstrapBackingKind::Usable,
+        _ => BootstrapBackingKind::ReservedOrUnknown,
+    };
+    match reserve_bootstrap_backing_frame(kind, || crate::memory::reserve_frame(physical_page)) {
+        Ok(()) => Ok(()),
+        Err(BootstrapFrameReservationError::DisallowedRegion) => Err(mapping_error),
+        Err(
+            BootstrapFrameReservationError::FrameNotManaged
+            | BootstrapFrameReservationError::ReservationFailed(_),
+        ) => Err(PagingError::BootstrapFrameReservationFailed),
     }
 }
 
@@ -671,8 +753,11 @@ fn read_recursive_mapping_entry(recursive_index: u16) -> Option<u64> {
 }
 
 fn validate_recursive_mapping_entry(recursive_index: u16, root_table_physical: u64) -> bool {
-    read_recursive_mapping_entry(recursive_index)
-        .is_some_and(|entry| recursive_entry_matches_root(entry, root_table_physical))
+    read_recursive_mapping_entry(recursive_index).is_some_and(|entry| {
+        recursive_entry_matches_root(entry, root_table_physical)
+            && entry & USER_ACCESSIBLE == 0
+            && entry & NO_EXECUTE != 0
+    })
 }
 
 /// Validates the recursive self-reference used by a mapping editor.
