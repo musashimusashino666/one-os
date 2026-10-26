@@ -147,3 +147,8 @@ Preferred channel: [GitHub private vulnerability reporting for this repository](
 ## Release gate
 
 No release should be described as production-ready or secure solely because CI passes. A release requires a documented threat-model review, test results, reproducible build information, independent review of privileged code, and a tested recovery process.
+
+
+## W^X audit coverage is explicit but still incomplete
+
+The bootstrap now carries a separate coverage summary alongside the count of observed alias conflicts. A completed walk of the currently active root is not considered a complete system-wide audit. Global coverage remains incomplete until the kernel has sealed an authoritative inventory of every activatable root, completed every declared root walk, and explicitly accounted for the physical-memory-offset/direct-map aliases, recursive page-table views, shared/inherited mappings, and large-page extents. The current boot path records only its source root and the walk's large-page handling; it intentionally does not seal the root inventory or claim the other coverage sources. The serial log therefore reports `ONE OS W^X GLOBAL COVERAGE INCOMPLETE`. A zero overlap count must never be interpreted as proof of system-wide W^X. Executable mappings remain fail-closed.
