@@ -21,6 +21,7 @@ mod elf64;
 mod frame_allocator;
 mod frame_registry;
 mod frame_wx;
+mod frame_wx_audit;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
@@ -50,6 +51,7 @@ pub use frame_wx::{
     FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxRemovalError,
     FrameWxReservation, FrameWxReservationError,
 };
+pub use frame_wx_audit::{FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };

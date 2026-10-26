@@ -282,6 +282,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"Validated bootstrap mappings: ",
         paging_stats.validated_mappings as u64,
     );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT ALIAS MAPPINGS: ",
+        paging_stats.wx_audit.tracked_alias_mappings,
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT TRACKED RANGES: ",
+        paging_stats.wx_audit.tracked_ranges as u64,
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT CONFLICT EVENTS: ",
+        paging_stats.wx_audit.conflicting_overlap_events,
+    );
+    serial_write(b"ONE OS W^X ALIAS INVENTORY COMPLETE (ACTIVE ROOT ONLY)\n");
+    if paging_stats.wx_audit.conflicting_overlap_events > 0 {
+        serial_write(b"ONE OS W^X ALIAS OVERLAPS DETECTED (DIAGNOSTIC ONLY)\n");
+    }
 
     if let Err(error) = paging::verify_mapping_smoke_test(boot_info) {
         serial_write(b"\nONE OS PAGING MUTATION FAILED\n");
