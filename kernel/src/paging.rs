@@ -505,11 +505,10 @@ fn audit_wx_table<const CAPACITY: usize>(
         // SAFETY: audit_table_pointer validates the full page-table path and returns
         // the aligned base of this exact reachable 4 KiB table; index is below 512.
         let entry = unsafe { ptr::read_volatile(table_pointer.add(index)) };
-        if entry == 0 {
-            continue;
-        }
+        // Non-present entries may carry OS-defined software metadata.
+        // Ignore all their other bits instead of treating them as malformed mappings.
         if entry & PRESENT == 0 {
-            return Err(PagingError::WxAuditFailed);
+            continue;
         }
         // PML4 entries can never be large-page leaves. At lower levels, the
         // large-page bit distinguishes a leaf (whose protection-key bits are
