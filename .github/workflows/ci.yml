@@ -143,9 +143,33 @@ jobs:
           grep -Fq "ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE" "$log"
           grep -Fq "ONE OS W^X RUNTIME ACTIVE ROOT:" "$log"
           grep -Fq "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS" "$log"
+          grep -Fq "ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS" "$log"
+          grep -Fq "ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS" "$log"
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE FAULT MATCHED" "$log"
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS" "$log"
           grep -Fq "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS" "$log"
+          python3 - "$log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          log = Path(sys.argv[1]).read_text()
+          label = "ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: "
+          matches = re.findall(rf"^{re.escape(label)}(0x[0-9a-fA-F]+)$", log, re.MULTILINE)
+          if len(matches) != 1 or int(matches[0], 16) not in (1 << 21, 1 << 30):
+              raise SystemExit("expected exactly one original 2 MiB or 1 GiB direct-map leaf")
+          markers = [
+              "ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS",
+              "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS",
+              "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS",
+              "ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS",
+              "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS",
+          ]
+          positions = [log.find(marker) for marker in markers]
+          if any(position < 0 for position in positions) or positions != sorted(positions):
+              raise SystemExit("W^X large-page precondition, transition, and sibling test markers are missing or out of order")
+          print("W^X large-page sibling regression sequence validated")
+          PY
 
       - name: Verify uncertain-CR3 root token leak policy in QEMU
         shell: bash
