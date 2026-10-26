@@ -496,7 +496,7 @@ pub(super) fn audit_registered_wx_roots(
 
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
-    let mut recursive_aliases = RecursiveAliasSet::new();
+    let mut recursive_aliases = RecursiveAliasSet::new()?;
 
     // Walk the active root in full. Its non-recursive PML4 entries are the
     // reference for the shared kernel half in every kernel-created root.
@@ -659,21 +659,27 @@ enum AuditRootRange {
     LowerHalf,
 }
 
+// Store audit scratch in BSS rather than the constrained bootstrap/kernel stack.
+// The lease prevents re-entrant or concurrent walkers from observing each other's
+// entries; this OS currently requires single-CPU, maskable-interrupts-disabled use.
+static WX_AUDIT_RECURSIVE_FRAMES_BUSY: AtomicBool = AtomicBool::new(false);
+static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
+    [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
+
 /// Physical frames whose writable recursive aliases must be checked after the
 /// complete ordinary leaf inventory has been collected. Shared page-table frames
 /// are deduplicated because another root's recursive alias has the same physical
 /// extent and effective W/NX rights once shared PML4 entries are validated equal.
 struct RecursiveAliasSet {
-    physical_frames: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES],
     count: usize,
 }
 
 impl RecursiveAliasSet {
-    const fn new() -> Self {
-        Self {
-            physical_frames: [0; MAX_WX_AUDIT_RECURSIVE_FRAMES],
-            count: 0,
-        }
+    fn new() -> Result<Self, PagingError> {
+        WX_AUDIT_RECURSIVE_FRAMES_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| PagingError::WxAuditFailed)?;
+        Ok(Self { count: 0 })
     }
 
     fn observe(
@@ -687,13 +693,26 @@ impl RecursiveAliasSet {
         {
             return Err(PagingError::WxAuditFailed);
         }
-        if !effective_writable || self.physical_frames[..self.count].contains(&physical_frame) {
+        if !effective_writable {
             return Ok(());
         }
-        if self.count == self.physical_frames.len() {
+
+        // SAFETY: the atomic lease grants this audit exclusive use of the fixed
+        // BSS buffer. The function is called only under the kernel's documented
+        // single-CPU, maskable-interrupts-disabled inspection contract.
+        let frames = unsafe { core::ptr::addr_of_mut!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>() };
+        for index in 0..self.count {
+            // SAFETY: index is strictly below count, which is only increased after
+            // writing a slot below MAX_WX_AUDIT_RECURSIVE_FRAMES.
+            if unsafe { ptr::read(frames.add(index)) } == physical_frame {
+                return Ok(());
+            }
+        }
+        if self.count == MAX_WX_AUDIT_RECURSIVE_FRAMES {
             return Err(PagingError::WxAuditFailed);
         }
-        self.physical_frames[self.count] = physical_frame;
+        // SAFETY: the exclusive lease is held and count is below the fixed capacity.
+        unsafe { ptr::write(frames.add(self.count), physical_frame) };
         self.count += 1;
         Ok(())
     }
@@ -702,7 +721,11 @@ impl RecursiveAliasSet {
         &self,
         audit: &mut FrameWxAudit<CAPACITY>,
     ) -> Result<(), PagingError> {
-        for physical_frame in self.physical_frames[..self.count].iter().copied() {
+        // SAFETY: this set still owns the exclusive lease; all indices are below count.
+        let frames = unsafe { core::ptr::addr_of!(WX_AUDIT_RECURSIVE_FRAMES).cast::<u64>() };
+        for index in 0..self.count {
+            // SAFETY: index is below the successfully populated candidate count.
+            let physical_frame = unsafe { ptr::read(frames.add(index)) };
             audit
                 .observe_physical_alias(
                     physical_frame,
@@ -712,6 +735,12 @@ impl RecursiveAliasSet {
                 .map_err(|_| PagingError::WxAuditFailed)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for RecursiveAliasSet {
+    fn drop(&mut self) {
+        WX_AUDIT_RECURSIVE_FRAMES_BUSY.store(false, Ordering::Release);
     }
 }
 
