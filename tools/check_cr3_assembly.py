@@ -659,8 +659,76 @@ def _cr3_source_is_validated_root(
     return operand == ("in", "reg", "root_physical")
 
 
+def _cr3_source_is_validated_active_reload(
+    source: str,
+    block: str,
+    placeholder_key: str | None,
+    positional_index: int | None,
+) -> bool:
+    """Allow only a checked reload of the exact active CR3 in the local-TLB flush.
+
+    Root-switch writes must still bind directly to root_physical. The only
+    exception is the break-before-make flush, which must read CR3, compare its
+    physical root against expected_root_physical, and reload that same raw value
+    (including any architecturally meaningful low CR3 bits).
+    """
+    marker = "pub(super) fn switch_address_space_flush_local_tlb("
+    start = source.find(marker)
+    if start < 0:
+        return False
+    end_match = re.search(
+        r"\n\s*/// Performs the validated hardware CR3 transition\.",
+        source[start:],
+    )
+    if end_match is None:
+        return False
+    end = start + end_match.start()
+    helper = source[start:end]
+
+    # There must be one and only one CR3 write in this helper, and the candidate
+    # asm block must physically occur within its source span. This prevents the
+    # exception from weakening validation of an unrelated root switch.
+    helper_writes = _asm_blocks_writing_control_register(helper, "cr3")
+    if len(helper_writes) != 1 or source.find(block, start, end) < 0:
+        return False
+
+    if not re.search(r"let\s+cr3\s*:\s*u64\s*;", helper):
+        return False
+    if not re.search(
+        r'asm!\s*\(\s*"mov\s*\{\}\s*,\s*cr3"\s*,\s*out\s*\(\s*reg\s*\)\s*cr3',
+        helper,
+        re.DOTALL,
+    ):
+        return False
+    if not re.search(
+        r"validate_kernel_root_activation_state\s*\(\s*cr0\s*,\s*cr4\s*,\s*efer\s*,\s*rflags\s*\)",
+        helper,
+    ):
+        return False
+    if not re.search(
+        r"cr3\s*&\s*PHYSICAL_ADDRESS_MASK\s*!=\s*expected_root_physical",
+        helper,
+    ):
+        return False
+
+    parsed = _asm_operand_bindings(block)
+    if parsed is None or placeholder_key is None:
+        return False
+    positional, named = parsed
+    if placeholder_key == "":
+        if positional_index is None or positional_index >= len(positional):
+            return False
+        operand = positional[positional_index]
+    elif placeholder_key.isdigit():
+        position = int(placeholder_key)
+        operand = positional[position] if position < len(positional) else None
+    else:
+        operand = named.get(placeholder_key)
+    return operand == ("in", "reg", "cr3")
+
+
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
-    """Ensure CR3 asm preserves memory order and writes the validated root input."""
+    """Ensure CR3 asm preserves ordering and writes a validated root value."""
     blocks = _asm_blocks_writing_control_register(source, "cr3")
     if not blocks:
         return False, "could not locate any asm! block writing CR3 in address_space.rs"
@@ -673,14 +741,22 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
         if not sources:
             return False, f"CR3 inline asm block {index} has no parseable CR3 source operand"
         for source_token, placeholder_key, positional_index in sources:
-            if not _cr3_source_is_validated_root(
+            valid_root = _cr3_source_is_validated_root(
                 block, placeholder_key, positional_index
-            ):
+            )
+            valid_local_reload = _cr3_source_is_validated_active_reload(
+                source, block, placeholder_key, positional_index
+            )
+            if not (valid_root or valid_local_reload):
                 return False, (
                     f"CR3 inline asm block {index} writes CR3 from {source_token!r}; "
-                    "the template operand must bind directly to in(reg) root_physical"
+                    "the template operand must bind directly to in(reg) root_physical, "
+                    "or to the checked active CR3 in switch_address_space_flush_local_tlb"
                 )
-    return True, f"all {len(blocks)} CR3 asm blocks preserve compiler ordering and use the validated root"
+    return True, (
+        f"all {len(blocks)} CR3 asm blocks preserve compiler ordering and use "
+        "a validated root or checked active-root reload"
+    )
 
 
 def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
