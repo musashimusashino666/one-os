@@ -1815,7 +1815,6 @@ impl<'a> KernelPageTableEditor<'a> {
             atomic_entry
                 .compare_exchange(expected, replacement, Ordering::AcqRel, Ordering::Acquire)
                 .map(|_| ())
-                .map_err(|observed| observed)
         };
         if result.is_ok() && reachable {
             self.mark_reachable_table_frames();
