@@ -61,9 +61,7 @@ impl LargePageDemotion {
         source_level: u8,
         physical_address_bits: u8,
     ) -> Result<Self, LargePageDemotionError> {
-        if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS)
-            .contains(&physical_address_bits)
-        {
+        if !(MIN_PHYSICAL_ADDRESS_BITS..=MAX_PHYSICAL_ADDRESS_BITS).contains(&physical_address_bits) {
             return Err(LargePageDemotionError::InvalidPhysicalAddressWidth);
         }
 
@@ -87,14 +85,12 @@ impl LargePageDemotion {
             return Err(LargePageDemotionError::MalformedLargePage);
         }
 
-        let addressable_mask =
-            ((1u64 << physical_address_bits) - 1) & PHYSICAL_ADDRESS_MASK;
+        let addressable_mask = ((1u64 << physical_address_bits) - 1) & PHYSICAL_ADDRESS_MASK;
         if source_entry & PHYSICAL_ADDRESS_MASK & !addressable_mask != 0 {
             return Err(LargePageDemotionError::PhysicalAddressOutOfRange);
         }
 
-        let physical_base =
-            source_entry & PHYSICAL_ADDRESS_MASK & !(source_page_size - 1);
+        let physical_base = source_entry & PHYSICAL_ADDRESS_MASK & !(source_page_size - 1);
         let address_limit = 1u64 << physical_address_bits;
         let Some(physical_end) = physical_base.checked_add(source_page_size) else {
             return Err(LargePageDemotionError::PhysicalAddressOutOfRange);
@@ -143,12 +139,9 @@ impl LargePageDemotion {
         let offset = (index as u64).checked_mul(self.child_page_size)?;
         let physical_address = self.physical_base.checked_add(offset)?;
         let flags = if self.source_level == 3 {
-            self.inherited_flags
-                | LARGE_PAGE
-                | if self.pat { LARGE_PAGE_PAT } else { 0 }
+            self.inherited_flags | LARGE_PAGE | if self.pat { LARGE_PAGE_PAT } else { 0 }
         } else {
-            (self.inherited_flags & !LARGE_PAGE)
-                | if self.pat { SMALL_PAGE_PAT } else { 0 }
+            (self.inherited_flags & !LARGE_PAGE) | if self.pat { SMALL_PAGE_PAT } else { 0 }
         };
 
         Some(physical_address | flags)
@@ -195,8 +188,14 @@ mod tests {
         for index in [0, 1, 127, 255, 511] {
             let child = plan.child_entry(index).unwrap();
             let expected_base = base + index as u64 * (1 << 21);
-            assert_eq!(child & PHYSICAL_ADDRESS_MASK & !((1 << 21) - 1), expected_base);
-            assert_eq!(child & (FLAGS_TO_PRESERVE | PRESENT), FLAGS_TO_PRESERVE | PRESENT);
+            assert_eq!(
+                child & PHYSICAL_ADDRESS_MASK & !((1 << 21) - 1),
+                expected_base
+            );
+            assert_eq!(
+                child & (FLAGS_TO_PRESERVE | PRESENT),
+                FLAGS_TO_PRESERVE | PRESENT
+            );
             assert_ne!(child & LARGE_PAGE, 0);
             assert_ne!(child & LARGE_PAGE_PAT, 0);
         }
@@ -213,8 +212,14 @@ mod tests {
         assert_eq!(plan.child_page_size(), 1 << 12);
         for index in [0, 1, 17, 255, 511] {
             let child = plan.child_entry(index).unwrap();
-            assert_eq!(child & PHYSICAL_ADDRESS_MASK, base + index as u64 * (1 << 12));
-            assert_eq!(child & (FLAGS_TO_PRESERVE | PRESENT), FLAGS_TO_PRESERVE | PRESENT);
+            assert_eq!(
+                child & PHYSICAL_ADDRESS_MASK,
+                base + index as u64 * (1 << 12)
+            );
+            assert_eq!(
+                child & (FLAGS_TO_PRESERVE | PRESENT),
+                FLAGS_TO_PRESERVE | PRESENT
+            );
             assert_ne!(child & SMALL_PAGE_PAT, 0);
         }
         assert_eq!(plan.child_entry(512), None);
