@@ -576,7 +576,16 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // trees. Audit them before activation so the physical-offset/ownership path
     // must walk their actual child tables, not only inspect empty PML4 roots.
     let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
+    #[cfg(feature = "test-wx-runtime-audit")]
     let (audit, scope) = super::paging::audit_registered_wx_roots(
+        boot_info,
+        original_physical,
+        original_recursive_index,
+        physical_address_bits,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    #[cfg(not(feature = "test-wx-runtime-audit"))]
+    let (_audit, scope) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
@@ -589,74 +598,85 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         || scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
             == 0
         || !scope.complete
-        || (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none()
     {
         return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
-    // Emit the audit captured after the owned kernel root is active. Keep this
-    // distinct from the earlier bootloader-root inspection in main.rs: the
-    // latter's identity mappings may not survive CR3 activation. This remains
-    // a read-only diagnostic over the declared scope, not W^X enforcement.
-    super::serial_write(
-        b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)\n",
-    );
-    super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME DECLARED ROOTS: ",
-        scope.declared_roots as u64,
-    );
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME AUDITED ROOTS: ",
-        scope.audited_roots as u64,
-    );
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME MISSING SOURCES: ",
-        scope.missing_sources as u64,
-    );
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME ALIAS MAPPINGS: ",
-        audit.tracked_alias_mappings,
-    );
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME TRACKED RANGES: ",
-        audit.tracked_ranges as u64,
-    );
-    super::interrupts::write_hex(
-        b"ONE OS W^X RUNTIME CONFLICT EVENTS: ",
-        audit.conflicting_overlap_events,
-    );
-    if let Some(conflict) = audit.first_conflict {
+    #[cfg(feature = "test-wx-runtime-audit")]
+    {
+        if (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none() {
+            return Err(AddressSpaceError::PagingIntegrationFailed);
+        }
+
+        // Emit the audit captured after the owned kernel root is active. Keep this
+        // distinct from the earlier bootloader-root inspection in main.rs: the
+        // latter's identity mappings may not survive CR3 activation. This remains
+        // a read-only diagnostic over the declared scope, not W^X enforcement.
         super::serial_write(
-            b"ONE OS W^X RUNTIME FIRST CONFLICT (FIRST SAMPLE ONLY; NOT AN EXHAUSTIVE LIST)\n",
+            b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)\n",
+        );
+        super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME DECLARED ROOTS: ",
+            scope.declared_roots as u64,
         );
         super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
-            conflict.physical_start,
-        );
-        super::interrupts::write_hex(b"ONE OS W^X RUNTIME CONFLICT LENGTH: ", conflict.length);
-        super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
-            conflict.first_virtual_start,
+            b"ONE OS W^X RUNTIME AUDITED ROOTS: ",
+            scope.audited_roots as u64,
         );
         super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME CONFLICT SECOND VIRTUAL START: ",
-            conflict.second_virtual_start,
-        );
-        let first_flags = (conflict.first_permissions.writable as u64)
-            | ((conflict.first_permissions.executable as u64) << 1);
-        let second_flags = (conflict.second_permissions.writable as u64)
-            | ((conflict.second_permissions.executable as u64) << 1);
-        super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME FIRST RIGHTS FLAGS (W=BIT0,X=BIT1): ",
-            first_flags,
+            b"ONE OS W^X RUNTIME MISSING SOURCES: ",
+            scope.missing_sources as u64,
         );
         super::interrupts::write_hex(
-            b"ONE OS W^X RUNTIME SECOND RIGHTS FLAGS (W=BIT0,X=BIT1): ",
-            second_flags,
+            b"ONE OS W^X RUNTIME ALIAS MAPPINGS: ",
+            audit.tracked_alias_mappings,
         );
-    } else {
-        super::serial_write(b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n");
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME TRACKED RANGES: ",
+            audit.tracked_ranges as u64,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME CONFLICT EVENTS: ",
+            audit.conflicting_overlap_events,
+        );
+        if let Some(conflict) = audit.first_conflict {
+            super::serial_write(
+                b"ONE OS W^X RUNTIME FIRST CONFLICT (FIRST SAMPLE ONLY; NOT AN EXHAUSTIVE LIST)\n",
+            );
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
+                conflict.physical_start,
+            );
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME CONFLICT LENGTH: ",
+                conflict.length,
+            );
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
+                conflict.first_virtual_start,
+            );
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME CONFLICT SECOND VIRTUAL START: ",
+                conflict.second_virtual_start,
+            );
+            let first_flags = (conflict.first_permissions.writable as u64)
+                | ((conflict.first_permissions.executable as u64) << 1);
+            let second_flags = (conflict.second_permissions.writable as u64)
+                | ((conflict.second_permissions.executable as u64) << 1);
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME FIRST RIGHTS FLAGS (W=BIT0,X=BIT1): ",
+                first_flags,
+            );
+            super::interrupts::write_hex(
+                b"ONE OS W^X RUNTIME SECOND RIGHTS FLAGS (W=BIT0,X=BIT1): ",
+                second_flags,
+            );
+        } else {
+            super::serial_write(
+                b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n",
+            );
+        }
     }
 
     let (original_inactive, second_active) =
