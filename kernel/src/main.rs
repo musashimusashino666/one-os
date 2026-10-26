@@ -323,15 +323,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         if let Some(conflict) = paging_stats.wx_audit.first_conflict {
             print_wx_conflict_diagnostic(0, conflict);
         }
-        for (index, conflict) in paging_stats.wx_audit.additional_conflicts
-            [..paging_stats.wx_audit.additional_conflict_count]
-            .iter()
-            .enumerate()
-        {
-            if let Some(conflict) = *conflict {
-                print_wx_conflict_diagnostic((index + 1) as u64, conflict);
-            }
-        }
     }
 
     if let Err(error) = paging::verify_mapping_smoke_test(boot_info) {
