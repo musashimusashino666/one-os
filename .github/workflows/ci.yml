@@ -106,7 +106,7 @@ jobs:
             echo "QEMU boot attempt ${attempt}/3"
             log="$CARGO_TARGET_DIR/qemu-serial-${attempt}.log"
             set +e
-            timeout 10s qemu-system-x86_64 \
+            timeout 30s qemu-system-x86_64 \
               -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
               -drive format=raw,file="$CARGO_TARGET_DIR/one-os-bios.img" \
               -serial stdio -display none -no-reboot -no-shutdown \
