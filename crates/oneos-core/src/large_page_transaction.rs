@@ -265,7 +265,7 @@ mod tests {
     };
     use crate::LargePageDemotionError;
     use std::collections::BTreeMap;
-    use std::vec::Vec;
+    use std::{vec, vec::Vec};
 
     const PRESENT: u64 = 1;
     const WRITABLE: u64 = 1 << 1;
