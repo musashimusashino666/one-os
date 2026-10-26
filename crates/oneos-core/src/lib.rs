@@ -47,11 +47,11 @@ pub use frame_allocator::{
 pub use frame_registry::{
     FrameRegistryError, FrameToken, PageTableFrameRegistry, PublishedFrameReleaseError,
 };
-pub use frame_wx_audit::{FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary};
 pub use frame_wx::{
     FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxRemovalError,
     FrameWxReservation, FrameWxReservationError,
 };
+pub use frame_wx_audit::{FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
