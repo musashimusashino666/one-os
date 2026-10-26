@@ -127,6 +127,11 @@ impl LargePageDemotion {
         self.child_page_size
     }
 
+    /// Physical base of the original large-page extent, excluding large-page PAT.
+    pub const fn physical_base(&self) -> u64 {
+        self.physical_base
+    }
+
     /// Returns one of the 512 child leaf entries, or None for an invalid index.
     ///
     /// For 1 GiB to 2 MiB demotion, the child large-page bit remains set and

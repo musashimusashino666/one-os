@@ -25,6 +25,7 @@ mod frame_wx;
 mod frame_wx_audit;
 mod frame_wx_audit_scope;
 mod large_page;
+mod large_page_transaction;
 mod memory_policy;
 mod page_table;
 mod page_table_mutation;
@@ -66,6 +67,10 @@ pub use frame_wx_audit_scope::{
     FRAME_WX_AUDIT_REQUIRED_SOURCES,
 };
 pub use large_page::{LargePageDemotion, LargePageDemotionError};
+pub use large_page_transaction::{
+    demote_large_page, LargePageDemotionEditor, LargePageDemotionReceipt,
+    LargePageDemotionTransactionError,
+};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
