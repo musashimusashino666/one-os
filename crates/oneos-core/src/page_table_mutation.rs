@@ -140,7 +140,7 @@ pub enum PageTableMutationError {
     InvalidRootTable,
     InvalidPhysicalAddressWidth {
         bits: u8,
-    }
+    },
     InvalidPhysicalAddress,
     MappedFrameIsReserved,
     FrameNotAllocated,
@@ -150,25 +150,25 @@ pub enum PageTableMutationError {
     UserMappingRequiresZeroedFrame,
     TableUnavailable {
         level: u8,
-    }
+    },
     NotMapped {
         level: u8,
-    }
+    },
     MalformedEntry {
         level: u8,
-    }
+    },
     LargePageConflict {
         level: u8,
-    }
+    },
     RecursiveTableReference {
         level: u8,
-    }
+    },
     InvalidPageTableFrame,
     AllocationFailed,
     AlreadyMapped,
     AncestorPermissionConflict {
         level: u8,
-    }
+    },
     /// The physical-frame W^X alias registry denied or could not validate a mutation.
     WxAliasRegistryFailure,
 }
