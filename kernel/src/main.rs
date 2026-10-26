@@ -108,9 +108,6 @@ mod paging;
 
 const COM1: u16 = 0x3F8;
 
-#[cfg(feature = "test-wx-runtime-audit")]
-static mut WX_WRITABLE_DATA_DIRECTMAP_SENTINEL: u64 = 0x4f4e_455f_5758_4441;
-
 const KERNEL_VIRTUAL_BASE: u64 = 0xffff_8000_0000_0000;
 const DYNAMIC_KERNEL_MAPPING_START: u64 = 0xffff_9000_0000_0000;
 const DYNAMIC_KERNEL_MAPPING_END: u64 = 0xffff_ffff_ffff_f000;
@@ -287,6 +284,38 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     };
 
+    // The dedicated W^X test reserves a writable sibling frame before the first
+    // allocator allocation. Writable PT_LOAD pages may be copied by the bootloader,
+    // so this test does not assume a static data symbol is physically near code.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let (
+        wx_executable_physical_page,
+        wx_sibling_test_physical_page,
+        wx_original_direct_map_page_size,
+    ) = match paging::verify_wx_sibling_large_page_precondition(
+        boot_info,
+        paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+    #[cfg(feature = "test-wx-runtime-audit")]
+    {
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING DATA FRAME PHYSICAL: ",
+            wx_sibling_test_physical_page,
+        );
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ",
+            wx_original_direct_map_page_size,
+        );
+        serial_write(b"ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS\n");
+    }
+
     // Exercise both allocation and release only after loaded kernel frames
     // have been excluded from the allocator bitmap.
     let probe_frame = match memory::allocate_frame() {
@@ -399,31 +428,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 halt_forever()
             }
         }
-    }
-
-    // The dedicated W^X regression must start from a large direct-map leaf.
-    // Otherwise a post-transition writable-sibling pass would not prove that
-    // splitting a 1 GiB/2 MiB mapping preserved unrelated writable data pages.
-    #[cfg(feature = "test-wx-runtime-audit")]
-    let wx_original_direct_map_page_size = match paging::verify_wx_sibling_large_page_precondition(
-        boot_info,
-        core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64,
-        paging::enforce_kernel_executable_alias_wx as *const () as usize as u64,
-    ) {
-        Ok(page_size) => page_size,
-        Err(error) => {
-            serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
-            serial_write(error.message());
-            halt_forever()
-        }
-    };
-    #[cfg(feature = "test-wx-runtime-audit")]
-    {
-        interrupts::write_hex(
-            b"ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ",
-            wx_original_direct_map_page_size,
-        );
-        serial_write(b"ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS\n");
     }
 
     // Restrict every validated executable PT_LOAD frame's physical-offset alias
@@ -846,11 +850,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             serial_write(b"ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS\n");
 
-            let writable_virtual_address =
-                core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64;
             let writable_direct_alias = match paging::kernel_writable_sibling_direct_alias_for_test(
                 boot_info,
-                writable_virtual_address,
+                wx_sibling_test_physical_page,
                 executable_address,
                 _active_root.recursive_index(),
                 wx_original_direct_map_page_size,
@@ -862,17 +864,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     halt_forever()
                 }
             };
-            // SAFETY: the test helper proved that this alias maps the exact
-            // mutable kernel data frame, remains writable and NX, and shares a
-            // demoted 2 MiB physical region with the protected executable page.
+            // SAFETY: this Usable frame was reserved before the allocator's first
+            // allocation. The helper proved its direct-map alias is a writable,
+            // supervisor-only, NX 4 KiB leaf in the demoted physical region.
             unsafe {
                 core::ptr::write_volatile(writable_direct_alias as *mut u64, 0x4f4e_455f_5758_5041);
             }
-            // SAFETY: addr_of! forms a raw pointer without creating a reference;
-            // the value is read only after the direct-map write in this
-            // single-CPU, interrupts-disabled test.
+            // SAFETY: read back the reserved test frame immediately through its
+            // validated direct-map alias while single-CPU and interrupts-disabled.
             let observed = unsafe {
-                core::ptr::read_volatile(core::ptr::addr_of!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL))
+                core::ptr::read_volatile(writable_direct_alias as *const u64)
             };
             if observed != 0x4f4e_455f_5758_5041 {
                 serial_write(b"\nONE OS W^X WRITABLE SIBLING DIRECT-MAP FAILED\n");
