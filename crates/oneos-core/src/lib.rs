@@ -56,6 +56,7 @@ pub use frame_wx_audit::{
     FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary, FrameWxAuditTableBudget,
     FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
 };
+pub use large_page::{LargePageDemotion, LargePageDemotionError};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };
@@ -65,7 +66,6 @@ pub use page_table::{
     recursive_table_page_virtual_address, translate_4level, PageTableError, PageTranslation,
 };
 pub(crate) use page_table_mutation::map_4k;
-pub use large_page::{LargePageDemotion, LargePageDemotionError};
 pub use page_table_mutation::{
     map_supervisor_4k, unmap_4k, PagePermissions, PageTableEditor, PageTableMutationError,
     UnmappedPage,
