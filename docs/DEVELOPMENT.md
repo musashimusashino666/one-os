@@ -221,3 +221,8 @@ switch CR3, provide remote TLB shootdowns, or establish process isolation.
 ### Page-table ownership registry validation
 
 The core crate exposes a fixed-capacity page-table frame ownership registry used by the kernel editor. Host tests cover reservation before allocation, capacity exhaustion without allocation, ownership-token retention, exactly-once release of unpublished frames, retention of published frames, duplicate-address rejection, invalid or foreign releases, slot reuse, rollback, and leaf-unmap ownership. Host-testable paging-precondition validators cover extended CPUID leaf availability, NX support, physical-address width, CR0.WP, and EFER.NXE. Required QEMU cases exercise the concrete editor's checked physical-memory-offset alias and zero-before-publication behavior. The latest revision-specific result is available in the [CI workflow runs](https://github.com/musashimusashino666/one-os/actions/workflows/ci.yml); any subsequent change must pass the required check on its exact PR candidate.
+
+
+## W^X coverage status
+
+The bootstrap's W^X alias walker reports the conflicts it observed while walking the source root; this is not the same as a complete system-wide audit. The serial log now reports the number of declared/walked roots and a missing-source mask, and emits `ONE OS W^X GLOBAL COVERAGE INCOMPLETE` until the coverage contract is satisfied. Currently, the root list is not sealed, the recursive page-table view is excluded, and global coverage of direct-map and shared/inherited aliases is not established. Do not interpret zero reported overlap events as proof of frame-wide W^X, and do not enable executable mappings on this basis.
