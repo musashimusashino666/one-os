@@ -301,9 +301,7 @@ mod tests {
 
     #[test]
     fn an_unwalked_declared_root_prevents_complete_coverage() {
-        let mut scope = complete_scope();
-        // A separate scope demonstrates that all sources alone are insufficient.
-        scope = FrameWxAuditScope::<2>::new(48).unwrap();
+        let mut scope = FrameWxAuditScope::<2>::new(48).unwrap();
         scope.declare_root(ROOT_A).unwrap();
         scope.declare_root(ROOT_B).unwrap();
         scope.seal_root_inventory().unwrap();
@@ -356,10 +354,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_addresses_and_capacity_exhaustion_without_corrupting_scope() {
-        assert_eq!(
-            FrameWxAuditScope::<2>::new(31).unwrap_err(),
-            FrameWxAuditScopeError::InvalidPhysicalAddressWidth
-        );
+        assert!(matches!(
+            FrameWxAuditScope::<2>::new(31),
+            Err(FrameWxAuditScopeError::InvalidPhysicalAddressWidth)
+        ));
         let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
         assert_eq!(
             scope.declare_root(0),
