@@ -458,7 +458,12 @@ mod tests {
                 self.tables.get_mut(&PARENT).expect("parent table")[index] |= ACCESSED;
                 self.accessed_injected = true;
             }
-            let current = *self.tables.get(&table)?.get(index)?;
+            let current = *self
+                .tables
+                .get(&table)
+                .expect("table exists")
+                .get(index)
+                .expect("entry index is valid");
             if current != expected {
                 return Err(current);
             }
