@@ -4640,12 +4640,9 @@ pub fn enforce_kernel_executable_alias_wx(boot_info: &BootInfo) -> Result<usize,
             // for every executable PT_LOAD page, not just the single CPU-fault
             // sample exercised by the dedicated acceptance profile.
             let mut verify_editor = KernelPageTableEditor::new(boot_info, direct_alias)?;
-            let verified = translate_with_editor(
-                &mut verify_editor,
-                root_table_physical,
-                direct_alias,
-            )
-            .map_err(PagingError::Translation)?;
+            let verified =
+                translate_with_editor(&mut verify_editor, root_table_physical, direct_alias)
+                    .map_err(PagingError::Translation)?;
             if verified.physical_address != translation.physical_address
                 || verified.page_size != PAGE_SIZE
                 || verified.writable
