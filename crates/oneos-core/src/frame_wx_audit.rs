@@ -47,9 +47,13 @@ pub struct FrameWxAuditSummary {
     ///
     /// This is a diagnostic counter, not a count of conflicting bytes or unique frames.
     pub conflicting_overlap_events: u64,
-    /// First concrete overlap found, if any. This is diagnostic evidence, not an
-    /// exhaustive list of conflicting aliases.
+    /// First concrete overlap found, if any.
     pub first_conflict: Option<FrameWxAuditConflict>,
+    /// Up to three additional concrete overlaps in discovery order. Together with
+    /// `first_conflict`, this keeps a bounded sample of four diagnostic examples.
+    pub additional_conflicts: [Option<FrameWxAuditConflict>; 3],
+    /// Number of populated entries in `additional_conflicts`.
+    pub additional_conflict_count: usize,
 }
 
 /// Error encountered while constructing or recording a W^X audit inventory.
@@ -126,6 +130,8 @@ pub struct FrameWxAudit<const CAPACITY: usize> {
     tracked_alias_mappings: u64,
     conflicting_overlap_events: u64,
     first_conflict: Option<FrameWxAuditConflict>,
+    additional_conflicts: [Option<FrameWxAuditConflict>; 3],
+    additional_conflict_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +187,17 @@ fn conflicting_intersection(first: AliasRange, second: AliasRange) -> Option<Fra
 }
 
 impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
+    fn remember_conflict(&mut self, conflict: FrameWxAuditConflict) {
+        if self.first_conflict.is_none() {
+            self.first_conflict = Some(conflict);
+            return;
+        }
+        if self.additional_conflict_count < self.additional_conflicts.len() {
+            self.additional_conflicts[self.additional_conflict_count] = Some(conflict);
+            self.additional_conflict_count += 1;
+        }
+    }
+
     /// Creates an empty audit inventory for the given CPU physical-address width.
     pub const fn new(physical_address_bits: u8) -> Result<Self, FrameWxAuditError> {
         if physical_address_bits < 32 || physical_address_bits > 52 {
@@ -193,6 +210,8 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             tracked_alias_mappings: 0,
             conflicting_overlap_events: 0,
             first_conflict: None,
+            additional_conflicts: [None; 3],
+            additional_conflict_count: 0,
         })
     }
 
@@ -245,21 +264,18 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             permissions,
         };
         let own_conflict = conflicting_intersection(incoming, incoming);
-        let mut first_conflict = self.first_conflict.or(own_conflict);
         self.tracked_alias_mappings = self.tracked_alias_mappings.saturating_add(1);
-        if own_conflict.is_some() {
+        if let Some(conflict) = own_conflict {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+            self.remember_conflict(conflict);
         }
 
         for existing in self.aliases[..self.alias_count].iter().copied() {
             if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
-                if first_conflict.is_none() {
-                    first_conflict = Some(conflict);
-                }
+                self.remember_conflict(conflict);
             }
         }
-        self.first_conflict = first_conflict;
 
         if let Some(length) = merged_length {
             self.aliases[self.alias_count - 1].length = length;
@@ -303,19 +319,16 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             permissions,
         };
         let own_conflict = conflicting_intersection(incoming, incoming);
-        let mut first_conflict = self.first_conflict.or(own_conflict);
-        if own_conflict.is_some() {
+        if let Some(conflict) = own_conflict {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
+            self.remember_conflict(conflict);
         }
         for existing in self.aliases[..self.alias_count].iter().copied() {
             if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
-                if first_conflict.is_none() {
-                    first_conflict = Some(conflict);
-                }
+                self.remember_conflict(conflict);
             }
         }
-        self.first_conflict = first_conflict;
         Ok(())
     }
 
@@ -338,6 +351,8 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             executable_ranges,
             conflicting_overlap_events: self.conflicting_overlap_events,
             first_conflict: self.first_conflict,
+            additional_conflicts: self.additional_conflicts,
+            additional_conflict_count: self.additional_conflict_count,
         }
     }
 
@@ -546,6 +561,42 @@ mod tests {
         assert_eq!(conflict.second_virtual_start, BASE_VA + (8 * PAGE));
         assert_eq!(conflict.first_permissions, permissions(false, true));
         assert_eq!(conflict.second_permissions, permissions(true, false));
+    }
+
+    #[test]
+    fn retains_multiple_physical_overlap_examples_in_discovery_order() {
+        let mut audit = FrameWxAudit::<4>::new(48).unwrap();
+        audit
+            .record_alias(BASE_VA, LARGE_BASE_PA, PAGE * 3, permissions(false, true))
+            .unwrap();
+        audit
+            .record_alias(
+                BASE_VA + 0x20_000,
+                LARGE_BASE_PA + PAGE,
+                PAGE,
+                permissions(true, false),
+            )
+            .unwrap();
+        audit
+            .record_alias(
+                BASE_VA + 0x40_000,
+                LARGE_BASE_PA + (2 * PAGE),
+                PAGE,
+                permissions(true, false),
+            )
+            .unwrap();
+
+        let summary = audit.summary();
+        assert_eq!(summary.conflicting_overlap_events, 2);
+        let first = summary.first_conflict.expect("first overlap evidence");
+        assert_eq!(first.physical_start, LARGE_BASE_PA + PAGE);
+        assert_eq!(first.first_virtual_start, BASE_VA + PAGE);
+        assert_eq!(first.second_virtual_start, BASE_VA + 0x20_000);
+        assert_eq!(summary.additional_conflict_count, 1);
+        let second = summary.additional_conflicts[0].expect("second overlap evidence");
+        assert_eq!(second.physical_start, LARGE_BASE_PA + (2 * PAGE));
+        assert_eq!(second.first_virtual_start, BASE_VA + (2 * PAGE));
+        assert_eq!(second.second_virtual_start, BASE_VA + 0x40_000);
     }
 
     #[test]
