@@ -1348,14 +1348,16 @@ mod tests {
             .begin_removal_for_alias(root, virtual_address, physical, PAGE_SIZE, writable)
             .unwrap();
         assert_eq!(
-            registry.reserve_alias_range(
-                ROOT_B,
-                VA_B,
-                physical,
-                PAGE_SIZE,
-                FrameWxPermissions::new(false, true),
-            ),
-            Err(FrameWxError::PhysicalAliasWxConflict)
+            registry
+                .reserve_alias_range(
+                    ROOT_B,
+                    VA_B,
+                    physical,
+                    PAGE_SIZE,
+                    FrameWxPermissions::new(false, true),
+                )
+                .unwrap_err(),
+            FrameWxError::PhysicalAliasWxConflict
         );
 
         registry.complete_removal_at(root, virtual_address).unwrap();
