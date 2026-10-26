@@ -242,6 +242,7 @@ mod tests {
 
     const BASE_VA: u64 = 0xffff_8000_0000_0000;
     const BASE_PA: u64 = 0x20_0000;
+    const LARGE_BASE_PA: u64 = 0x4000_0000;
     const PAGE: u64 = 4096;
 
     fn permissions(writable: bool, executable: bool) -> FrameWxPermissions {
@@ -295,7 +296,7 @@ mod tests {
         audit
             .record_alias(
                 BASE_VA,
-                BASE_PA,
+                LARGE_BASE_PA,
                 1 << 30,
                 permissions(false, true),
             )
@@ -303,7 +304,7 @@ mod tests {
         audit
             .record_alias(
                 BASE_VA + (1 << 30),
-                BASE_PA + (1 << 21),
+                LARGE_BASE_PA + (1 << 21),
                 1 << 21,
                 permissions(true, false),
             )
@@ -363,6 +364,31 @@ mod tests {
                 permissions(true, false),
             ),
             Err(FrameWxAuditError::CapacityExhausted)
+        );
+        assert_eq!(audit.summary().tracked_alias_mappings, 1);
+        assert_eq!(audit.summary().tracked_ranges, 1);
+    }
+
+    #[test]
+    fn reports_a_single_mapping_that_is_both_writable_and_executable() {
+        let mut audit = FrameWxAudit::<1>::new(48).unwrap();
+        audit
+            .record_alias(BASE_VA, BASE_PA, PAGE, permissions(true, true))
+            .unwrap();
+        assert_eq!(audit.summary().conflicting_overlap_events, 1);
+    }
+
+    #[test]
+    fn rejects_a_range_that_crosses_the_canonical_hole() {
+        let mut audit = FrameWxAudit::<1>::new(48).unwrap();
+        assert_eq!(
+            audit.record_alias(
+                0x0000_7fff_ffff_f000,
+                0,
+                PAGE * 2,
+                permissions(true, false),
+            ),
+            Err(FrameWxAuditError::InvalidVirtualRange)
         );
     }
 }
