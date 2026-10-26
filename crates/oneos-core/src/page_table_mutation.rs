@@ -1613,6 +1613,15 @@ mod tests {
         let mut tables = TestTables::new(root);
         map(&mut tables, root, virtual_address, 0x8000, permissions).unwrap();
 
+        // This test deliberately rewrites the synthetic PTE below. Keep the test
+        // registry aligned with that synthetic state so the unmap exercises the
+        // physical-zero translation rather than rejecting an untracked frame change.
+        let removal = tables
+            .wx_registry
+            .begin_removal(root, virtual_address)
+            .unwrap();
+        tables.wx_registry.complete_removal(removal).unwrap();
+
         let indices = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
@@ -1736,6 +1745,17 @@ mod tests {
         let l2 = tables.read_any(l3, indices[2]).unwrap() & PHYSICAL_ADDRESS_FIELD_MASK;
         let leaf = tables.read_any(l2, indices[3]).unwrap();
         tables.pages.get_mut(&l2).unwrap()[indices[3]] = leaf & !PHYSICAL_ADDRESS_FIELD_MASK;
+        tables
+            .wx_registry
+            .reserve_alias_range(
+                root,
+                virtual_address,
+                0,
+                PAGE_SIZE,
+                FrameWxPermissions::new(true, false),
+            )
+            .unwrap();
+        tables.wx_registry.commit_alias_at(root, virtual_address).unwrap();
 
         let present_zero_mapping = tables.read_any(l2, indices[3]).unwrap();
         assert_ne!(present_zero_mapping & PRESENT, 0);
