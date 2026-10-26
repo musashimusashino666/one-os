@@ -277,14 +277,11 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     // Break-before-make: after this callback returns, the old large-page
     // translation is gone and no prior walk may still update its A/D bits.
     editor.invalidate_local_range(virtual_base, source_page_size);
-    let invalidated_parent = match editor.read_entry(
-        parent_table_physical,
-        parent_index,
-        source_level,
-    ) {
-        Some(value) => value,
-        None => panic!("large-page parent became inaccessible after invalidation"),
-    };
+    let invalidated_parent =
+        match editor.read_entry(parent_table_physical, parent_index, source_level) {
+            Some(value) => value,
+            None => panic!("large-page parent became inaccessible after invalidation"),
+        };
     if invalidated_parent & PRESENT != 0
         || invalidated_parent & !(ACCESSED_DIRTY_MASK | PRESENT)
             != original_parent & !(ACCESSED_DIRTY_MASK | PRESENT)
@@ -298,8 +295,7 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     // children with the final observed A/D state. Conservatively copying A/D to
     // all children prevents loss of access/dirty information for any subpage.
     let final_source = invalidated_parent | PRESENT;
-    let final_plan = match
-        LargePageDemotion::new(final_source, source_level, physical_address_bits)
+    let final_plan = match LargePageDemotion::new(final_source, source_level, physical_address_bits)
     {
         Ok(plan) => plan,
         Err(_) => panic!("invalidated large-page source no longer validates"),
@@ -316,8 +312,8 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
     // retained as a conservative indication that the walk accessed this path;
     // D is leaf state and is propagated to every child, not copied to a pointer.
     // PAT, GLOBAL, software bits and protection-key bits likewise stay on leaves.
-    let parent_flags = final_source
-        & (PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE | ACCESSED);
+    let parent_flags =
+        final_source & (PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE | ACCESSED);
     let new_parent = child_table_physical | parent_flags;
 
     // From here on, callbacks are infallible by contract. Publish only after the
