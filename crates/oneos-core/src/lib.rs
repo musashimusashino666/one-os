@@ -29,14 +29,13 @@ mod page_table;
 mod page_table_mutation;
 mod paging_preconditions;
 mod user_pages;
-pub use atomic_entry_update::{
-    compare_exchange_entry_with_ad_retry, AtomicEntryCasRetryError,
-    ATOMIC_ENTRY_CAS_MAX_ATTEMPTS,
-};
 pub use address_space::{
     validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot,
     AddressSpaceRootDeactivationError, AddressSpaceRootEditor, AddressSpaceRootError,
     AddressSpaceRootInitializationError, UserVirtualRangeError, USER_VIRTUAL_ADDRESS_LIMIT,
+};
+pub use atomic_entry_update::{
+    compare_exchange_entry_with_ad_retry, AtomicEntryCasRetryError, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS,
 };
 pub use bootstrap_mapping_audit::{
     bootstrap_mapping_page_count, reserve_bootstrap_backing_frame, BootstrapBackingKind,
