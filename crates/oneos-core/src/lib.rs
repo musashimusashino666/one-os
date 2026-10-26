@@ -58,8 +58,8 @@ pub use frame_wx::{
     FrameWxReservation, FrameWxReservationError,
 };
 pub use frame_wx_audit::{
-    FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary, FrameWxAuditTableBudget,
-    FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+    FrameWxAudit, FrameWxAuditConflict, FrameWxAuditError, FrameWxAuditSummary,
+    FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
 };
 pub use frame_wx_audit_scope::{
     FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditScopeSummary, FrameWxAuditSource,
