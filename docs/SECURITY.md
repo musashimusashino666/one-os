@@ -125,8 +125,7 @@ writable physical-memory alias cannot yet be removed or downgraded with complete
 reverse-alias accounting. The host-testable `FrameWxRegistry` now provides bounded
 range-overlap checks, pending reservations, publication state, and a retirement phase
 that continues to block conflicting permissions until the caller confirms TLB
-invalidation. The registry is not yet wired into the kernel mapping paths and does not
-discover existing aliases automatically. This does **not** establish frame-wide W^X
+invalidation. The registry is wired into the managed 4 KiB mapping lifecycle, but this is only partial integration: existing boot/direct-map aliases and inherited mappings are not seeded into it, and it does not discover aliases automatically. This does **not** establish frame-wide W^X
 for all existing boot mappings; executable user pages remain unsupported until every
 writable alias (including kernel/direct-map and large-page aliases) can be accounted
 for and permission transitions are synchronized with TLB invalidation.
