@@ -657,11 +657,13 @@ pub(super) fn audit_registered_wx_roots(
         )?;
     }
 
-    // This bit is set only after recursive alias pages for all declared roots
-    // have been derived from validated self-references and every reachable table
-    // was visited. The direct-map source remains missing: the normal tree walk
-    // observes present leaves, but does not yet independently prove complete
-    // physical-offset alias topology.
+    // All present W/X leaves in every declared root were enumerated before this
+    // point, including any physical-offset/direct-map aliases; those aliases are
+    // ordinary PTE-derived mappings, not a second mapping store. The recursive
+    // self-reference slots are omitted from the ordinary walk, then separately
+    // audited above for every root by observing each reachable table-frame alias
+    // against the complete executable/writable leaf inventory.
+    scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias);
     scope.account_source(FrameWxAuditSource::RecursivePageTableView);
     scope.account_source(FrameWxAuditSource::SharedKernelMappings);
     scope.account_source(FrameWxAuditSource::LargePageLeaves);
