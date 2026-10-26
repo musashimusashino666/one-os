@@ -320,6 +320,30 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     if paging_stats.wx_audit.conflicting_overlap_events > 0 {
         serial_write(b"ONE OS W^X ALIAS OVERLAPS DETECTED (DIAGNOSTIC ONLY)\n");
+        if let Some(conflict) = paging_stats.wx_audit.first_conflict {
+            interrupts::write_hex(
+                b"ONE OS W^X FIRST CONFLICT PHYSICAL START: ",
+                conflict.physical_start,
+            );
+            interrupts::write_hex(
+                b"ONE OS W^X FIRST CONFLICT LENGTH: ",
+                conflict.length,
+            );
+            interrupts::write_hex(
+                b"ONE OS W^X FIRST CONFLICT VA A: ",
+                conflict.first_virtual_start,
+            );
+            interrupts::write_hex(
+                b"ONE OS W^X FIRST CONFLICT VA B: ",
+                conflict.second_virtual_start,
+            );
+            let rights_a = (conflict.first_permissions.writable as u64)
+                | ((conflict.first_permissions.executable as u64) << 1);
+            let rights_b = (conflict.second_permissions.writable as u64)
+                | ((conflict.second_permissions.executable as u64) << 1);
+            interrupts::write_hex(b"ONE OS W^X FIRST CONFLICT RIGHTS A (W=1,X=2): ", rights_a);
+            interrupts::write_hex(b"ONE OS W^X FIRST CONFLICT RIGHTS B (W=1,X=2): ", rights_b);
+        }
     }
 
     if let Err(error) = paging::verify_mapping_smoke_test(boot_info) {
