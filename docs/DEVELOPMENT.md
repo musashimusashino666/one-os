@@ -96,7 +96,9 @@ GitHub Actions builds a BIOS disk image, then performs three independent QEMU in
 
 ## W^X alias inventory
 
-The normal bootstrap now scans the current boot root's present paging entries without mutation and reports effective writable/executable ranges plus physical-overlap diagnostics. Compatible adjacent ranges are coalesced to keep storage bounded; large-page extents are compared by their full physical ranges. The audit fails closed if the page-table walk is malformed or exceeds its table/range budgets. It intentionally skips the recursive page-table view and does not cover inactive roots. A nonzero overlap report is diagnostic evidence about existing aliases, not an enforced protection; the kernel still denies new executable mappings until all aliases are inventoried and the mapping paths are integrated with `FrameWxRegistry`.
+The normal bootstrap scans the current boot root's present paging entries without mutation and reports effective writable/executable ranges plus physical-overlap diagnostics. Compatible adjacent ranges are coalesced to keep storage bounded; large-page extents are compared by their full physical ranges. The kernel currently bounds this walk to 128 coalesced writable/executable ranges and 16,384 visited tables; exceeding either budget is an incomplete audit and fails closed rather than reporting a clean result. Host tests stress the range inventory at its 128-range boundary, including fragmentation, coalescing while full, ignored read-only/NX entries, and state-preserving rejection of a non-coalescible next range. The 16,384-table walker budget is a separate kernel-integration limit and is not exercised by that host test.
+
+The audit intentionally skips the recursive page-table view and does not cover inactive roots. A nonzero overlap report is diagnostic evidence about existing aliases, not an enforced protection; the kernel still denies new executable mappings until all aliases are inventoried and the mapping paths are integrated with `FrameWxRegistry`.
 
 ## Read-only page-table inspection
 

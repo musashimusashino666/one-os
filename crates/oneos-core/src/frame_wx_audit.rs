@@ -370,4 +370,65 @@ mod tests {
             Err(FrameWxAuditError::InvalidVirtualRange)
         );
     }
+
+    #[test]
+    fn fragmented_inventory_enforces_capacity_and_preserves_state_on_failure() {
+        const CAPACITY: usize = 128;
+
+        let mut audit = FrameWxAudit::<CAPACITY>::new(48).unwrap();
+        for index in 0..CAPACITY {
+            let offset = (index as u64) * 2 * PAGE;
+            let rights = if index % 2 == 0 {
+                permissions(true, false)
+            } else {
+                permissions(false, true)
+            };
+            audit
+                .record_alias(BASE_VA + offset, BASE_PA + offset, PAGE, rights)
+                .unwrap();
+        }
+
+        let full = audit.summary();
+        assert_eq!(full.tracked_alias_mappings, CAPACITY as u64);
+        assert_eq!(full.tracked_ranges, CAPACITY);
+        assert_eq!(full.writable_ranges, CAPACITY / 2);
+        assert_eq!(full.executable_ranges, CAPACITY / 2);
+
+        // Read-only/NX entries do not consume W/X inventory capacity.
+        audit
+            .record_alias(
+                BASE_VA + (257 * PAGE),
+                BASE_PA + (257 * PAGE),
+                PAGE,
+                permissions(false, false),
+            )
+            .unwrap();
+        assert_eq!(audit.summary(), full);
+
+        // A compatible range adjacent to the final slot coalesces even at capacity.
+        audit
+            .record_alias(
+                BASE_VA + (255 * PAGE),
+                BASE_PA + (255 * PAGE),
+                PAGE,
+                permissions(false, true),
+            )
+            .unwrap();
+        let coalesced = audit.summary();
+        assert_eq!(coalesced.tracked_alias_mappings, CAPACITY as u64 + 1);
+        assert_eq!(coalesced.tracked_ranges, CAPACITY);
+        assert_eq!(coalesced.executable_ranges, CAPACITY / 2);
+
+        // A non-coalescible 129th range is rejected without changing the summary.
+        assert_eq!(
+            audit.record_alias(
+                BASE_VA + (258 * PAGE),
+                BASE_PA + (258 * PAGE),
+                PAGE,
+                permissions(true, false),
+            ),
+            Err(FrameWxAuditError::CapacityExhausted)
+        );
+        assert_eq!(audit.summary(), coalesced);
+    }
 }
