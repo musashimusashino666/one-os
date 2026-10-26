@@ -49,9 +49,9 @@ pub struct FrameWxAuditSummary {
     pub conflicting_overlap_events: u64,
     /// First concrete overlap found, if any.
     pub first_conflict: Option<FrameWxAuditConflict>,
-    /// Up to three additional concrete overlaps in discovery order. Together with
-    /// `first_conflict`, this keeps a bounded sample of four diagnostic examples.
-    pub additional_conflicts: [Option<FrameWxAuditConflict>; 3],
+    /// Up to two additional concrete overlaps in discovery order. Together with
+    /// `first_conflict`, this keeps a bounded sample of three diagnostic examples.
+    pub additional_conflicts: [Option<FrameWxAuditConflict>; 2],
     /// Number of populated entries in `additional_conflicts`.
     pub additional_conflict_count: usize,
 }
@@ -130,7 +130,7 @@ pub struct FrameWxAudit<const CAPACITY: usize> {
     tracked_alias_mappings: u64,
     conflicting_overlap_events: u64,
     first_conflict: Option<FrameWxAuditConflict>,
-    additional_conflicts: [Option<FrameWxAuditConflict>; 3],
+    additional_conflicts: [Option<FrameWxAuditConflict>; 2],
     additional_conflict_count: usize,
 }
 
@@ -210,7 +210,7 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             tracked_alias_mappings: 0,
             conflicting_overlap_events: 0,
             first_conflict: None,
-            additional_conflicts: [None; 3],
+            additional_conflicts: [None; 2],
             additional_conflict_count: 0,
         })
     }
