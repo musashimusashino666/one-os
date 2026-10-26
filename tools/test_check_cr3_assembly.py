@@ -337,6 +337,60 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("restore the original cr4 value", message)
 
+    def test_local_tlb_flush_may_reload_only_the_checked_active_cr3(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+                    return;
+                }
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertTrue(valid, message)
+
+    def test_local_tlb_flush_rejects_unchecked_active_cr3_reload(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                // Missing the check that the physical CR3 root matches
+                // expected_root_physical.
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("the template operand must bind directly to in(reg) root_physical, or to the checked active CR3", message)
+
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
             asm!(

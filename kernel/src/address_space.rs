@@ -397,6 +397,103 @@ fn activate_preflighted_user_root<const CAPACITY: usize>(
     switch_address_space(current, next, boot_info, true)
 }
 
+/// Flushes all local translations for the currently active root without
+/// changing address-space ownership. Used by break-before-make page-table edits
+/// after a parent Present bit is cleared. The root must remain active and the
+/// existing single-CPU, interrupts-disabled, PCID-disabled contract must hold.
+///
+/// Keep the CR4.PGE-clear, CR3-reload, and CR4-restore sequence explicit so the
+/// assembly validator checks this additional CR3 write path as well as root switches.
+#[inline(never)]
+pub(super) fn switch_address_space_flush_local_tlb(
+    expected_root_physical: u64,
+) -> Result<(), AddressSpaceError> {
+    const CR4_PGE: u64 = 1 << 7;
+    const CR4_PCIDE: u64 = 1 << 17;
+
+    let cr0: u64;
+    let cr4: u64;
+    let efer_low: u32;
+    let efer_high: u32;
+    let rflags: u64;
+    // SAFETY: these architectural registers are readable from privileged kernel
+    // context. The values are checked immediately before changing CR4/CR3.
+    unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        asm!("pushfq", "pop {}", out(reg) rflags, options(preserves_flags));
+        asm!(
+            "rdmsr",
+            in("ecx") EFER_MSR,
+            out("eax") efer_low,
+            out("edx") efer_high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    let efer = (u64::from(efer_high) << 32) | u64::from(efer_low);
+    validate_kernel_root_activation_state(cr0, cr4, efer, rflags)
+        .map_err(AddressSpaceError::PagingPrecondition)?;
+
+    // Re-read CR4 and CR3 after the validation call. The flush sequence below
+    // must keep the original CR4 and current CR3 values visible to the assembly
+    // validator without relying on caller-saved register contents across a call.
+    let cr4: u64;
+    let cr3: u64;
+    // SAFETY: the root and control state were just validated; reread immediately
+    // before the PGE-clear / CR3-reload / CR4-restore sequence.
+    unsafe {
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+    }
+    if cr4 & CR4_PCIDE != 0
+        || expected_root_physical == 0
+        || expected_root_physical & (PAGE_SIZE - 1) != 0
+        || cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical
+    {
+        return Err(AddressSpaceError::InvalidKernelRoot);
+    }
+
+    let cr4_without_pge = cr4 & !CR4_PGE;
+    // SAFETY: the current root is validated and remains active; clearing PGE
+    // invalidates global translations before the CR3 reload flushes the rest.
+    unsafe {
+        asm!(
+            "mov cr4, {}",
+            in(reg) cr4_without_pge,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    // Intentionally omit nomem: the CR3 reload is a compiler memory-ordering boundary.
+    // SAFETY: PCID is disabled and interrupts are disabled, so reloading the same
+    // active root flushes local non-global entries without an address-space switch.
+    unsafe {
+        asm!(
+            "mov cr3, {}",
+            in(reg) cr3,
+            options(nostack, preserves_flags)
+        );
+    }
+    // SAFETY: restore the exact prior CR4 only after the flush-causing CR3 write.
+    unsafe {
+        asm!(
+            "mov cr4, {}",
+            in(reg) cr4,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    let observed_cr3: u64;
+    // SAFETY: CR3 is readable in kernel mode; verify the address-space identity
+    // after the serializing switch sequence.
+    unsafe {
+        asm!("mov {}, cr3", out(reg) observed_cr3, options(nomem, nostack, preserves_flags));
+    }
+    if observed_cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+    Ok(())
+}
+
 /// Performs the validated hardware CR3 transition.
 ///
 /// When `allow_user_mappings` is true, the caller must have just completed
@@ -1536,6 +1633,7 @@ fn translate_active_alias(
                 && matches!(super::memory::is_frame_allocated(table_physical), Ok(true))
         } else {
             is_region_page(regions, table_physical, MemoryRegionKind::Bootloader)
+                || super::paging::registered_published_page_table_frame(table_physical)
         };
         if current_level == 0
             || (current_level == 4 && table_physical != root_physical)

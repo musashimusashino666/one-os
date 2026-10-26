@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry,
+    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry, demote_large_page,
     elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
     is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
@@ -25,11 +25,12 @@ use oneos_core::{
     AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
     FrameRegistryError, FrameWxAudit, FrameWxAuditScope, FrameWxAuditScopeSummary,
     FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
-    FrameWxPermissions, FrameWxRegistry, PagePermissions, PageTableEditor, PageTableError,
-    PageTableFrameRegistry, PageTableMutationError, PageTranslation, PagingPreconditionError,
-    PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
-    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
-    ZeroedFrame, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
+    FrameWxPermissions, FrameWxRegistry, LargePageDemotionEditor, LargePageDemotionReceipt,
+    PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
     FRAME_WX_AUDIT_MAX_TABLES, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -97,6 +98,7 @@ pub enum PagingError {
     UserFrameInitializationFailed,
     NoUnusedVirtualAddress,
     MappingSmokeMismatch,
+    LargePageDemotionFailed,
     MappingMutation(PageTableMutationError),
     InvalidRootTable,
     InvalidKernelImageRange,
@@ -211,6 +213,9 @@ impl PagingError {
             }
             Self::NoUnusedVirtualAddress => b"No unused virtual address was available for the mapping smoke test\n",
             Self::MappingSmokeMismatch => b"Active page-table map/unmap smoke test failed\n",
+            Self::LargePageDemotionFailed => {
+                b"Live large-page demotion transaction or direct-map verification failed\n"
+            }
             Self::MappingMutation(_) => b"Active page-table map/unmap operation failed\n",
             Self::InvalidRootTable => b"CR3 PML4 page is invalid or not fully Bootloader-owned\n",
             Self::Translation(PageTableError::NonCanonicalVirtualAddress) => {
@@ -1747,6 +1752,16 @@ fn registered_table_frame(physical_address: u64) -> bool {
     TABLE_FRAMES.lock().contains(physical_address)
 }
 
+/// Returns whether a physical frame is registered as an already-published page table.
+///
+/// Active-root walkers may encounter these frames after a large-page demotion,
+/// even though the firmware memory map still classifies the backing pages as Usable.
+pub(super) fn registered_published_page_table_frame(physical_address: u64) -> bool {
+    TABLE_FRAMES
+        .lock()
+        .contains_published_unowned(physical_address)
+}
+
 fn unpublished_table_frame(physical_address: u64) -> bool {
     // SAFETY: the registry is read only under the same single-core bootstrap
     // contract as its mutations.
@@ -2399,9 +2414,28 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64) {
-        let (pointer, reachable) = self
-            .entry_pointer(table_physical, index, level)
-            .unwrap_or_else(|| panic!("page-table write destination failed preflight"));
+        let Some((pointer, reachable)) = self.entry_pointer(table_physical, index, level) else {
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT TABLE: ", table_physical);
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT INDEX: ", index as u64);
+            super::interrupts::write_hex(b"PAGE-TABLE WRITE PREFLIGHT LEVEL: ", level as u64);
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT TARGET VA: ",
+                self.target_virtual_address,
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT UNPUBLISHED: ",
+                u64::from(unpublished_table_frame(table_physical)),
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT USABLE: ",
+                u64::from(self.is_usable_frame(table_physical)),
+            );
+            super::interrupts::write_hex(
+                b"PAGE-TABLE WRITE PREFLIGHT REACHABLE MATCH: ",
+                u64::from(self.reachable_table_physical(level) == Some(table_physical)),
+            );
+            panic!("page-table write destination failed preflight");
+        };
         // SAFETY: every existing destination is validated as writable during the
         // walk; newly allocated frames were validated and zeroed before allocation
         // returned. A fault here violates the editor contract and fail-stops.
@@ -2925,6 +2959,279 @@ impl PageTableEditor for KernelInactiveAddressSpaceEditor<'_> {
         }
         release_registered_table_frame(physical_address);
     }
+}
+
+/// Active-root adapter that binds the host-testable large-page transaction
+/// to the kernel editor's checked recursive aliases, frame registry, atomic entry
+/// update, and validated local all-TLB flush.
+struct KernelLargePageDemotionEditor<'editor, 'boot> {
+    editor: &'editor mut KernelPageTableEditor<'boot>,
+    root_table_physical: u64,
+    parent_table_physical: u64,
+    parent_index: usize,
+    source_level: u8,
+    virtual_base: u64,
+    allocated_table: Option<u64>,
+    publication_reserved: bool,
+    parent_pointer_published: bool,
+    committed: bool,
+}
+
+impl<'editor, 'boot> KernelLargePageDemotionEditor<'editor, 'boot> {
+    fn new(
+        editor: &'editor mut KernelPageTableEditor<'boot>,
+        parent_table_physical: u64,
+        parent_index: usize,
+        source_level: u8,
+        virtual_base: u64,
+    ) -> Result<Self, PagingError> {
+        let root_table_physical = editor.root_table_physical;
+        if root_table_physical != active_root_table_physical()
+            || virtual_base < 0xffff_8000_0000_0000
+            || !(2..=3).contains(&source_level)
+            || parent_index >= PML4_ENTRY_COUNT
+            || editor.reachable_table_physical(source_level) != Some(parent_table_physical)
+            || virtual_base & ((1u64 << (12 + 9 * (source_level - 1))) - 1) != 0
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        Ok(Self {
+            editor,
+            root_table_physical,
+            parent_table_physical,
+            parent_index,
+            source_level,
+            virtual_base,
+            allocated_table: None,
+            publication_reserved: false,
+            parent_pointer_published: false,
+            committed: false,
+        })
+    }
+
+    fn expected_range_length(&self) -> u64 {
+        1u64 << (12 + 9 * (self.source_level - 1))
+    }
+}
+
+impl LargePageDemotionEditor for KernelLargePageDemotionEditor<'_, '_> {
+    fn physical_address_bits(&self) -> u8 {
+        self.editor.physical_address_bits
+    }
+
+    fn read_entry(&mut self, table_physical: u64, index: usize, level: u8) -> Option<u64> {
+        PageTableEditor::read_entry(self.editor, table_physical, index, level)
+    }
+
+    fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64) {
+        let is_final_parent_publication = table_physical == self.parent_table_physical
+            && index == self.parent_index
+            && level == self.source_level
+            && value & PRESENT != 0
+            && value & LARGE_PAGE == 0;
+        if is_final_parent_publication {
+            let child_table_physical = value & PHYSICAL_ADDRESS_MASK;
+            if !self.publication_reserved
+                || self.parent_pointer_published
+                || self.allocated_table != Some(child_table_physical)
+                || self.committed
+            {
+                panic!("large-page demotion parent publication violated its reservation");
+            }
+            let (pointer, reachable) = self
+                .editor
+                .entry_pointer(table_physical, index, level)
+                .unwrap_or_else(|| panic!("large-page demotion parent became inaccessible"));
+            if !reachable {
+                panic!("large-page demotion parent was not reachable before publication");
+            }
+            // SAFETY: the transaction validated this parent entry before clearing
+            // Present. It is now non-present, the full range has been flushed, and
+            // the staged child table is fully initialized and still unpublished.
+            // Bypass the generic write hook so ownership is committed only after
+            // the transaction has actually installed this pointer.
+            unsafe { ptr::write_volatile(pointer, value) };
+            self.parent_pointer_published = true;
+            return;
+        }
+
+        PageTableEditor::write_entry(self.editor, table_physical, index, level, value);
+    }
+
+    fn compare_exchange_entry(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+        expected: u64,
+        replacement: u64,
+    ) -> Result<(), u64> {
+        self.editor
+            .compare_exchange_entry(table_physical, index, level, expected, replacement)
+            .unwrap_or(Err(expected))
+    }
+
+    fn allocate_table(&mut self) -> Option<u64> {
+        if self.allocated_table.is_some() || self.committed {
+            return None;
+        }
+        let child_table_physical = PageTableEditor::allocate_table(self.editor)?;
+        self.allocated_table = Some(child_table_physical);
+        Some(child_table_physical)
+    }
+
+    fn reserve_table_publication(
+        &mut self,
+        root_table_physical: u64,
+        child_table_physical: u64,
+        child_level: u8,
+    ) -> bool {
+        if root_table_physical != self.root_table_physical
+            || root_table_physical != active_root_table_physical()
+            || self.allocated_table != Some(child_table_physical)
+            || child_level + 1 != self.source_level
+            || self.publication_reserved
+            || self.parent_pointer_published
+            || self.committed
+            || !unpublished_table_frame(child_table_physical)
+            || self.editor.reachable_table_physical(self.source_level)
+                != Some(self.parent_table_physical)
+        {
+            return false;
+        }
+        // allocate_table has already reserved and installed the owned Frame token
+        // in TABLE_FRAMES before returning the zeroed frame. This reservation pins
+        // that exact unpublished token to this parent/level transaction.
+        self.publication_reserved = true;
+        true
+    }
+
+    fn commit_table_publication(
+        &mut self,
+        root_table_physical: u64,
+        child_table_physical: u64,
+        child_level: u8,
+    ) {
+        if root_table_physical != self.root_table_physical
+            || root_table_physical != active_root_table_physical()
+            || self.allocated_table != Some(child_table_physical)
+            || child_level + 1 != self.source_level
+            || !self.publication_reserved
+            || !self.parent_pointer_published
+            || self.committed
+            || !unpublished_table_frame(child_table_physical)
+        {
+            panic!("large-page demotion ownership commit violated its reservation");
+        }
+
+        if TABLE_FRAMES
+            .lock()
+            .mark_published(child_table_physical)
+            .is_err()
+        {
+            panic!("large-page demotion could not commit page-table frame ownership");
+        }
+        self.publication_reserved = false;
+        self.committed = true;
+        // Reconcile all now-reachable tables after the child pointer is published.
+        // This includes the new child level and remains idempotent with the explicit
+        // registration above.
+        self.editor.mark_reachable_table_frames();
+    }
+
+    fn release_unpublished_table(&mut self, child_table_physical: u64) {
+        if self.allocated_table != Some(child_table_physical)
+            || self.committed
+            || self.parent_pointer_published
+            || !unpublished_table_frame(child_table_physical)
+        {
+            panic!("large-page demotion attempted to release a foreign or published frame");
+        }
+        PageTableEditor::free_table(self.editor, child_table_physical);
+        self.allocated_table = None;
+        self.publication_reserved = false;
+    }
+
+    fn invalidate_local_range(&mut self, virtual_start: u64, length: u64) {
+        if self.root_table_physical != active_root_table_physical()
+            || self.editor.root_table_physical != self.root_table_physical
+            || virtual_start != self.virtual_base
+            || length != self.expected_range_length()
+            || virtual_start & (length - 1) != 0
+            || !is_canonical_4level(virtual_start)
+            || !is_canonical_4level(virtual_start.saturating_add(length - 1))
+        {
+            panic!("large-page demotion requested an invalid TLB invalidation range");
+        }
+        // This validated helper disables PGE, reloads the same active CR3 with
+        // PCID rejected, then restores CR4. Failure after Present was cleared is
+        // an invariant violation, so fail-stop rather than return with ambiguity.
+        if super::address_space::switch_address_space_flush_local_tlb(self.root_table_physical)
+            .is_err()
+        {
+            panic!("large-page demotion could not flush the complete local TLB range");
+        }
+    }
+}
+
+/// Demotes one large leaf covering `virtual_address`, if its current walk
+/// encounters a 1 GiB or 2 MiB mapping. All table access remains rooted in the
+/// active editor and is validated before the transaction mutates a parent entry.
+fn demote_large_page_for_address(
+    boot_info: &BootInfo,
+    virtual_address: u64,
+) -> Result<Option<LargePageDemotionReceipt>, PagingError> {
+    if !is_canonical_4level(virtual_address) || virtual_address & (PAGE_SIZE - 1) != 0 {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+    let mut editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+    let root_table_physical = editor.root_table_physical;
+    if root_table_physical != active_root_table_physical() {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    let mut table_physical = root_table_physical;
+    for table_level in (1..=4).rev() {
+        let index = virtual_index(virtual_address, table_level)
+            .ok_or(PagingError::LargePageDemotionFailed)?;
+        let entry = PageTableEditor::read_entry(&mut editor, table_physical, index, table_level)
+            .ok_or(PagingError::LargePageDemotionFailed)?;
+        if entry & PRESENT == 0 || (entry & PROTECTION_KEY_FIELD_MASK != 0 && table_level > 1) {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        if table_level == 4 && entry & LARGE_PAGE != 0 {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        if (table_level == 2 || table_level == 3) && entry & LARGE_PAGE != 0 {
+            let page_size = 1u64 << (12 + 9 * (table_level - 1));
+            let virtual_base = virtual_address & !(page_size - 1);
+            let mut transaction_editor = KernelLargePageDemotionEditor::new(
+                &mut editor,
+                table_physical,
+                index,
+                table_level,
+                virtual_base,
+            )?;
+            let receipt = demote_large_page(
+                &mut transaction_editor,
+                root_table_physical,
+                table_physical,
+                table_level,
+                index,
+                virtual_base,
+            )
+            .map_err(|_| PagingError::LargePageDemotionFailed)?;
+            return Ok(Some(receipt));
+        }
+        if table_level == 1 {
+            return Ok(None);
+        }
+        if !valid_physical_page(entry & PHYSICAL_ADDRESS_MASK, editor.physical_address_bits) {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        table_physical = entry & PHYSICAL_ADDRESS_MASK;
+    }
+    Err(PagingError::LargePageDemotionFailed)
 }
 
 impl UserAddressSpaceEditor for KernelInactiveAddressSpaceEditor<'_> {
@@ -4213,6 +4520,106 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 
     let _ = release_data_frame(data_frame);
     Err(PagingError::NoUnusedVirtualAddress)
+}
+
+/// Exercises the live large-page demotion adapter against a real
+/// physical-memory-offset mapping. The smoke test insists the selected frame
+/// starts inside a large leaf, demotes 1 GiB -> 2 MiB -> 4 KiB as required, then
+/// verifies the physical translation and effective permissions are preserved.
+pub fn verify_large_page_demotion_smoke_test(boot_info: &BootInfo) -> Result<bool, PagingError> {
+    let data_frame =
+        super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
+    let data_physical = data_frame.physical_address();
+
+    let test_result = (|| {
+        let physical_memory_offset = match boot_info.physical_memory_offset {
+            Optional::Some(offset) => offset,
+            Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+        };
+        let virtual_address = physical_memory_offset
+            .checked_add(data_physical)
+            .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        let root_table_physical = active_root_table_physical();
+        let mut editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+        let initial = translate_with_editor(&mut editor, root_table_physical, virtual_address)
+            .map_err(PagingError::Translation)?;
+        if initial.physical_address != data_physical
+            || !initial.writable
+            || initial.user_accessible
+            || initial.executable
+            || initial.page_size < PAGE_SIZE
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // A bootloader may already have split this direct-map area. Do not fail
+        // a valid boot or claim to have tested demotion when no large leaf exists.
+        if initial.page_size == PAGE_SIZE {
+            return Ok(false);
+        }
+
+        let expected_permissions = (
+            initial.writable,
+            initial.user_accessible,
+            initial.executable,
+        );
+        let mut current = initial;
+        let mut completed_demotions = 0usize;
+        while current.page_size > PAGE_SIZE && completed_demotions < 2 {
+            let expected_physical_start = current
+                .physical_address
+                .checked_sub(virtual_address & (current.page_size - 1))
+                .ok_or(PagingError::LargePageDemotionFailed)?;
+            let receipt = demote_large_page_for_address(boot_info, virtual_address)?
+                .ok_or(PagingError::LargePageDemotionFailed)?;
+            if receipt.virtual_length != current.page_size
+                || receipt.physical_start != expected_physical_start
+            {
+                return Err(PagingError::LargePageDemotionFailed);
+            }
+            completed_demotions += 1;
+
+            let mut check_editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+            current =
+                translate_with_editor(&mut check_editor, root_table_physical, virtual_address)
+                    .map_err(PagingError::Translation)?;
+            if current.physical_address != data_physical
+                || (
+                    current.writable,
+                    current.user_accessible,
+                    current.executable,
+                ) != expected_permissions
+                || current.page_size >= receipt.virtual_length
+            {
+                return Err(PagingError::LargePageDemotionFailed);
+            }
+        }
+        if completed_demotions == 0 || current.page_size != PAGE_SIZE {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        let mut access_editor = KernelPageTableEditor::new(boot_info, virtual_address)?;
+        let alias = access_editor
+            .offset_alias(data_physical)
+            .ok_or(PagingError::LargePageDemotionFailed)?;
+        const DEMOTION_SMOKE_SENTINEL: u64 = 0x4445_4d4f_5445_5631;
+        // SAFETY: the owned data frame still has a validated writable,
+        // supervisor-only, NX direct-map alias and remains allocated.
+        unsafe { ptr::write_volatile(alias.cast::<u64>(), DEMOTION_SMOKE_SENTINEL) };
+        // SAFETY: the same checked alias is read immediately after the write.
+        let observed = unsafe { ptr::read_volatile(alias.cast::<u64>()) };
+        if observed != DEMOTION_SMOKE_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        Ok(true)
+    })();
+
+    let release_result = release_data_frame(data_frame);
+    if release_result.is_err() {
+        return Err(PagingError::FrameReleaseFailed);
+    }
+    test_result
 }
 
 /// Holds the owned data frame and target VA for one dedicated QEMU protection test.
