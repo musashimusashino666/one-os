@@ -14,8 +14,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    compare_exchange_entry_with_ad_retry, bootstrap_mapping_page_count, elf64_program_header_table_range, initialize_user_frame,
-    is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
+    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry,
+    elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
+    is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
     recursive_table_page_virtual_address, reserve_bootstrap_backing_frame, translate_4level,
@@ -28,8 +29,7 @@ use oneos_core::{
     PublishedFrameReleaseError, UserAddressSpaceEditor, UserFrameInitializationError,
     UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
     ZeroedFrame, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
-    FRAME_WX_AUDIT_MAX_TABLES,
-    MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    FRAME_WX_AUDIT_MAX_TABLES, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
