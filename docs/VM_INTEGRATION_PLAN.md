@@ -39,7 +39,7 @@ The 4 KiB mutation engine now has explicit editor hooks for reserving/committing
 
 This is deliberately not a global W^X guarantee. The registry presently accounts for aliases created through the managed 4 KiB mutation APIs; it is not seeded from pre-existing boot mappings, physical-memory-offset/direct-map aliases, inherited upper-half mappings, or every inactive root and large-page extent. The concrete kernel editors still reject new executable mappings. Do not relax that policy until complete reverse-alias accounting, direct-map downgrade/removal, and adversarial W-to-X tests are implemented.
 
-A host-testable `LargePageDemotion` planner validates a present 1 GiB or 2 MiB leaf and derives its 512 child leaf entries. The host-testable `demote_large_page` transaction helper stages those entries in an unlinked, zeroed table, reserves ownership metadata, and uses a strong atomic compare-exchange to clear the old leaf's Present bit while retrying hardware Accessed/Dirty updates. It invalidates the full local range before reading the final A/D state, refreshes every child leaf with that state, publishes the child pointer, commits ownership, and invalidates the range again. The receipt reports the PAT-free physical base. Tests cover both demotion sizes, injected A/D races, allocation/registration failures, unexpected parent changes, PAT handling, and permission/cache-attribute preservation. This generic helper is not integrated into `KernelPageTableEditor`: the editor must implement CAS that serializes with hardware page-walker A/D updates and an invalidation callback that ensures no stale walk can update the retired leaf afterward. The helper remains limited to the current single-CPU/interrupts-disabled/PCID-disabled contract; it does not inventory or modify every direct-map alias, and executable mappings must remain fail-closed.
+The `LargePageDemotion` planner and `demote_large_page` transaction are now connected to the active `KernelPageTableEditor` in the current integration branch. The adapter stages a zeroed child table, reserves ownership, clears the old Present bit with strong A/D-aware CAS, flushes the entire local range with the validated PGE-clear/CR3-reload/PGE-restore path, publishes the child pointer, commits ownership, and flushes again. Every child leaf is pre-marked Accessed+Dirty before Present is cleared; this is deliberately conservative (it may report unused subpages as dirty), but avoids writing the unlinked child table during the break window, when the direct-map alias used to access that child table could itself have been removed. A/D information from any late hardware update cannot therefore be lost. The transaction receipt reports the PAT-free physical base. Host tests cover both demotion sizes, injected A/D races, allocation/registration failures, unexpected parent changes, PAT handling, and permission/cache-attribute preservation. The live adapter is limited to the current single-CPU, interrupts-disabled, PCID-disabled contract and does not by itself inventory or enforce every direct-map alias; executable mappings remain fail-closed until the frame-wide W^X transition and zero-conflict audit pass.
 
 ## Atomic page-table entry update (implemented, limited scope)
 
@@ -65,36 +65,19 @@ the decision logic with controlled observations; they do not simulate hardware
 page walkers or establish a real-machine quiescence guarantee. The concrete kernel
 smoke check uses an eight-attempt bound and fails closed if it cannot complete.
 
-## Large-page live-kernel integration gate (not implemented)
+## Large-page live-kernel integration (implemented in the current branch; validation pending)
 
-The host-testable large-page transaction proposal in PR #43 is not wired into the
-active kernel editor. Before a concrete adapter can be enabled, it must satisfy all
-of the following:
+The active editor now calls the host-testable transaction through a kernel-specific adapter. The normal boot smoke test demotes an actual physical-memory-offset large leaf as needed down to 4 KiB and checks that the physical translation, effective permissions, and data access are preserved.
 
-- Use the strong atomic compare-exchange primitive to clear Present and retry only
-  when the observed parent change consists of monotonic hardware A/D updates. Any
-  other bit change must abort before publication.
-- Finish all allocation, child-entry staging, and reversible publication-metadata
-  reservation before clearing Present. Retain the actual `Frame` token for the
-  child table until it is safely published or rolled back.
-- Define and justify an x86_64 invalidation sequence for the complete old large-page
-  translation. The contract must distinguish TLB invalidation from proof that no
-  previous hardware walk can still update the retired entry's A/D bits. A host mock
-  or a successful `INVLPG` instruction alone is not enough evidence for that stronger
-  claim.
-- Refresh the 512 child entries from the final parent A/D state only after the
-  chosen architecture contract says old walks are quiescent; then publish the
-  child-table pointer, commit ownership without a fallible step, and invalidate the
-  range again.
-- Exercise the path on a deliberately created, disposable test large-page mapping
-  in QEMU before using it on any boot/direct-map mapping. The test must verify
-  translations, effective permissions, attributes/PAT, ownership rollback, and
-  the expected A/D behavior. Do not enable executable mappings as part of this work.
+The implementation's safety invariants are:
 
-Until these gates pass on the exact reviewed PR head, keep large-page demotion out of
-the live kernel path, keep executable mapping fail-closed, and leave Issue #26 open.
-This limitation is about the specific live demotion path; the existing 4 KiB smoke
-test only validates the no-op CAS helper.
+- Use a strong atomic compare-exchange to clear Present; retry only when the observed parent change consists of monotonic hardware A/D updates. Any other bit change aborts before the mapping is unpublished.
+- Finish allocation, initialization of all 512 child leaves, and ownership-metadata reservation before clearing Present. The real `Frame` token remains held until publication is committed or the unpublished table is safely rolled back.
+- Pre-set Accessed+Dirty on every child leaf before clearing Present. Do not access the staged child table through the target direct-map alias during the break interval: demoting that same direct-map leaf may temporarily remove that alias. This conservative policy avoids losing late A/D information at the cost of false-positive dirty/accessed state.
+- Use the validated local CR4.PGE-clear / CR3-reload / CR4-restore sequence before final parent-state validation, then publish the child pointer, commit ownership without a fallible step, and flush the full local range again.
+- Exercise the live path in disposable QEMU CI runs and retain exact checks for translations, effective permissions, attributes/PAT, ownership failure handling, and the existing exception/protection/TLB suite. QEMU success is not physical-hardware proof of all x86 page-walk/A-D ordering guarantees; that contract still requires independent architecture review.
+
+This integration still assumes a single CPU, maskable interrupts disabled, PCID disabled, and no remote TLB shootdown. It demotes page-table leaves but does not by itself complete frame-wide W^X. PR #52 contains the separate direct-map alias downgrade and post-activation zero-conflict gate. Keep executable mapping admission fail-closed and Issue #26 open until the exact-head CI, alias-coverage limits, failure-path tests, and review are complete.
 
 ## Goals
 
