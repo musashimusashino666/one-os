@@ -657,7 +657,6 @@ fn validate_shared_kernel_half(
 enum AuditRootRange {
     All,
     LowerHalf,
-    UpperHalf,
 }
 
 /// Physical frames whose writable recursive aliases must be checked after the
@@ -755,15 +754,13 @@ fn audit_wx_table<const CAPACITY: usize>(
         // and NX. Ancestor permissions on the ordinary path remain effective
         // for aliases to lower-level tables. The virtual alias is validated now,
         // but physical conflicts are checked after all ordinary leaves are known.
-        if !(level == 4 && root_range == AuditRootRange::UpperHalf) {
-            let view_virtual = recursive_table_page_virtual_address(
-                view_index,
-                if level == 4 { 0 } else { virtual_prefix },
-                level,
-            )
-            .ok_or(PagingError::WxAuditFailed)?;
-            recursive_aliases.observe(table_physical, view_virtual, ancestors_writable)?;
-        }
+        let view_virtual = recursive_table_page_virtual_address(
+            view_index,
+            if level == 4 { 0 } else { virtual_prefix },
+            level,
+        )
+        .ok_or(PagingError::WxAuditFailed)?;
+        recursive_aliases.observe(table_physical, view_virtual, ancestors_writable)?;
     }
 
     // The active root is read through its checked recursive alias. For an
@@ -786,7 +783,6 @@ fn audit_wx_table<const CAPACITY: usize>(
         match root_range {
             AuditRootRange::All => (0, PML4_ENTRY_COUNT),
             AuditRootRange::LowerHalf => (0, LOWER_HALF_PML4_ENTRIES),
-            AuditRootRange::UpperHalf => (LOWER_HALF_PML4_ENTRIES, PML4_ENTRY_COUNT),
         }
     };
     for index in first_entry..end_entry {
