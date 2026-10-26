@@ -31,11 +31,10 @@ impl FrameWxAuditSource {
 }
 
 /// Bit mask of all mapping sources required for a system-wide W^X coverage claim.
-pub const FRAME_WX_AUDIT_REQUIRED_SOURCES: u8 =
-    FrameWxAuditSource::PhysicalMemoryOffsetAlias as u8
-        | FrameWxAuditSource::RecursivePageTableView as u8
-        | FrameWxAuditSource::SharedKernelMappings as u8
-        | FrameWxAuditSource::LargePageLeaves as u8;
+pub const FRAME_WX_AUDIT_REQUIRED_SOURCES: u8 = FrameWxAuditSource::PhysicalMemoryOffsetAlias as u8
+    | FrameWxAuditSource::RecursivePageTableView as u8
+    | FrameWxAuditSource::SharedKernelMappings as u8
+    | FrameWxAuditSource::LargePageLeaves as u8;
 
 /// Invalid state reported while constructing an audit coverage scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,9 +117,7 @@ pub struct FrameWxAuditScope<const MAX_ROOTS: usize> {
 
 impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     /// Creates an empty coverage scope for the reported CPU physical-address width.
-    pub const fn new(
-        physical_address_bits: u8,
-    ) -> Result<Self, FrameWxAuditScopeError> {
+    pub const fn new(physical_address_bits: u8) -> Result<Self, FrameWxAuditScopeError> {
         if physical_address_bits < 32 || physical_address_bits > 52 {
             return Err(FrameWxAuditScopeError::InvalidPhysicalAddressWidth);
         }
@@ -135,10 +132,7 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 
     /// Declares one root before the authoritative root inventory is sealed.
-    pub fn declare_root(
-        &mut self,
-        physical_address: u64,
-    ) -> Result<(), FrameWxAuditScopeError> {
+    pub fn declare_root(&mut self, physical_address: u64) -> Result<(), FrameWxAuditScopeError> {
         if self.root_inventory_sealed {
             return Err(FrameWxAuditScopeError::RootInventorySealed);
         }
@@ -231,10 +225,7 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 
     fn valid_root_address(&self, address: u64) -> bool {
-        if address == 0
-            || address & (PAGE_SIZE - 1) != 0
-            || address & !PHYSICAL_ADDRESS_MASK != 0
-        {
+        if address == 0 || address & (PAGE_SIZE - 1) != 0 || address & !PHYSICAL_ADDRESS_MASK != 0 {
             return false;
         }
         let limit = 1u64 << self.physical_address_bits;
@@ -282,8 +273,7 @@ mod tests {
         assert!(!summary.complete);
         assert_eq!(
             summary.missing_sources,
-            FRAME_WX_AUDIT_REQUIRED_SOURCES
-                & !FrameWxAuditSource::LargePageLeaves.mask()
+            FRAME_WX_AUDIT_REQUIRED_SOURCES & !FrameWxAuditSource::LargePageLeaves.mask()
         );
     }
 
