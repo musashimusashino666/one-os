@@ -843,8 +843,28 @@ fn halt_forever() -> ! {
     }
 }
 
+struct SerialFmtWriter;
+
+impl core::fmt::Write for SerialFmtWriter {
+    fn write_str(&mut self, value: &str) -> core::fmt::Result {
+        serial_write(value.as_bytes());
+        Ok(())
+    }
+}
+
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+fn panic(info: &PanicInfo<'_>) -> ! {
     serial_write(b"\nONE OS KERNEL PANIC\n");
+    let mut writer = SerialFmtWriter;
+    let _ = core::fmt::Write::write_fmt(
+        &mut writer,
+        format_args!("Panic message: {}\n", info.message()),
+    );
+    if let Some(location) = info.location() {
+        serial_write(b"Panic location file: ");
+        serial_write(location.file().as_bytes());
+        serial_write(b"\n");
+        interrupts::write_hex(b"Panic location line: ", u64::from(location.line()));
+    }
     halt_forever()
 }
