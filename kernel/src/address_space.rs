@@ -602,6 +602,26 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
+    // The two inactive roots now contain real private lower-half page-table
+    // trees. Audit them before activation so the physical-offset/ownership path
+    // must walk their actual child tables, not only inspect empty PML4 roots.
+    let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
+    let (_audit, scope) = super::paging::audit_registered_wx_roots(
+        boot_info,
+        original_physical,
+        original_recursive_index,
+        physical_address_bits,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    if scope.declared_roots < 3
+        || scope.audited_roots != scope.declared_roots
+        || scope.missing_sources
+            != oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+        || scope.complete
+    {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
     let (original_inactive, second_active) =
         activate_preflighted_user_root(active_root, second_root, boot_info, &user_registry)?;
     if second_active.physical_address() != second_physical
