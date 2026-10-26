@@ -270,7 +270,10 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             self.remember_conflict(conflict);
         }
 
-        for existing in self.aliases[..self.alias_count].iter().copied() {
+        // Copy each candidate out of the inventory before mutating the
+        // summary fields on self; this keeps the immutable array borrow short.
+        for index in 0..self.alias_count {
+            let existing = self.aliases[index];
             if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
                 self.remember_conflict(conflict);
@@ -323,7 +326,10 @@ impl<const CAPACITY: usize> FrameWxAudit<CAPACITY> {
             self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
             self.remember_conflict(conflict);
         }
-        for existing in self.aliases[..self.alias_count].iter().copied() {
+        // Copy each candidate out of the inventory before mutating the
+        // summary fields on self; this keeps the immutable array borrow short.
+        for index in 0..self.alias_count {
+            let existing = self.aliases[index];
             if let Some(conflict) = conflicting_intersection(existing, incoming) {
                 self.conflicting_overlap_events = self.conflicting_overlap_events.saturating_add(1);
                 self.remember_conflict(conflict);
