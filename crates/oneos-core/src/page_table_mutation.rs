@@ -512,10 +512,26 @@ pub fn unmap_4k<E: PageTableEditor>(
     effective_user &= leaf & USER_ACCESSIBLE != 0;
     effective_executable &= leaf & NO_EXECUTE == 0;
 
+    let permissions = PagePermissions::new(effective_writable, effective_user, effective_executable);
+    let tracks_wx_alias = permissions.writable || permissions.executable;
+    if tracks_wx_alias {
+        editor.begin_wx_alias_removal(
+            root_table_physical,
+            virtual_address,
+            leaf_physical_address,
+            permissions,
+        )?;
+    }
+
     editor.write_entry(table_physical, indices[3], 1, 0);
+    if tracks_wx_alias {
+        // The editor invalidates the active translation or proves this root is inactive
+        // under the current single-CPU, PCID-disabled address-space switch contract.
+        editor.complete_wx_alias_removal(root_table_physical, virtual_address);
+    }
     Ok(UnmappedPage {
         physical_address: leaf_physical_address,
-        permissions: PagePermissions::new(effective_writable, effective_user, effective_executable),
+        permissions,
     })
 }
 
