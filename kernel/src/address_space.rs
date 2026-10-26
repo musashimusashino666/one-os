@@ -598,7 +598,9 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // distinct from the earlier bootloader-root inspection in main.rs: the
     // latter's identity mappings may not survive CR3 activation. This remains
     // a read-only diagnostic over the declared scope, not W^X enforcement.
-    super::serial_write(b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)\n");
+    super::serial_write(
+        b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)\n",
+    );
     super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
     super::interrupts::write_hex(
         b"ONE OS W^X RUNTIME DECLARED ROOTS: ",
@@ -644,10 +646,10 @@ pub fn verify_runtime_address_space_switch_smoke_test(
             b"ONE OS W^X RUNTIME CONFLICT SECOND VIRTUAL START: ",
             conflict.second_virtual_start,
         );
-        let first_flags = u64::from(conflict.first_permissions.writable)
-            | (u64::from(conflict.first_permissions.executable) << 1);
-        let second_flags = u64::from(conflict.second_permissions.writable)
-            | (u64::from(conflict.second_permissions.executable) << 1);
+        let first_flags = (conflict.first_permissions.writable as u64)
+            | ((conflict.first_permissions.executable as u64) << 1);
+        let second_flags = (conflict.second_permissions.writable as u64)
+            | ((conflict.second_permissions.executable as u64) << 1);
         super::interrupts::write_hex(
             b"ONE OS W^X RUNTIME FIRST RIGHTS FLAGS (W=BIT0,X=BIT1): ",
             first_flags,
