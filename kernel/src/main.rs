@@ -297,7 +297,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_write(b"ONE OS W^X ALIAS WALK FINISHED (ACTIVE ROOT ONLY)\n");
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOT INVENTORY SEALED: ",
-        if paging_stats.wx_audit_scope.root_inventory_sealed { 1 } else { 0 },
+        if paging_stats.wx_audit_scope.root_inventory_sealed {
+            1
+        } else {
+            0
+        },
     );
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOTS DECLARED: ",
