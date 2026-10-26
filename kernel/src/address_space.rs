@@ -682,13 +682,55 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
     #[cfg(not(feature = "test-wx-runtime-audit"))]
-    let (_audit, scope) = super::paging::audit_registered_wx_roots(
+    let (audit, scope) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
         physical_address_bits,
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    // This walk is read-only, but the normal-boot policy fails closed on a
+    // conflict in its declared scope. Emit the first concrete conflict before
+    // any gate can return a generic integration error, preserving diagnostics.
+    super::serial_write(
+        b"ONE OS W^X POST-ACTIVATION AUDIT: READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT\n",
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
+        audit.conflicting_overlap_events,
+    );
+    if let Some(conflict) = audit.first_conflict {
+        super::serial_write(b"ONE OS W^X POST-ACTIVATION FIRST CONFLICT\n");
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT PHYSICAL START: ",
+            conflict.physical_start,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT LENGTH: ",
+            conflict.length,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT FIRST VIRTUAL START: ",
+            conflict.first_virtual_start,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT SECOND VIRTUAL START: ",
+            conflict.second_virtual_start,
+        );
+        let first_flags = (conflict.first_permissions.writable as u64)
+            | ((conflict.first_permissions.executable as u64) << 1);
+        let second_flags = (conflict.second_permissions.writable as u64)
+            | ((conflict.second_permissions.executable as u64) << 1);
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT FIRST RIGHTS (W=BIT0,X=BIT1): ",
+            first_flags,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT SECOND RIGHTS (W=BIT0,X=BIT1): ",
+            second_flags,
+        );
+    }
+
     if scope.declared_roots < 3
         || scope.audited_roots != scope.declared_roots
         || scope.missing_sources != 0
@@ -699,18 +741,34 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         return Err(AddressSpaceError::PagingIntegrationFailed);
     }
 
+    // The dedicated root-token leak test intentionally skips the direct-map
+    // W^X transition so it can exercise ownership/teardown against the legacy
+    // boot mapping. Its audit must complete, but may still report that known
+    // conflict. Normal boot requires a conflict-free result.
+    #[cfg(all(
+        not(feature = "test-root-leak-safety"),
+        not(feature = "test-wx-runtime-audit")
+    ))]
+    if audit.conflicting_overlap_events != 0 || audit.first_conflict.is_some() {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
     #[cfg(feature = "test-wx-runtime-audit")]
     {
-        if (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none() {
+        if audit.conflicting_overlap_events != 0
+            || audit.first_conflict.is_some()
+            || (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none()
+        {
             return Err(AddressSpaceError::PagingIntegrationFailed);
         }
 
         // Emit the audit captured after the owned kernel root is active. Keep this
         // distinct from the earlier bootloader-root inspection in main.rs: the
-        // latter's identity mappings may not survive CR3 activation. This remains
-        // a read-only diagnostic over the declared scope, not W^X enforcement.
+        // latter's identity mappings may not survive CR3 activation.
+        // The walk is read-only. Normal boot treats conflicts as fatal, but the
+        // bounded declared-root inventory is not a global W^X guarantee.
         super::serial_write(
-            b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (DIAGNOSTIC ONLY)\n",
+            b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT)\n",
         );
         super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
         super::interrupts::write_hex(
