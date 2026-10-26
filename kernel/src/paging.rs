@@ -571,12 +571,12 @@ pub(super) fn audit_registered_wx_roots(
             .map_err(|_| PagingError::WxAuditFailed)?;
     }
 
-    // Account sources only after their corresponding evidence exists:
-    // the active root's full non-recursive tree was walked, every registered
-    // inactive root's private lower half was walked, and shared kernel-half
-    // entries were validated against the active root. Recursive views remain
-    // excluded and therefore keep the global-coverage result incomplete.
-    scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias);
+    // Account only sources that this pass actually inventories or validates:
+    // the active and private inactive-root page-table leaves were walked, and
+    // the shared kernel-half entries were compared entry-for-entry. Merely using
+    // the physical-memory offset to read table frames does NOT audit the direct-map
+    // aliases themselves, so PhysicalMemoryOffsetAlias must remain missing.
+    // Recursive page-table views are also deliberately not inventoried.
     scope.account_source(FrameWxAuditSource::SharedKernelMappings);
     scope.account_source(FrameWxAuditSource::LargePageLeaves);
 
