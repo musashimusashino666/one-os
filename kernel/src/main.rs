@@ -325,10 +325,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 b"ONE OS W^X FIRST CONFLICT PHYSICAL START: ",
                 conflict.physical_start,
             );
-            interrupts::write_hex(
-                b"ONE OS W^X FIRST CONFLICT LENGTH: ",
-                conflict.length,
-            );
+            interrupts::write_hex(b"ONE OS W^X FIRST CONFLICT LENGTH: ", conflict.length);
             interrupts::write_hex(
                 b"ONE OS W^X FIRST CONFLICT VA A: ",
                 conflict.first_virtual_start,
