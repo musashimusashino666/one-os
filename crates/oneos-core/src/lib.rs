@@ -51,7 +51,10 @@ pub use frame_wx::{
     FrameWxError, FrameWxPermissions, FrameWxRegistry, FrameWxRemoval, FrameWxRemovalError,
     FrameWxReservation, FrameWxReservationError,
 };
-pub use frame_wx_audit::{FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary};
+pub use frame_wx_audit::{
+    FrameWxAudit, FrameWxAuditError, FrameWxAuditSummary, FrameWxAuditTableBudget,
+    FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+};
 pub use memory_policy::{
     validate_boot_memory_policy, BootMemoryPolicyError, BootMemoryPolicyStats,
 };

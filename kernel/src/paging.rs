@@ -22,12 +22,13 @@ use oneos_core::{
     unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
-    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxPermissions, PagePermissions,
-    PageTableEditor, PageTableError, PageTableFrameRegistry, PageTableMutationError,
-    PageTranslation, PagingPreconditionError, PublishedFrameReleaseError, UserAddressSpaceEditor,
-    UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
-    UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame, ELF64_HEADER_SIZE,
-    ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
+    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxAuditTableBudget,
+    FrameWxPermissions, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
+    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
+    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
+    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
+    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, FRAME_WX_AUDIT_MAX_TABLES,
+    MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -53,7 +54,7 @@ const MAPPING_SMOKE_SENTINEL: u64 = 0x4f4e_454f_5356_4d31;
 const MAX_BOOTSTRAP_MAPPING_PAGES: u64 = 4096;
 // Bounds the read-only W^X walk. Exhaustion is an incomplete audit, never a clean result.
 const MAX_WX_AUDIT_RANGES: usize = 128;
-const MAX_WX_AUDIT_TABLES: usize = 16_384;
+const MAX_WX_AUDIT_TABLES: usize = FRAME_WX_AUDIT_MAX_TABLES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
@@ -432,7 +433,7 @@ fn audit_active_root_wx_aliases(
     let mut audit = FrameWxAudit::<MAX_WX_AUDIT_RANGES>::new(physical_address_bits)
         .map_err(|_| PagingError::WxAuditFailed)?;
     let mut visited_path = [0u64; 4];
-    let mut table_count = 0usize;
+    let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
     audit_wx_table(
         boot_info,
         recursive_index,
@@ -444,7 +445,7 @@ fn audit_active_root_wx_aliases(
         true,
         &mut visited_path,
         0,
-        &mut table_count,
+        &mut table_budget,
         &mut audit,
     )?;
     Ok(audit.summary())
@@ -467,7 +468,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     ancestors_executable: bool,
     visited_path: &mut [u64; 4],
     depth: usize,
-    table_count: &mut usize,
+    table_budget: &mut FrameWxAuditTableBudget<MAX_WX_AUDIT_TABLES>,
     audit: &mut FrameWxAudit<CAPACITY>,
 ) -> Result<(), PagingError> {
     if !(1..=4).contains(&level)
@@ -476,10 +477,9 @@ fn audit_wx_table<const CAPACITY: usize>(
     {
         return Err(PagingError::WxAuditFailed);
     }
-    *table_count = (*table_count)
-        .checked_add(1)
-        .filter(|count| *count <= MAX_WX_AUDIT_TABLES)
-        .ok_or(PagingError::WxAuditFailed)?;
+    table_budget
+        .visit()
+        .map_err(|_| PagingError::WxAuditFailed)?;
     visited_path[depth] = table_physical;
 
     // A target address with the current path's indexes lets the existing checked
@@ -571,7 +571,7 @@ fn audit_wx_table<const CAPACITY: usize>(
             executable,
             visited_path,
             depth + 1,
-            table_count,
+            table_budget,
             audit,
         )?;
     }
