@@ -88,27 +88,11 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         return False, f"Active page-table mutation marker missing: {MUTATION_READY_MARKER}"
     if mutation_index < paging_index or mutation_index > complete_index:
         return False, "Active page-table mutation marker appeared outside inspection/completion markers"
-    demotion_outcomes = [
-        marker for marker in (DEMOTION_READY_MARKER, DEMOTION_SKIPPED_MARKER)
-        if marker in log
-    ]
-    if len(demotion_outcomes) != 1:
-        return False, (
-            "expected exactly one large-page demotion smoke outcome "
-            f"({DEMOTION_READY_MARKER} or {DEMOTION_SKIPPED_MARKER})"
-        )
-    demotion_marker = demotion_outcomes[0]
-    if log.count(demotion_marker) != 1:
-        return False, f"expected exactly one large-page demotion smoke marker: {demotion_marker}"
-    demotion_index = log.find(demotion_marker)
-
     address_space_index = log.find(ADDRESS_SPACE_READY_MARKER)
     if address_space_index < 0:
         return False, f"Address-space root initialization marker missing: {ADDRESS_SPACE_READY_MARKER}"
     if address_space_index < mutation_index or address_space_index > complete_index:
         return False, "Address-space root initialization marker appeared outside mutation/completion markers"
-    if not mutation_index < demotion_index < address_space_index:
-        return False, "Large-page demotion smoke outcome must follow mapping mutation and precede root initialization"
     activation_index = log.find(ACTIVATION_READY_MARKER)
     if activation_index < 0:
         return False, f"Kernel address-space activation marker missing: {ACTIVATION_READY_MARKER}"
@@ -165,6 +149,24 @@ def validate_serial_output(log: str, exit_status: int) -> tuple[bool, str]:
         < verified_position < pass_position < complete_index
     ):
         return False, "runtime address-space switching and user-frame zeroing verification must follow CR3 activation in order"
+
+    demotion_outcomes = [
+        marker for marker in (DEMOTION_READY_MARKER, DEMOTION_SKIPPED_MARKER)
+        if marker in log
+    ]
+    if len(demotion_outcomes) != 1:
+        return False, (
+            "expected exactly one large-page demotion smoke outcome "
+            f"({DEMOTION_READY_MARKER} or {DEMOTION_SKIPPED_MARKER})"
+        )
+    demotion_marker = demotion_outcomes[0]
+    if log.count(demotion_marker) != 1:
+        return False, f"expected exactly one large-page demotion smoke marker: {demotion_marker}"
+    demotion_index = log.find(demotion_marker)
+    mutation_index = log.find(MUTATION_READY_MARKER)
+    address_space_index = log.find(ADDRESS_SPACE_READY_MARKER)
+    if not mutation_index < demotion_index < address_space_index:
+        return False, "Large-page demotion smoke outcome must follow mapping mutation and precede root initialization"
 
     return True, "QEMU reached bootstrap completion; private-root user-frame zeroing passed without a panic"
 
