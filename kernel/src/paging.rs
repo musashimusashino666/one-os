@@ -1838,13 +1838,7 @@ impl<'a> KernelPageTableEditor<'a> {
             return false;
         };
         for _ in 0..8 {
-            match self.compare_exchange_entry(
-                table_physical,
-                index,
-                level,
-                expected,
-                expected,
-            ) {
+            match self.compare_exchange_entry(table_physical, index, level, expected, expected) {
                 Some(Ok(())) => return true,
                 Some(Err(observed)) => {
                     let expected_ad = expected & ACCESSED_DIRTY_MASK;
@@ -3793,15 +3787,14 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
                 }
                 // SAFETY: the same validated mapping is immediately read back.
                 let observed = unsafe { ptr::read_volatile(candidate as *const u64) };
-                let atomic_entry_update_correctly =
-                    if let (Some(table_physical), Some(index)) = (
-                        editor.reachable_table_physical(1),
-                        virtual_index(candidate, 1),
-                    ) {
-                        editor.verify_atomic_entry_compare_exchange(table_physical, index, 1)
-                    } else {
-                        false
-                    };
+                let atomic_entry_update_correctly = if let (Some(table_physical), Some(index)) = (
+                    editor.reachable_table_physical(1),
+                    virtual_index(candidate, 1),
+                ) {
+                    editor.verify_atomic_entry_compare_exchange(table_physical, index, 1)
+                } else {
+                    false
+                };
                 let translation =
                     translate_with_editor(&mut editor, root_table_physical, candidate);
                 let mapped_correctly = atomic_entry_update_correctly
