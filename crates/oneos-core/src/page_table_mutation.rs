@@ -100,6 +100,34 @@ pub trait PageTableEditor {
     /// kernel, shared-address-space, and large-page aliases.
     fn executable_mapping_allowed(&self, physical_address: u64) -> bool;
 
+    /// Reserves a writable/executable physical alias before any page-table entry is
+    /// published. Called only if at least one of those permissions is requested.
+    /// Errors must leave the page-table tree unchanged.
+    fn reserve_wx_alias(
+        &mut self,
+        root_table_physical: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError>;
+
+    /// Commits the reserved alias after the page-table hierarchy is published.
+    /// This callback is infallible by contract; inconsistent state must fail-stop.
+    fn commit_wx_alias(&mut self, root_table_physical: u64, virtual_address: u64);
+
+    /// Marks the registered alias retiring before clearing its PTE and verifies identity.
+    fn begin_wx_alias_removal(
+        &mut self,
+        root_table_physical: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableMutationError>;
+
+    /// Completes retirement after the PTE is cleared and stale translations cannot be used.
+    /// This callback is infallible by contract; inconsistent state must fail-stop.
+    fn complete_wx_alias_removal(&mut self, root_table_physical: u64, virtual_address: u64);
+
     /// Releases a page-table frame allocated by allocate_table.
     fn free_table(&mut self, physical_address: u64);
 }
@@ -127,6 +155,8 @@ pub enum PageTableMutationError {
     AllocationFailed,
     AlreadyMapped,
     AncestorPermissionConflict { level: u8 },
+    /// The physical-frame W^X alias registry denied or could not validate a mutation.
+    WxAliasRegistryFailure,
 }
 
 impl PageTableMutationError {
