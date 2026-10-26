@@ -22,13 +22,12 @@ use oneos_core::{
     unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
     validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
     AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
-    FrameRegistryError, PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
-    FrameWxAudit, FrameWxAuditSummary, FrameWxPermissions,
-    ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE,
-    USER_VIRTUAL_ADDRESS_LIMIT,
+    FrameRegistryError, FrameWxAudit, FrameWxAuditSummary, FrameWxPermissions, PagePermissions,
+    PageTableEditor, PageTableError, PageTableFrameRegistry, PageTableMutationError,
+    PageTranslation, PagingPreconditionError, PublishedFrameReleaseError, UserAddressSpaceEditor,
+    UserFrameInitializationError, UserFrameInitializer, UserPageMappingError,
+    UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame, ELF64_HEADER_SIZE,
+    ELF64_PROGRAM_HEADER_SIZE, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
 const CR0_WP: u64 = 1 << 16;
@@ -536,11 +535,7 @@ fn audit_wx_table<const CAPACITY: usize>(
 
         let large_page = level > 1 && entry & LARGE_PAGE != 0;
         if level == 1 || large_page {
-            let page_size = if large_page {
-                1u64 << shift
-            } else {
-                PAGE_SIZE
-            };
+            let page_size = if large_page { 1u64 << shift } else { PAGE_SIZE };
             if large_page && raw_physical & ((page_size - 1) & !(1 << 12)) != 0 {
                 return Err(PagingError::WxAuditFailed);
             }
