@@ -451,8 +451,11 @@ pub(super) fn audit_registered_wx_roots(
     let active_root_pointer = active_editor
         .audit_table_pointer(root_table_physical, 4)
         .ok_or(PagingError::WxAuditFailed)?;
-    if find_root_recursive_index(active_root_pointer, root_table_physical, physical_address_bits)?
-        != recursive_index
+    if find_root_recursive_index(
+        active_root_pointer,
+        root_table_physical,
+        physical_address_bits,
+    )? != recursive_index
     {
         return Err(PagingError::WxAuditFailed);
     }
@@ -680,12 +683,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     )
     .map_err(|_| PagingError::WxAuditFailed)?;
     let table_pointer = editor
-        .audit_table_pointer_for_root(
-            audit_root_physical,
-            table_physical,
-            level,
-            virtual_prefix,
-        )
+        .audit_table_pointer_for_root(audit_root_physical, table_physical, level, virtual_prefix)
         .ok_or(PagingError::WxAuditFailed)?;
 
     let entry_count = if level == 4 && lower_half_only {
