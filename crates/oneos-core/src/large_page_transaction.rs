@@ -1,8 +1,8 @@
 //! Host-testable transaction for demoting an x86_64 large-page leaf.
 //!
 //! This primitive stages all 512 child entries in an unlinked, zeroed table,
-//! reserves ownership metadata before publication, revalidates the parent, then
-//! replaces the parent entry and invalidates the full local virtual range.
+//! reserves ownership metadata, atomically invalidates the old leaf, recovers
+//! final hardware A/D state, then publishes the child table and flushes again.
 //! It is not yet wired to the live kernel page-table editor. The caller must
 //! serialize page-table mutation and keep the current single-CPU/interrupt-off,
 //! PCID-disabled contract in force.
