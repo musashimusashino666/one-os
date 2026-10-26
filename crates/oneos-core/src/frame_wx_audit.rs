@@ -42,6 +42,54 @@ pub enum FrameWxAuditError {
     CapacityExhausted,
 }
 
+/// Maximum number of page-table visits permitted in the bounded W^X audit.
+pub const FRAME_WX_AUDIT_MAX_TABLES: usize = 16_384;
+
+/// Tracks how many page tables a bounded W^X audit has visited.
+///
+/// This small policy object is shared with the kernel walker so host tests can
+/// exercise the exact visit-budget boundary without constructing a page-table tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameWxAuditTableBudgetError {
+    /// The configured number of page-table visits has already been reached.
+    CapacityExhausted,
+}
+
+/// Fail-closed counter for a page-table walk's maximum number of table visits.
+///
+/// A rejected visit does not change the count, so callers cannot accidentally
+/// treat an exhausted walk as having made progress.
+pub struct FrameWxAuditTableBudget<const MAX_TABLES: usize> {
+    visited_tables: usize,
+}
+
+impl<const MAX_TABLES: usize> FrameWxAuditTableBudget<MAX_TABLES> {
+    /// Creates a visit counter with no tables visited.
+    pub const fn new() -> Self {
+        Self { visited_tables: 0 }
+    }
+
+    /// Accounts for one table visit, rejecting visits beyond the configured limit.
+    pub fn visit(&mut self) -> Result<(), FrameWxAuditTableBudgetError> {
+        if self.visited_tables >= MAX_TABLES {
+            return Err(FrameWxAuditTableBudgetError::CapacityExhausted);
+        }
+        self.visited_tables += 1;
+        Ok(())
+    }
+
+    /// Returns the number of accepted page-table visits.
+    pub const fn visited_tables(&self) -> usize {
+        self.visited_tables
+    }
+}
+
+impl<const MAX_TABLES: usize> Default for FrameWxAuditTableBudget<MAX_TABLES> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Bounded, read-only inventory of mappings that are writable or executable.
 ///
 /// Records describe byte ranges, not just page starts, so a 4 KiB alias conflicts
@@ -236,7 +284,10 @@ fn validate_virtual_range(start: u64, length: u64) -> Result<(), FrameWxAuditErr
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameWxAudit, FrameWxAuditError};
+    use super::{
+        FrameWxAudit, FrameWxAuditError, FrameWxAuditTableBudget, FrameWxAuditTableBudgetError,
+        FRAME_WX_AUDIT_MAX_TABLES,
+    };
     use crate::frame_wx::FrameWxPermissions;
 
     const BASE_VA: u64 = 0xffff_8000_0000_0000;
@@ -430,5 +481,34 @@ mod tests {
             Err(FrameWxAuditError::CapacityExhausted)
         );
         assert_eq!(audit.summary(), coalesced);
+    }
+
+    #[test]
+    fn table_budget_enforces_the_16k_visit_boundary_without_overcounting() {
+        const MAX_TABLES: usize = FRAME_WX_AUDIT_MAX_TABLES;
+
+        let mut budget = FrameWxAuditTableBudget::<MAX_TABLES>::new();
+        assert_eq!(budget.visited_tables(), 0);
+
+        for _ in 0..MAX_TABLES {
+            budget.visit().unwrap();
+        }
+        assert_eq!(budget.visited_tables(), MAX_TABLES);
+        assert_eq!(
+            budget.visit(),
+            Err(FrameWxAuditTableBudgetError::CapacityExhausted)
+        );
+        assert_eq!(budget.visited_tables(), MAX_TABLES);
+    }
+
+    #[test]
+    fn zero_table_budget_rejects_the_first_visit_without_mutation() {
+        let mut budget = FrameWxAuditTableBudget::<0>::new();
+
+        assert_eq!(
+            budget.visit(),
+            Err(FrameWxAuditTableBudgetError::CapacityExhausted)
+        );
+        assert_eq!(budget.visited_tables(), 0);
     }
 }
