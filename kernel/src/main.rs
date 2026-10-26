@@ -872,9 +872,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             // SAFETY: read back the reserved test frame immediately through its
             // validated direct-map alias while single-CPU and interrupts-disabled.
-            let observed = unsafe {
-                core::ptr::read_volatile(writable_direct_alias as *const u64)
-            };
+            let observed = unsafe { core::ptr::read_volatile(writable_direct_alias as *const u64) };
             if observed != 0x4f4e_455f_5758_5041 {
                 serial_write(b"\nONE OS W^X WRITABLE SIBLING DIRECT-MAP FAILED\n");
                 halt_forever()
