@@ -1790,6 +1790,79 @@ impl<'a> KernelPageTableEditor<'a> {
         Some(current_physical)
     }
 
+    /// Performs a strong atomic update of one validated page-table entry.
+    ///
+    /// This RMW allows the caller to observe hardware Accessed/Dirty changes
+    /// instead of racing them with a read-then-write sequence. It does not
+    /// invalidate translations or make a multi-entry page-table transaction
+    /// safe by itself. Callers must retain the editor's single-CPU,
+    /// interrupts-disabled, PCID-disabled mutation preconditions.
+    fn compare_exchange_entry(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+        expected: u64,
+        replacement: u64,
+    ) -> Option<Result<(), u64>> {
+        let (pointer, reachable) = self.entry_pointer(table_physical, index, level)?;
+        // SAFETY: entry_pointer validates a naturally aligned pointer to one
+        // page-table entry. AtomicU64::compare_exchange compiles to an x86_64
+        // locked compare-exchange, so hardware-updated A/D bits cause a failed
+        // comparison instead of being silently overwritten by this RMW.
+        let result = {
+            let atomic_entry = unsafe { AtomicU64::from_ptr(pointer) };
+            atomic_entry
+                .compare_exchange(expected, replacement, Ordering::AcqRel, Ordering::Acquire)
+                .map(|_| ())
+                .map_err(|observed| observed)
+        };
+        if result.is_ok() && reachable {
+            self.mark_reachable_table_frames();
+        }
+        Some(result)
+    }
+
+    /// Smoke-checks the atomic entry primitive without changing the entry.
+    ///
+    /// Retries only when the observed difference is a monotonic hardware A/D
+    /// update. This verifies the concrete editor's CAS path, but deliberately
+    /// does not claim to prove large-page break-before-make or TLB quiescence.
+    fn verify_atomic_entry_compare_exchange(
+        &mut self,
+        table_physical: u64,
+        index: usize,
+        level: u8,
+    ) -> bool {
+        let Some(mut expected) = self.read_entry(table_physical, index, level) else {
+            return false;
+        };
+        for _ in 0..8 {
+            match self.compare_exchange_entry(
+                table_physical,
+                index,
+                level,
+                expected,
+                expected,
+            ) {
+                Some(Ok(())) => return true,
+                Some(Err(observed)) => {
+                    let expected_ad = expected & ACCESSED_DIRTY_MASK;
+                    let observed_ad = observed & ACCESSED_DIRTY_MASK;
+                    if observed & !ACCESSED_DIRTY_MASK != expected & !ACCESSED_DIRTY_MASK
+                        || observed_ad & expected_ad != expected_ad
+                        || observed_ad == expected_ad
+                    {
+                        return false;
+                    }
+                    expected = observed;
+                }
+                None => return false,
+            }
+        }
+        false
+    }
+
     fn entry_pointer(
         &mut self,
         table_physical: u64,
@@ -1955,79 +2028,6 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         // tables have writable ancestors; unlinked tables are owned Usable frames
         // accessed through the checked physical-memory offset.
         Some(unsafe { ptr::read_volatile(pointer) })
-    }
-
-    /// Performs a strong atomic update of one validated page-table entry.
-    ///
-    /// This RMW allows the caller to observe hardware Accessed/Dirty changes
-    /// instead of racing them with a read-then-write sequence. It does not
-    /// invalidate translations or make a multi-entry page-table transaction
-    /// safe by itself. Callers must retain the editor's single-CPU,
-    /// interrupts-disabled, PCID-disabled mutation preconditions.
-    fn compare_exchange_entry(
-        &mut self,
-        table_physical: u64,
-        index: usize,
-        level: u8,
-        expected: u64,
-        replacement: u64,
-    ) -> Option<Result<(), u64>> {
-        let (pointer, reachable) = self.entry_pointer(table_physical, index, level)?;
-        // SAFETY: entry_pointer validates a naturally aligned pointer to one
-        // page-table entry. AtomicU64::compare_exchange compiles to an x86_64
-        // locked compare-exchange, so hardware-updated A/D bits cause a failed
-        // comparison instead of being silently overwritten by this RMW.
-        let result = {
-            let atomic_entry = unsafe { AtomicU64::from_ptr(pointer) };
-            atomic_entry
-                .compare_exchange(expected, replacement, Ordering::AcqRel, Ordering::Acquire)
-                .map(|_| ())
-                .map_err(|observed| observed)
-        };
-        if result.is_ok() && reachable {
-            self.mark_reachable_table_frames();
-        }
-        Some(result)
-    }
-
-    /// Smoke-checks the atomic entry primitive without changing the entry.
-    ///
-    /// Retries only when the observed difference is a monotonic hardware A/D
-    /// update. This verifies the concrete editor's CAS path, but deliberately
-    /// does not claim to prove large-page break-before-make or TLB quiescence.
-    fn verify_atomic_entry_compare_exchange(
-        &mut self,
-        table_physical: u64,
-        index: usize,
-        level: u8,
-    ) -> bool {
-        let Some(mut expected) = self.read_entry(table_physical, index, level) else {
-            return false;
-        };
-        for _ in 0..8 {
-            match self.compare_exchange_entry(
-                table_physical,
-                index,
-                level,
-                expected,
-                expected,
-            ) {
-                Some(Ok(())) => return true,
-                Some(Err(observed)) => {
-                    let expected_ad = expected & ACCESSED_DIRTY_MASK;
-                    let observed_ad = observed & ACCESSED_DIRTY_MASK;
-                    if observed & !ACCESSED_DIRTY_MASK != expected & !ACCESSED_DIRTY_MASK
-                        || observed_ad & expected_ad != expected_ad
-                        || observed_ad == expected_ad
-                    {
-                        return false;
-                    }
-                    expected = observed;
-                }
-                None => return false,
-            }
-        }
-        false
     }
 
     fn write_entry(&mut self, table_physical: u64, index: usize, level: u8, value: u64) {
