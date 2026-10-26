@@ -108,6 +108,9 @@ mod paging;
 
 const COM1: u16 = 0x3F8;
 
+#[cfg(feature = "test-wx-runtime-audit")]
+static mut WX_WRITABLE_DATA_DIRECTMAP_SENTINEL: u64 = 0x4f4e_455f_5758_4441;
+
 const KERNEL_VIRTUAL_BASE: u64 = 0xffff_8000_0000_0000;
 const DYNAMIC_KERNEL_MAPPING_START: u64 = 0xffff_9000_0000_0000;
 const DYNAMIC_KERNEL_MAPPING_END: u64 = 0xffff_ffff_ffff_f000;
@@ -817,6 +820,44 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 halt_forever()
             }
             serial_write(b"ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS\n");
+
+            let writable_virtual_address =
+                core::ptr::addr_of_mut!(WX_WRITABLE_DATA_DIRECTMAP_SENTINEL) as u64;
+            let writable_direct_alias = match paging::kernel_writable_sibling_direct_alias_for_test(
+                boot_info,
+                writable_virtual_address,
+                executable_address,
+                _active_root.recursive_index(),
+            ) {
+                Ok(address) => address,
+                Err(error) => {
+                    serial_write(b"\nONE OS W^X WRITABLE SIBLING SETUP FAILED\n");
+                    serial_write(error.message());
+                    halt_forever()
+                }
+            };
+            // SAFETY: the test helper proved that this alias maps the exact
+            // mutable kernel data frame, remains writable and NX, and shares a
+            // demoted 2 MiB physical region with the protected executable page.
+            unsafe {
+                core::ptr::write_volatile(
+                    writable_direct_alias as *mut u64,
+                    0x4f4e_455f_5758_5041,
+                );
+            }
+            // SAFETY: addr_of! forms a raw pointer without creating a reference;
+            // the value is read only after the direct-map write in this
+            // single-CPU, interrupts-disabled test.
+            let observed = unsafe {
+                core::ptr::read_volatile(core::ptr::addr_of!(
+                    WX_WRITABLE_DATA_DIRECTMAP_SENTINEL
+                ))
+            };
+            if observed != 0x4f4e_455f_5758_5041 {
+                serial_write(b"\nONE OS W^X WRITABLE SIBLING DIRECT-MAP FAILED\n");
+                halt_forever()
+            }
+            serial_write(b"ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS\n");
         }
 
         // The active handle carries the private recursive index installed in
