@@ -323,9 +323,11 @@ impl RecursiveAliasSet {
         let visited = unsafe {
             core::slice::from_raw_parts(table_frames, self.visited_table_count)
         };
-        if !frame_wx_audit_table_path_is_unique(visited, table_physical)
-            || self.visited_table_count == MAX_WX_AUDIT_TABLE_PATHS
-        {
+        if !frame_wx_audit_table_path_is_unique(
+            visited,
+            table_physical,
+            MAX_WX_AUDIT_TABLE_PATHS,
+        ) {
             return Err(PagingError::WxAuditFailed);
         }
         // SAFETY: the exclusive audit lease is held and capacity was checked above.
