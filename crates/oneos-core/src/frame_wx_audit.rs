@@ -391,11 +391,25 @@ fn validate_virtual_range(start: u64, length: u64) -> Result<(), FrameWxAuditErr
     Ok(())
 }
 
+
+/// Returns whether a page-table frame is a new node in the bounded audit walk.
+///
+/// The kernel uses this predicate before descending into each present child
+/// table. Rejecting a physical frame already seen anywhere in the declared walk
+/// catches both ancestor cycles and the same table reachable through two virtual
+/// paths. Shared upper-half mappings are walked once from the active root; private
+/// lower-half tables must not be shared between declared roots.
+pub fn frame_wx_audit_table_path_is_unique(visited_table_frames: &[u64], candidate_frame: u64) -> bool {
+    candidate_frame != 0
+        && candidate_frame & (PAGE_SIZE - 1) == 0
+        && !visited_table_frames.contains(&candidate_frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameWxAudit, FrameWxAuditError, FrameWxAuditTableBudget, FrameWxAuditTableBudgetError,
-        FRAME_WX_AUDIT_MAX_TABLES,
+        frame_wx_audit_table_path_is_unique, FrameWxAudit, FrameWxAuditError,
+        FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
     };
     use crate::frame_wx::FrameWxPermissions;
 
@@ -406,6 +420,17 @@ mod tests {
 
     fn permissions(writable: bool, executable: bool) -> FrameWxPermissions {
         FrameWxPermissions::new(writable, executable)
+    }
+
+    #[test]
+    fn duplicate_table_frames_and_cycles_are_rejected() {
+        let visited = [0x1000, 0x2000, 0x9000];
+
+        assert!(frame_wx_audit_table_path_is_unique(&visited, 0x3000));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x1000));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2000));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2001));
     }
 
     #[test]
