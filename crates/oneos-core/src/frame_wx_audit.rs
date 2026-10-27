@@ -11,6 +11,42 @@ use crate::{is_canonical_4level, PAGE_SIZE};
 const LOWER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
 const UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
 
+/// Effective permissions accumulated through every page-table ancestor and the leaf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditEffectivePermissions {
+    /// True only when every entry through the leaf permits writes.
+    pub writable: bool,
+    /// True only when every entry through the leaf permits user-mode access.
+    pub user_accessible: bool,
+    /// True only when no entry through the leaf sets NX.
+    pub executable: bool,
+}
+
+impl FrameWxAuditEffectivePermissions {
+    /// Permission state before entering a root table.
+    pub const fn unrestricted() -> Self {
+        Self {
+            writable: true,
+            user_accessible: true,
+            executable: true,
+        }
+    }
+
+    /// Combines inherited permissions with one present paging entry.
+    pub const fn through_entry(
+        self,
+        entry_writable: bool,
+        entry_user_accessible: bool,
+        entry_no_execute: bool,
+    ) -> Self {
+        Self {
+            writable: self.writable && entry_writable,
+            user_accessible: self.user_accessible && entry_user_accessible,
+            executable: self.executable && !entry_no_execute,
+        }
+    }
+}
+
 /// One concrete writable/executable physical overlap observed by the audit.
 ///
 /// Virtual addresses identify the two alias views at the start of the overlapping
@@ -412,8 +448,9 @@ pub fn frame_wx_audit_table_path_is_unique(
 #[cfg(test)]
 mod tests {
     use super::{
-        frame_wx_audit_table_path_is_unique, FrameWxAudit, FrameWxAuditError,
-        FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+        frame_wx_audit_table_path_is_unique, FrameWxAudit,
+        FrameWxAuditEffectivePermissions, FrameWxAuditError, FrameWxAuditTableBudget,
+        FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
     };
     use crate::frame_wx::FrameWxPermissions;
 
@@ -424,6 +461,33 @@ mod tests {
 
     fn permissions(writable: bool, executable: bool) -> FrameWxPermissions {
         FrameWxPermissions::new(writable, executable)
+    }
+
+    #[test]
+    fn effective_permissions_are_intersected_through_every_ancestor() {
+        let root_permissions = FrameWxAuditEffectivePermissions::unrestricted();
+        let supervisor_nx = root_permissions.through_entry(true, false, true);
+        let writable_user_child = supervisor_nx.through_entry(true, true, false);
+        assert_eq!(
+            writable_user_child,
+            FrameWxAuditEffectivePermissions {
+                writable: true,
+                user_accessible: false,
+                executable: false,
+            }
+        );
+
+        let readonly_ancestor = root_permissions.through_entry(false, true, false);
+        let writable_child = readonly_ancestor.through_entry(true, true, false);
+        assert!(!writable_child.writable);
+
+        let supervisor_ancestor = root_permissions.through_entry(true, false, false);
+        let user_leaf = supervisor_ancestor.through_entry(true, true, false);
+        assert!(!user_leaf.user_accessible);
+
+        let executable_ancestor = root_permissions.through_entry(true, true, false);
+        let nx_leaf = executable_ancestor.through_entry(true, true, true);
+        assert!(!nx_leaf.executable);
     }
 
     #[test]
