@@ -574,6 +574,14 @@ fn audit_wx_table<const CAPACITY: usize>(
                 return Err(PagingError::WxAuditFailed);
             }
             let physical_start = raw_physical & !(page_size - 1);
+            let physical_address_limit = 1u64 << physical_address_bits;
+            if physical_start
+                .checked_add(page_size)
+                .filter(|physical_end| *physical_end <= physical_address_limit)
+                .is_none()
+            {
+                return Err(PagingError::WxAuditFailed);
+            }
             if track_direct_map_coverage {
                 direct_map_coverage
                     .observe_leaf(virtual_start, physical_start, page_size, executable)
