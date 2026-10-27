@@ -129,7 +129,7 @@ W^X rejection, effective permissions, mapping conflicts, large-page conflicts,
 and rollback of newly allocated table frames when allocation fails.
 
 The core primitives are connected to the active kernel page tables through the
-guarded editor in kernel/src/paging.rs. The callback implementation must make
+guarded editor in kernel/src/paging/mod.rs. The callback implementation must make
 table reads and writes safe, return distinct zero-filled table frames, and
 retain ownership of frames committed to page-table use. The caller must perform
 TLB invalidation, serialize mutations, ensure EFER.NXE is enabled before using

@@ -31,6 +31,7 @@ ONE OS is an experimental, from-scratch operating system. Its long-term goal is 
 
 - crates/oneos-core — small, host-testable no_std primitives
 - kernel — x86_64 bare-metal kernel entry point
+- kernel/src/paging/ — boot inspection, W^X audit, guarded page-table editing, and VM acceptance helpers
 - tools/oneos-xtask — kernel build and BIOS image tooling
 - docs/ARCHITECTURE.md — layering and design decisions
 - docs/ISOLATION_PLAN.md — user-space isolation contract and acceptance tests
