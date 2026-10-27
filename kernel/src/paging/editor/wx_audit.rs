@@ -171,13 +171,13 @@ pub fn audit_registered_wx_roots(
     // A complete walk is meaningful only if the active CR3 and the authoritative
     // registered-root set remained stable throughout the audit. Revalidate both
     // before returning any summary; a changed or malformed inventory fails closed.
-    if active_root_table_physical() != root_table_physical
-        || !frame_wx_root_registry_matches(
-            &registered_roots[..registered_root_count],
-            ADDRESS_SPACE_ROOT_FRAMES.len(),
-            |index| ADDRESS_SPACE_ROOT_FRAMES[index].load(Ordering::Acquire),
-        )
-    {
+    if !frame_wx_audit_snapshot_matches(
+        root_table_physical,
+        active_root_table_physical(),
+        &registered_roots[..registered_root_count],
+        ADDRESS_SPACE_ROOT_FRAMES.len(),
+        |index| ADDRESS_SPACE_ROOT_FRAMES[index].load(Ordering::Acquire),
+    ) {
         return Err(PagingError::WxAuditFailed);
     }
 

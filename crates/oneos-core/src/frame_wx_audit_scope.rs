@@ -290,11 +290,31 @@ where
     observed_count == expected_roots.len()
 }
 
+
+/// Validates the active-root identity and exact root inventory at the end of a W^X audit.
+///
+/// This pure predicate is shared by the kernel's final audit gate and host tests, so
+/// CR3 changes and root-registry mutations cannot be tested only in a parallel model.
+pub fn frame_wx_audit_snapshot_matches<F>(
+    expected_active_root: u64,
+    observed_active_root: u64,
+    expected_roots: &[u64],
+    slot_count: usize,
+    read_slot: F,
+) -> bool
+where
+    F: FnMut(usize) -> u64,
+{
+    expected_active_root != 0
+        && observed_active_root == expected_active_root
+        && frame_wx_root_registry_matches(expected_roots, slot_count, read_slot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        frame_wx_root_registry_matches, FrameWxAuditScope, FrameWxAuditScopeError,
-        FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
+        frame_wx_audit_snapshot_matches, frame_wx_root_registry_matches, FrameWxAuditScope,
+        FrameWxAuditScopeError, FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
     };
 
     const ROOT_A: u64 = 0x1000;
@@ -464,6 +484,77 @@ mod tests {
         assert!(summary.audit_failed);
         assert!(!summary.complete);
     }
+    #[test]
+    fn audit_final_revalidation_rejects_cr3_or_registry_changes() {
+        const ROOT_C: u64 = 0x3000;
+        let expected_roots = [ROOT_A, ROOT_B];
+        let unchanged = [ROOT_A, ROOT_B, 0, 0];
+
+        assert!(frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // The active CR3 changed after the initial snapshot, even though the
+        // registered root set itself remains unchanged.
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_B,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // Each registry mutation is observed at the final gate against the
+        // exact root set captured before the audit walk.
+        let added = [ROOT_A, ROOT_B, ROOT_C, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            added.len(),
+            |index| added[index],
+        ));
+
+        let removed = [ROOT_A, 0, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            removed.len(),
+            |index| removed[index],
+        ));
+
+        let replaced = [ROOT_A, ROOT_C, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            replaced.len(),
+            |index| replaced[index],
+        ));
+
+        let duplicated = [ROOT_A, ROOT_A, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+
+        assert!(!frame_wx_audit_snapshot_matches(
+            0,
+            0,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+    }
+
     #[test]
     fn root_registry_snapshot_requires_exact_unique_membership() {
         const ROOT_C: u64 = 0x3000;
