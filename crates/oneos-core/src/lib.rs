@@ -66,7 +66,7 @@ pub use frame_wx_audit_scope::{
     FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditScopeSummary, FrameWxAuditSource,
     FRAME_WX_AUDIT_REQUIRED_SOURCES,
 };
-pub use large_page::{LargePageDemotion, LargePageDemotionError};
+pub use large_page::{is_valid_large_page_demotion_progress, LargePageDemotion, LargePageDemotionError};
 pub use large_page_transaction::{
     demote_large_page, LargePageDemotionEditor, LargePageDemotionReceipt,
     LargePageDemotionTransactionError,
