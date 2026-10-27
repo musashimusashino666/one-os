@@ -561,6 +561,8 @@ pub(super) fn audit_registered_wx_roots(
         validate_shared_kernel_half(
             active_root_pointer,
             target_root_pointer,
+            root_table_physical,
+            registered_root,
             recursive_index,
             target_recursive_index,
         )?;
@@ -641,16 +643,55 @@ fn find_root_recursive_index(
 fn validate_shared_kernel_half(
     active_root_pointer: *const u64,
     target_root_pointer: *const u64,
+    active_root_physical: u64,
+    target_root_physical: u64,
     active_recursive_index: u16,
     target_recursive_index: u16,
 ) -> Result<(), PagingError> {
-    if active_recursive_index == target_recursive_index {
+    let active_recursive_index = usize::from(active_recursive_index);
+    let target_recursive_index = usize::from(target_recursive_index);
+    if active_recursive_index < LOWER_HALF_PML4_ENTRIES
+        || target_recursive_index < LOWER_HALF_PML4_ENTRIES
+        || active_recursive_index >= PML4_ENTRY_COUNT
+        || target_recursive_index >= PML4_ENTRY_COUNT
+        || active_recursive_index == target_recursive_index
+    {
         return Err(PagingError::WxAuditFailed);
     }
+
+    // The roots intentionally use different recursive slots. Each root's own
+    // slot must point back to that root, and the other root's recursive slot
+    // must be empty. Merely skipping both indices permits an ordinary mapping
+    // to occupy a slot reserved by another live root, breaking shared-kernel
+    // layout and making the audit omit that mapping.
+    //
+    // Hardware may set Accessed on a recursive PML4 entry while walking it;
+    // no other bits are permitted to differ from the expected self-reference.
+    const ACCESSED: u64 = 1 << 5;
+    let active_self_entry = unsafe {
+        ptr::read_volatile(active_root_pointer.add(active_recursive_index))
+    };
+    let active_target_slot = unsafe {
+        ptr::read_volatile(active_root_pointer.add(target_recursive_index))
+    };
+    let target_active_slot = unsafe {
+        ptr::read_volatile(target_root_pointer.add(active_recursive_index))
+    };
+    let target_self_entry = unsafe {
+        ptr::read_volatile(target_root_pointer.add(target_recursive_index))
+    };
+    let expected_active_self = active_root_physical | PRESENT | WRITABLE | NO_EXECUTE;
+    let expected_target_self = target_root_physical | PRESENT | WRITABLE | NO_EXECUTE;
+    if active_self_entry & !ACCESSED != expected_active_self
+        || target_self_entry & !ACCESSED != expected_target_self
+        || active_target_slot != 0
+        || target_active_slot != 0
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
     for index in LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT {
-        if index == usize::from(active_recursive_index)
-            || index == usize::from(target_recursive_index)
-        {
+        if index == active_recursive_index || index == target_recursive_index {
             continue;
         }
         // SAFETY: both root pointers refer to complete validated PML4 frames.
