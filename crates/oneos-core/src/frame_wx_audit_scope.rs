@@ -290,7 +290,6 @@ where
     observed_count == expected_roots.len()
 }
 
-
 /// Validates the active-root identity and exact root inventory at the end of a W^X audit.
 ///
 /// This pure predicate is shared by the kernel's final audit gate and host tests, so
