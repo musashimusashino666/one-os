@@ -5011,9 +5011,8 @@ pub fn apply_wx_sibling_test_transition(
         test.original_large_page_size,
         direct_before.page_size,
     );
-    let direct_mapping_is_writable_supervisor_nx = direct_before.writable
-        && !direct_before.user_accessible
-        && !direct_before.executable;
+    let direct_mapping_is_writable_supervisor_nx =
+        direct_before.writable && !direct_before.user_accessible && !direct_before.executable;
     if direct_before.physical_address != test.executable_physical_page
         || !valid_demotion_progress
         || !direct_mapping_is_writable_supervisor_nx
