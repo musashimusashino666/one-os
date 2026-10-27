@@ -2395,11 +2395,11 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         super::memory::is_frame_allocated(physical_address).unwrap_or(false)
     }
 
-    fn executable_mapping_allowed(&self, physical_address: u64) -> bool {
+    fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
         // Normal executable mappings remain fail-closed while arbitrary writable
         // aliases are not fully tracked and controlled.
         #[cfg(feature = "test-wx-runtime-audit")]
-        if self.wx_test_executable_frame == Some(physical_address) {
+        if self.wx_test_executable_frame == Some(_physical_address) {
             // This single test-owned frame is admitted only after the test helper
             // has revalidated its physical-offset alias as RO+NX and 4 KiB.
             return true;
