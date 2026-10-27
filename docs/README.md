@@ -16,7 +16,7 @@ This directory is the authoritative documentation set for ONE OS. Documents desc
 
 - **Vision:** `vision/VISION.md`, `vision/PRINCIPLES.md`, `vision/SUCCESS_CRITERIA.md`
 - **Architecture:** `architecture/OVERVIEW.md`, `architecture/SECURITY_MODEL.md`, `architecture/USER_EXPERIENCE.md`, `architecture/UPDATES_AND_RECOVERY.md`
-- **Normative specifications:** `specs/BOOT_AND_MEMORY.md`, `specs/PROCESS_AND_CAPABILITIES.md`
+- **Normative specifications:** `specs/BOOT_AND_MEMORY.md`, `specs/VIRTUAL_MEMORY_ACCEPTANCE.md`, `specs/ADDRESS_SPACE_LIFECYCLE.md`, `specs/PROCESS_AND_CAPABILITIES.md`, `specs/RING3_ISOLATION_ACCEPTANCE.md`
 - **Engineering and evidence:** `engineering/DEVELOPMENT.md`, `engineering/VERIFICATION.md`
 - **Execution and decisions:** `project/ROADMAP.md`, `project/IMPLEMENTATION_STATUS.md`, `project/decisions/`
 
