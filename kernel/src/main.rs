@@ -384,7 +384,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"ONE OS W^X AUDIT ROOTS WALKED: ",
         paging_stats.wx_audit_scope.audited_roots as u64,
     );
-    for root in paging_stats.wx_audit_scope.roots[..paging_stats.wx_audit_scope.declared_roots].iter() {
+    for root in
+        paging_stats.wx_audit_scope.roots[..paging_stats.wx_audit_scope.declared_roots].iter()
+    {
         interrupts::write_hex(b"ONE OS W^X AUDIT ROOT PHYSICAL: ", root.physical_address);
         interrupts::write_hex(
             b"ONE OS W^X AUDIT ROOT COMPLETE: ",
