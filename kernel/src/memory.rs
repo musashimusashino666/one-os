@@ -22,6 +22,9 @@ pub enum MemoryError {
     NotInitialized,
     BootPolicy(BootMemoryPolicyError),
     Allocator(FrameAllocatorError),
+    /// The allocator accepted a permanent reservation but its side metadata
+    /// could not identify the corresponding managed frame.
+    ReservationTrackingFailed,
 }
 
 impl MemoryError {
@@ -32,6 +35,9 @@ impl MemoryError {
             Self::NotInitialized => b"Physical allocator is not initialized\n",
             Self::BootPolicy(error) => error.message(),
             Self::Allocator(error) => error.message(),
+            Self::ReservationTrackingFailed => {
+                b"Could not track permanent physical-frame reservation\n"
+            }
         }
     }
 }
@@ -41,6 +47,10 @@ struct GlobalAllocator {
     initialized: AtomicBool,
     segments: UnsafeCell<[FrameSegment; SEGMENT_CAPACITY]>,
     bitmap: UnsafeCell<[u64; BITMAP_WORDS]>,
+    // A separate bitmap distinguishes permanent boot reservations from frames
+    // allocated through ordinary Frame tokens. The allocator's main bitmap
+    // deliberately marks both unavailable, so it cannot make this distinction.
+    reserved_bitmap: UnsafeCell<[u64; BITMAP_WORDS]>,
     allocator: UnsafeCell<MaybeUninit<FrameAllocator<'static>>>,
 }
 
@@ -55,6 +65,7 @@ impl GlobalAllocator {
             initialized: AtomicBool::new(false),
             segments: UnsafeCell::new([FrameSegment::EMPTY; SEGMENT_CAPACITY]),
             bitmap: UnsafeCell::new([0; BITMAP_WORDS]),
+            reserved_bitmap: UnsafeCell::new([0; BITMAP_WORDS]),
             allocator: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -121,6 +132,11 @@ pub fn initialize(
     let bitmap_storage: &'static mut [u64] =
         unsafe { core::slice::from_raw_parts_mut(GLOBAL.bitmap.get().cast::<u64>(), BITMAP_WORDS) };
 
+    // Clear the side bitmap before publishing the allocator. It tracks only
+    // successful permanent reservations made by reserve_frame below.
+    // SAFETY: GLOBAL's lock is held and initialization has not been published.
+    unsafe { (*GLOBAL.reserved_bitmap.get()).fill(0) };
+
     let allocator: FrameAllocator<'static> = FrameAllocator::initialize(
         regions.len(),
         |index| {
@@ -177,9 +193,22 @@ pub fn reserve_frame(physical_address: u64) -> Result<bool, MemoryError> {
     // SAFETY: the initialized flag was published after writing the allocator,
     // and the lock provides exclusive access for the duration of this call.
     let allocator = unsafe { (&mut *GLOBAL.allocator.get()).assume_init_mut() };
-    allocator
+    let managed = allocator
         .reserve_frame(physical_address)
-        .map_err(MemoryError::Allocator)
+        .map_err(MemoryError::Allocator)?;
+    if !managed {
+        return Ok(false);
+    }
+
+    let index = allocator
+        .managed_frame_index(physical_address)
+        .ok_or(MemoryError::ReservationTrackingFailed)?;
+    // SAFETY: GLOBAL's lock serializes writes to both allocator and side metadata.
+    // The frame index was obtained from this allocator and is within its managed
+    // usable-frame count, which is bounded by MAX_MANAGED_FRAMES.
+    let bitmap = unsafe { &mut *GLOBAL.reserved_bitmap.get() };
+    bitmap[index / u64::BITS as usize] |= 1u64 << (index % u64::BITS as usize);
+    Ok(true)
 }
 
 /// Returns the current number of frames available to a bounded, exhaustive scan.
@@ -194,6 +223,29 @@ pub fn free_frame_count() -> Result<usize, MemoryError> {
     // and the lock provides exclusive access for the duration of this query.
     let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
     Ok(allocator.stats().free_frames)
+}
+
+/// Returns whether the physical frame was permanently reserved before allocation.
+///
+/// This is distinct from is_frame_allocated: permanent reservations intentionally
+/// have no releasable Frame token and must not be accepted as ordinary data-frame
+/// mapping targets. The side bitmap is indexed by the allocator's managed-frame
+/// ordering. Addresses outside managed Usable memory return false; lock or
+/// initialization failures are propagated so security-sensitive callers can fail closed.
+pub fn is_permanently_reserved(physical_address: u64) -> Result<bool, MemoryError> {
+    let _guard = GLOBAL.acquire()?;
+    if !GLOBAL.initialized.load(Ordering::Acquire) {
+        return Err(MemoryError::NotInitialized);
+    }
+
+    // SAFETY: initialization is published after the allocator is written, and
+    // GLOBAL's lock protects the allocator and reservation side bitmap.
+    let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
+    let Some(index) = allocator.managed_frame_index(physical_address) else {
+        return Ok(false);
+    };
+    let bitmap = unsafe { &*GLOBAL.reserved_bitmap.get() };
+    Ok(bitmap[index / u64::BITS as usize] & (1u64 << (index % u64::BITS as usize)) != 0)
 }
 
 /// Queries whether a frame is currently allocated by the global allocator.
