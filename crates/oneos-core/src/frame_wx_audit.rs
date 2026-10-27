@@ -192,12 +192,14 @@ pub fn frame_wx_audit_leaf_extent(
     }
 
     let physical_start = raw_physical & !(length - 1);
-    let physical_end = physical_start
+    if physical_start
         .checked_add(length)
         .filter(|end| *end <= (1u64 << physical_address_bits))
-        .ok_or(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange)?;
+        .is_none()
+    {
+        return Err(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange);
+    }
 
-    let _ = physical_end;
     Ok(FrameWxAuditLeafExtent {
         physical_start,
         length,
