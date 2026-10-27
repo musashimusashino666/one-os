@@ -2421,12 +2421,14 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
-        // Only allocator-eligible Usable frames may be mapped as ordinary data.
-        // Bootloader-owned, unknown/reserved, registered page-table frames, and
-        // every live address-space root must never be accepted as leaf targets.
+        // Only ordinary allocator-owned frames may be mapped as data. Permanent
+        // bootstrap reservations are marked allocated in the allocator bitmap,
+        // but intentionally have no releasable Frame token; reject them separately.
+        // If the reservation side metadata cannot be queried, fail closed.
         !self.is_usable_frame(physical_address)
             || self.is_table_frame(physical_address)
             || is_address_space_root_frame(physical_address)
+            || super::memory::is_permanently_reserved(physical_address).unwrap_or(true)
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {
