@@ -86,7 +86,11 @@ pub fn audit_registered_wx_roots(
         .unwrap_or(0)
         .max(1u64 << 32);
     let mut direct_map_coverage =
-        FrameWxDirectMapCoverage::new(physical_memory_offset, highest_physical_end)
+        FrameWxDirectMapCoverage::new(
+            physical_address_bits,
+            physical_memory_offset,
+            highest_physical_end,
+        )
             .map_err(|_| PagingError::WxAuditFailed)?;
 
     let mut visited_path = [0u64; 4];
@@ -570,19 +574,15 @@ fn audit_wx_table<const CAPACITY: usize>(
         }
 
         if level == 1 || large_page {
-            let page_size = if large_page { 1u64 << shift } else { PAGE_SIZE };
-            if large_page && raw_physical & ((page_size - 1) & !(1 << 12)) != 0 {
-                return Err(PagingError::WxAuditFailed);
-            }
-            let physical_start = raw_physical & !(page_size - 1);
-            let physical_address_limit = 1u64 << physical_address_bits;
-            if physical_start
-                .checked_add(page_size)
-                .filter(|physical_end| *physical_end <= physical_address_limit)
-                .is_none()
-            {
-                return Err(PagingError::WxAuditFailed);
-            }
+            let extent = frame_wx_audit_leaf_extent(
+                raw_physical,
+                level,
+                large_page,
+                physical_address_bits,
+            )
+            .map_err(|_| PagingError::WxAuditFailed)?;
+            let page_size = extent.length;
+            let physical_start = extent.physical_start;
             if track_direct_map_coverage {
                 direct_map_coverage
                     .observe_leaf(virtual_start, physical_start, page_size, executable)
