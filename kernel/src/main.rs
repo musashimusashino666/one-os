@@ -367,7 +367,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"ONE OS W^X AUDIT CONFLICT EVENTS: ",
         paging_stats.wx_audit.conflicting_overlap_events,
     );
-    serial_write(b"ONE OS W^X ALIAS WALK FINISHED (ACTIVE ROOT ONLY)\n");
+    serial_write(b"ONE OS W^X ALIAS WALK FINISHED (DECLARED ROOTS)\n");
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOT INVENTORY SEALED: ",
         if paging_stats.wx_audit_scope.root_inventory_sealed {
