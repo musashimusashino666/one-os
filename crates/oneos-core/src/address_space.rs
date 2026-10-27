@@ -373,10 +373,8 @@ pub fn shared_recursive_slots_are_valid(
         || active_root_physical == target_root_physical
         || active_root_physical & (PAGE_SIZE - 1) != 0
         || target_root_physical & (PAGE_SIZE - 1) != 0
-        || active_index < LOWER_HALF_PML4_ENTRIES
-        || active_index >= PML4_ENTRIES
-        || target_index < LOWER_HALF_PML4_ENTRIES
-        || target_index >= PML4_ENTRIES
+        || !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES).contains(&active_index)
+        || !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRIES).contains(&target_index)
         || active_index == target_index
     {
         return false;
