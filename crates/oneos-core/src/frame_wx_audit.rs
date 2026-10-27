@@ -221,7 +221,10 @@ impl FrameWxDirectMapCoverage {
             Err(_) => return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange),
         };
         if intersection_start != self.next_virtual {
-            return fail(self, FrameWxDirectMapCoverageError::MissingOrOutOfOrderMapping);
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::MissingOrOutOfOrderMapping,
+            );
         }
         let leaf_offset = intersection_start - virtual_start;
         let observed_physical = match physical_start.checked_add(leaf_offset) {
@@ -229,10 +232,16 @@ impl FrameWxDirectMapCoverage {
             None => return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange),
         };
         if observed_physical != intersection_start - self.virtual_offset {
-            return fail(self, FrameWxDirectMapCoverageError::PhysicalTranslationMismatch);
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::PhysicalTranslationMismatch,
+            );
         }
         if effective_executable {
-            return fail(self, FrameWxDirectMapCoverageError::ExecutableDirectMapAlias);
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::ExecutableDirectMapAlias,
+            );
         }
 
         self.next_virtual = intersection_end;
@@ -241,9 +250,7 @@ impl FrameWxDirectMapCoverage {
     }
 
     /// Returns a summary only if the entire expected interval was covered without a gap.
-    pub fn finish(
-        &self,
-    ) -> Result<FrameWxDirectMapCoverageSummary, FrameWxDirectMapCoverageError> {
+    pub fn finish(&self) -> Result<FrameWxDirectMapCoverageSummary, FrameWxDirectMapCoverageError> {
         if self.failed {
             return Err(FrameWxDirectMapCoverageError::IncompleteCoverage);
         }
@@ -606,9 +613,9 @@ pub fn frame_wx_audit_table_path_is_unique(
 #[cfg(test)]
 mod tests {
     use super::{
-        frame_wx_audit_table_path_is_unique, FrameWxAudit,
-        FrameWxAuditEffectivePermissions, FrameWxAuditError, FrameWxAuditTableBudget,
-        FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+        frame_wx_audit_table_path_is_unique, FrameWxAudit, FrameWxAuditEffectivePermissions,
+        FrameWxAuditError, FrameWxAuditTableBudget, FrameWxAuditTableBudgetError,
+        FRAME_WX_AUDIT_MAX_TABLES,
     };
     use crate::frame_wx::FrameWxPermissions;
 
