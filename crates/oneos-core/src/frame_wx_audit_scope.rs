@@ -517,11 +517,8 @@ mod tests {
         ));
 
         let empty = [0, 0, 0];
-        assert!(frame_wx_root_registry_matches(
-            &[],
-            empty.len(),
-            |index| empty[index],
-        ));
+        assert!(frame_wx_root_registry_matches(&[], empty.len(), |index| {
+            empty[index]
+        },));
     }
-
 }
