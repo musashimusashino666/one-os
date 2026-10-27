@@ -243,6 +243,54 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 }
 
+
+/// Returns whether a registered-root table still represents the exact root set
+/// captured before a W^X audit.
+///
+/// `expected_roots` is the compact, validated list captured at audit start.
+/// `read_slot` reads a slot from the live fixed-capacity registry. The function
+/// rejects missing, added, replaced, zero-valued expected, or duplicate roots.
+/// Slot reads may be repeated to detect duplicates without allocating another
+/// root-sized scratch array. The caller must preserve the registry's serialization
+/// contract for the duration of this check; the current kernel contract is single
+/// CPU with maskable interrupts disabled.
+pub fn frame_wx_root_registry_matches<F>(
+    expected_roots: &[u64],
+    slot_count: usize,
+    mut read_slot: F,
+) -> bool
+where
+    F: FnMut(usize) -> u64,
+{
+    if expected_roots.len() > slot_count || expected_roots.contains(&0) {
+        return false;
+    }
+    for (index, root) in expected_roots.iter().enumerate() {
+        if expected_roots[..index].contains(root) {
+            return false;
+        }
+    }
+
+    let mut observed_count = 0usize;
+    for slot_index in 0..slot_count {
+        let root = read_slot(slot_index);
+        if root == 0 {
+            continue;
+        }
+        if !expected_roots.contains(&root) {
+            return false;
+        }
+        for previous_index in 0..slot_index {
+            if read_slot(previous_index) == root {
+                return false;
+            }
+        }
+        observed_count += 1;
+    }
+
+    observed_count == expected_roots.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -417,4 +465,66 @@ mod tests {
         assert!(summary.audit_failed);
         assert!(!summary.complete);
     }
+    #[test]
+    fn root_registry_snapshot_requires_exact_unique_membership() {
+        use super::frame_wx_root_registry_matches;
+
+        const ROOT_C: u64 = 0x3000;
+        let expected = [ROOT_A, ROOT_B];
+        let unchanged = [ROOT_A, 0, ROOT_B, 0];
+        assert!(frame_wx_root_registry_matches(
+            &expected,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // Slot positions may change, but membership must remain exactly the same.
+        let reordered = [0, ROOT_B, 0, ROOT_A];
+        assert!(frame_wx_root_registry_matches(
+            &expected,
+            reordered.len(),
+            |index| reordered[index],
+        ));
+
+        let added = [ROOT_A, ROOT_B, ROOT_C, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            added.len(),
+            |index| added[index],
+        ));
+
+        let removed = [ROOT_A, 0, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            removed.len(),
+            |index| removed[index],
+        ));
+
+        let replaced = [ROOT_A, ROOT_C, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            replaced.len(),
+            |index| replaced[index],
+        ));
+
+        let duplicated = [ROOT_A, ROOT_A, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+        assert!(!frame_wx_root_registry_matches(
+            &[ROOT_A, ROOT_A],
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+
+        let empty = [0, 0, 0];
+        assert!(frame_wx_root_registry_matches(
+            &[],
+            empty.len(),
+            |index| empty[index],
+        ));
+    }
+
 }

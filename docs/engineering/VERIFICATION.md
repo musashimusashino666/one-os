@@ -35,6 +35,7 @@ Tests should verify both the positive path and the denial path. Depending on the
 - Allocator capacity exhaustion fails predictably and reserved regions are not allocated.
 - Invalid page-table roots, entries, address widths, and ownership tokens are rejected.
 - W^X audit reports incomplete scope distinctly from a complete clean audit.
+- The W^X audit revalidates the active CR3 and exact registered-root set at completion; additions, removals, replacements, or duplicate roots fail closed.
 - 4 KiB, 2 MiB, and 1 GiB physical overlaps are checked using effective ancestor permissions and full extents.
 - Large-page demotion preserves unrelated attributes and sibling-frame writability.
 - Mapping changes invalidate the required local TLB state before frames are reused.

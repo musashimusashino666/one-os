@@ -14,7 +14,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
-    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry, demote_large_page,
+    bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry,
+    frame_wx_root_registry_matches, demote_large_page,
     elf64_program_header_table_range, initialize_user_frame, is_canonical_4level,
     is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
