@@ -391,7 +391,6 @@ fn validate_virtual_range(start: u64, length: u64) -> Result<(), FrameWxAuditErr
     Ok(())
 }
 
-
 /// Returns whether a page-table frame is a new node in the bounded audit walk.
 ///
 /// The kernel uses this predicate before descending into each present child
