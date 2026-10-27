@@ -221,3 +221,22 @@ pub fn free_frame(frame: Frame) -> Result<(), (MemoryError, Frame)> {
         .free_frame(frame)
         .map_err(|(error, frame)| (MemoryError::Allocator(error), frame))
 }
+
+/// Returns a rejected scan candidate without rewinding the allocator's forward
+/// search hint. Ordinary frame releases should continue to use free_frame.
+pub fn free_frame_preserving_hint(frame: Frame) -> Result<(), (MemoryError, Frame)> {
+    let _guard = match GLOBAL.acquire() {
+        Ok(guard) => guard,
+        Err(error) => return Err((error, frame)),
+    };
+    if !GLOBAL.initialized.load(Ordering::Acquire) {
+        return Err((MemoryError::NotInitialized, frame));
+    }
+
+    // SAFETY: the initialized flag was published after writing the allocator,
+    // and the lock provides exclusive access for the duration of this call.
+    let allocator = unsafe { (&mut *GLOBAL.allocator.get()).assume_init_mut() };
+    allocator
+        .free_frame_preserving_hint(frame)
+        .map_err(|(error, frame)| (MemoryError::Allocator(error), frame))
+}
