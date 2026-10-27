@@ -289,8 +289,8 @@ static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
-static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
-    [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
+static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_TABLE_PATHS] =
+    [0; MAX_WX_AUDIT_TABLE_PATHS];
 
 /// Physical frames whose writable recursive aliases must be checked after the
 /// complete ordinary leaf inventory has been collected. Shared page-table frames
@@ -324,7 +324,7 @@ impl RecursiveAliasSet {
             core::slice::from_raw_parts(table_frames, self.visited_table_count)
         };
         if !frame_wx_audit_table_path_is_unique(visited, table_physical)
-            || self.visited_table_count == MAX_WX_AUDIT_RECURSIVE_FRAMES
+            || self.visited_table_count == MAX_WX_AUDIT_TABLE_PATHS
         {
             return Err(PagingError::WxAuditFailed);
         }
