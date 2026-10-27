@@ -2405,8 +2405,8 @@ fn initialize_user_frame_or_release_on_error<E>(
 
 /// Exercises the initializer-failure path and verifies that the exact returned
 /// frame token reaches the allocator-release callback instead of being dropped.
-pub fn verify_user_frame_initialization_failure_releases_frame_for_smoke(
-) -> Result<(), PagingError> {
+pub fn verify_user_frame_initialization_failure_releases_frame_for_smoke() -> Result<(), PagingError>
+{
     let frame = crate::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let expected_physical = frame.physical_address();
     let mut initializer = FailingUserFrameInitializer;
