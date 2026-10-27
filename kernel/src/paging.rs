@@ -4999,7 +4999,7 @@ pub fn verify_wx_sibling_large_page_precondition(
                         sibling_frame: Some(current_frame),
                         executable_physical_page,
                         sibling_physical_page,
-                        original_large_page_size,
+                        original_large_page_size: original_page_size,
                         executable_virtual_address: None,
                     });
                 }
