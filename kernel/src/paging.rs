@@ -2355,9 +2355,7 @@ impl KernelPageTableEditor<'_> {
         let direct_alias = self
             .physical_memory_offset
             .checked_add(physical_page)
-            .filter(|address| {
-                is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-            })
+.filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
             .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
         let root_table_physical = self.root_table_physical;
         let direct_mapping = translate_with_editor(self, root_table_physical, direct_alias)
