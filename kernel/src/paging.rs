@@ -4889,7 +4889,7 @@ pub fn verify_wx_sibling_large_page_precondition(
             Ok(frame) => frame,
             Err(_) => {
                 if let Some(frame) = previous_frame.take() {
-                    let _ = release_data_frame_preserving_hint(frame);
+                    release_data_frame_preserving_hint(frame);
                 }
                 return Err(PagingError::FrameAllocationFailed);
             }
@@ -4926,8 +4926,8 @@ pub fn verify_wx_sibling_large_page_precondition(
             let (executable_direct_alias, sibling_direct_alias) = match direct_aliases {
                 Ok(aliases) => aliases,
                 Err(error) => {
-                    let _ = release_data_frame_preserving_hint(executable_frame);
-                    let _ = release_data_frame_preserving_hint(current_frame);
+                    release_data_frame_preserving_hint(executable_frame);
+                    release_data_frame_preserving_hint(current_frame);
                     return Err(error);
                 }
             };
@@ -4970,8 +4970,8 @@ pub fn verify_wx_sibling_large_page_precondition(
                             page_size
                         }
                         Err(error) => {
-                            let _ = release_data_frame_preserving_hint(executable_frame);
-                            let _ = release_data_frame_preserving_hint(current_frame);
+                            release_data_frame_preserving_hint(executable_frame);
+                            release_data_frame_preserving_hint(current_frame);
                             return Err(error);
                         }
                     }
@@ -5008,12 +5008,12 @@ pub fn verify_wx_sibling_large_page_precondition(
 
         // Advance by one allocation, not two: the current frame becomes the
         // previous candidate so overlapping pairs are checked on the next pass.
-        let _ = release_data_frame_preserving_hint(executable_frame);
+        release_data_frame_preserving_hint(executable_frame);
         previous_frame = Some(current_frame);
     }
 
     if let Some(frame) = previous_frame.take() {
-        let _ = release_data_frame_preserving_hint(frame);
+        release_data_frame_preserving_hint(frame);
     }
 
     super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE LARGE-PAGE SIBLING PAIR FOUND\n");
@@ -6344,9 +6344,20 @@ fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
 
 /// Releases a rejected W^X scan candidate without rewinding the allocator hint.
 #[cfg(feature = "test-wx-runtime-audit")]
-fn release_data_frame_preserving_hint(frame: Frame) -> Result<(), PagingError> {
+fn release_data_frame_preserving_hint(frame: Frame) {
     match super::memory::free_frame_preserving_hint(frame) {
-        Ok(()) => Ok(()),
-        Err((_error, _frame)) => Err(PagingError::FrameReleaseFailed),
+        Ok(()) => {}
+        Err((error, frame)) => {
+            // A failed free returns ownership of the still-allocated frame. This
+            // test has no ownership registry to retain that token for a retry, so
+            // stop immediately while the token is still live instead of continuing
+            // the scan and silently stranding it.
+            let physical_address = frame.physical_address();
+            super::serial_write(error.message());
+            panic!(
+                "failed to release W^X scan frame {:#x}; halting with frame token retained",
+                physical_address
+            );
+        }
     }
 }
