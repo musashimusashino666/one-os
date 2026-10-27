@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Keep this guest profile synchronized with docs/ISOLATION_PLAN.md.
+      # Keep this guest profile synchronized with docs/engineering/VERIFICATION.md.
       QEMU_MACHINE: pc-i440fx-8.2,accel=tcg
       QEMU_CPU: qemu64,+nx
       QEMU_SMP: "1"
