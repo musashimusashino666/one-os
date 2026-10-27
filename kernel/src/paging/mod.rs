@@ -15,7 +15,8 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
 use oneos_core::{
     bootstrap_mapping_page_count, compare_exchange_entry_with_ad_retry, demote_large_page,
-    elf64_program_header_table_range, frame_wx_audit_snapshot_matches, initialize_user_frame,
+    elf64_program_header_table_range, frame_wx_audit_snapshot_matches,
+    frame_wx_audit_table_path_is_unique, initialize_user_frame,
     is_canonical_4level, is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
@@ -63,14 +64,16 @@ const MAX_WX_AUDIT_RANGES: usize = 128;
 const MAX_WX_AUDIT_TABLES: usize = FRAME_WX_AUDIT_MAX_TABLES;
 const MAX_WX_AUDIT_ROOTS: usize = ADDRESS_SPACE_ROOT_CAPACITY + 1;
 const MAX_WX_AUDIT_RECURSIVE_FRAMES: usize = 2048;
+// Bounds the separate all-table path inventory; duplicates and exhaustion fail closed.
+const MAX_WX_AUDIT_TABLE_PATHS: usize = 2048;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableInspection {
     pub root_table_physical: u64,
     pub validated_mappings: usize,
-    /// Read-only inventory of writable/executable aliases observed in the active root.
+    /// Read-only inventory of writable/executable aliases observed across the declared roots.
     pub wx_audit: FrameWxAuditSummary,
-    /// Coverage status for the root-registry snapshot; only the active root is walked today.
+    /// Coverage of the active root plus registered roots, with shared upper halves verified.
     pub wx_audit_scope: FrameWxAuditScopeSummary,
 }
 
