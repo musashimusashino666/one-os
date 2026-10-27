@@ -181,7 +181,12 @@ pub fn audit_registered_wx_roots(
         return Err(PagingError::WxAuditFailed);
     }
 
-    Ok((audit.summary(), scope.summary()))
+    let scope_summary = scope.summary();
+    if !scope_summary.complete {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    Ok((audit.summary(), scope_summary))
 }
 
 fn find_root_recursive_index(
