@@ -4993,9 +4993,9 @@ pub fn apply_wx_sibling_test_transition(
         .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
         .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
 
-    // The precondition is checked before the PT_LOAD transition. Accept either the
-    // still-large writable alias or the already-demoted writable/NX 4 KiB alias if
-    // the actual PT_LOAD transition touched this same physical 2 MiB region.
+    // The precondition is checked before the PT_LOAD transition. An original
+    // 1 GiB leaf may now be a 2 MiB child if PT_LOAD demoted a different child,
+    // or a 4 KiB leaf if PT_LOAD touched this same physical 2 MiB region.
     let mut direct_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
         executable_direct_alias,
@@ -5023,8 +5023,9 @@ pub fn apply_wx_sibling_test_transition(
 
     // Restrict the owned test frame's physical-offset alias before publishing any
     // executable alias. This avoids a transient W+X alias even with interrupts off.
-    // If PT_LOAD already demoted the shared leaf, this changes the frame's writable
-    // 4 KiB alias to RO+NX; otherwise the helper performs the large-page demotion.
+    // If PT_LOAD already demoted this exact 2 MiB child, this changes the frame's
+    // writable 4 KiB alias to RO+NX; otherwise the helper performs the remaining
+    // 1 GiB-to-2 MiB or 2 MiB-to-4 KiB demotion required for this test frame.
     restrict_physical_offset_alias_read_only_nx(
         boot_info,
         root_table_physical,
