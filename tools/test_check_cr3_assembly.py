@@ -112,6 +112,25 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(valid, message)
 
+    def test_tracks_cr4_value_saved_around_cpuid_with_xchg(self):
+        # LLVM may preserve RBX across CPUID by exchanging it with RDI.
+        # The saved CR4 provenance must survive this equivalent register swap.
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rdi",
+                "cpuid",
+                "xchgq %rbx, %rdi",
+                "movq %rbx, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %cr4",
+                "retq",
+            ]
+        )
+        self.assertTrue(valid, message)
+
     def test_rejects_cr3_write_before_pge_disable(self):
         valid, message = validate_function_body(
             [
