@@ -77,7 +77,7 @@ jobs:
         run: cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 
       - name: Test CR3 assembly validator
-        run: python3 -m unittest discover -s tools -p 'test_check_cr3_assembly.py'
+        run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_assembly.py'
 
       - name: Inspect optimized CR3 switch assembly
         shell: bash
@@ -89,7 +89,7 @@ jobs:
             --target x86_64-unknown-none -- -C lto=no --emit=asm
 
           # Check the actual optimized activation function and retain the CR3 memory barrier.
-          python3 tools/check_cr3_assembly.py \
+          python3 tools/ci/check_cr3_assembly.py \
             --assembly-dir "$asm_target_dir" \
             --source kernel/src/address_space.rs
 
@@ -97,7 +97,7 @@ jobs:
         run: cargo run --locked -p oneos-xtask -- image
 
       - name: Test QEMU serial-log validator
-        run: python3 -m unittest discover -s tools -p 'test_*.py'
+        run: python3 -m unittest discover -s tools/ci -p 'test_*.py'
 
       - name: Verify kernel startup in QEMU (three independent boots)
         shell: bash
@@ -114,7 +114,7 @@ jobs:
             status=$?
             set -e
             cat "$log"
-            python3 tools/check_qemu_serial.py \
+            python3 tools/ci/check_qemu_serial.py \
               --log "$log" \
               --exit-status "$status" \
               --require-large-page-demotion-smoke
@@ -135,7 +135,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          python3 tools/check_qemu_serial.py \
+          python3 tools/ci/check_qemu_serial.py \
             --log "$log" \
             --exit-status "$status"
           grep -Fq "ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT)" "$log"
@@ -201,7 +201,7 @@ jobs:
           set -e
           cat "$log"
           grep -Fq "ONE OS ROOT LEAK SAFETY PASS" "$log"
-          python3 tools/check_qemu_serial.py \
+          python3 tools/ci/check_qemu_serial.py \
             --log "$log" \
             --exit-status "$status"
 
@@ -225,7 +225,7 @@ jobs:
             set -e
             cat "$log"
 
-            python3 tools/check_qemu_exception.py \
+            python3 tools/ci/check_qemu_exception.py \
               --log "$log" \
               --exit-status "$status" \
               --case "$case_name"
@@ -251,7 +251,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          python3 tools/check_qemu_ist.py \
+          python3 tools/ci/check_qemu_ist.py \
             --log "$log" \
             --exit-status "$status"
 
@@ -270,7 +270,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          python3 tools/check_qemu_vm_protection.py \
+          python3 tools/ci/check_qemu_vm_protection.py \
             --log "$log" \
             --exit-status "$status" \
             --case supervisor-write-protection
@@ -290,7 +290,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          python3 tools/check_qemu_vm_protection.py \
+          python3 tools/ci/check_qemu_vm_protection.py \
             --log "$log" \
             --exit-status "$status" \
             --case nx-instruction-fetch
@@ -310,7 +310,7 @@ jobs:
           status=$?
           set -e
           cat "$log"
-          python3 tools/check_qemu_vm_transitions.py \
+          python3 tools/ci/check_qemu_vm_transitions.py \
             --log "$log" \
             --exit-status "$status"
 
