@@ -4842,115 +4842,143 @@ pub fn verify_wx_sibling_large_page_precondition(
         Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
     };
 
-    // A pair is normally found in the first usable large-page region. The bound
-    // prevents a malformed or unusually fragmented memory map from making boot
-    // unbounded; failed candidates are immediately returned to the allocator.
-    const MAX_PAIR_ATTEMPTS: usize = 4096;
-    for _ in 0..MAX_PAIR_ATTEMPTS {
-        let executable_frame =
-            super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
-        let sibling_frame = match super::memory::allocate_frame() {
+    // Search every frame that was free at entry, rather than stopping at an
+    // arbitrary physical range. Keep a one-frame sliding window so an eligible
+    // pair is found regardless of whether its two frames fall on odd/even
+    // allocation positions. Rejected frames are freed without rewinding next_hint.
+    let scan_budget = super::memory::free_frame_count()
+        .map_err(|_| PagingError::FrameAllocationFailed)?;
+    let mut previous_frame: Option<Frame> = None;
+    // Once a 2 MiB physical region is checked, every candidate pair within that
+    // region shares the same large-page eligibility (a 2 MiB/1 GiB leaf covers
+    // the full aligned region). Cache misses too, avoiding repeated page walks.
+    let mut checked_region: Option<(u64, Option<u64>)> = None;
+
+    for _ in 0..scan_budget {
+        let current_frame = match super::memory::allocate_frame() {
             Ok(frame) => frame,
             Err(_) => {
-                let _ = release_data_frame_preserving_hint(executable_frame);
+                if let Some(frame) = previous_frame.take() {
+                    let _ = release_data_frame_preserving_hint(frame);
+                }
                 return Err(PagingError::FrameAllocationFailed);
             }
         };
+        let Some(executable_frame) = previous_frame.take() else {
+            previous_frame = Some(current_frame);
+            continue;
+        };
+
         let executable_physical_page = executable_frame.physical_address();
-        let sibling_physical_page = sibling_frame.physical_address();
+        let sibling_physical_page = current_frame.physical_address();
         let same_2m_region = executable_physical_page != sibling_physical_page
             && executable_physical_page & !((1u64 << 21) - 1)
                 == sibling_physical_page & !((1u64 << 21) - 1);
 
-        let candidate = (|| -> Result<Option<(u64, u64, u64)>, PagingError> {
-            if !same_2m_region {
-                return Ok(None);
-            }
-            let executable_direct_alias = physical_memory_offset
-                .checked_add(executable_physical_page)
-                .filter(|address| {
-                    is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-                })
-                .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-            let sibling_direct_alias = physical_memory_offset
-                .checked_add(sibling_physical_page)
-                .filter(|address| {
-                    is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-                })
-                .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        if same_2m_region {
+            let region_start = executable_physical_page & !((1u64 << 21) - 1);
+            let large_page_size = match checked_region {
+                Some((checked_start, page_size)) if checked_start == region_start => page_size,
+                _ => {
+                    let candidate = (|| -> Result<Option<u64>, PagingError> {
+                        let executable_direct_alias = physical_memory_offset
+                            .checked_add(executable_physical_page)
+                            .filter(|address| {
+                                is_canonical_4level(*address)
+                                    && (*address & (PAGE_SIZE - 1)) == 0
+                            })
+                            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                        let sibling_direct_alias = physical_memory_offset
+                            .checked_add(sibling_physical_page)
+                            .filter(|address| {
+                                is_canonical_4level(*address)
+                                    && (*address & (PAGE_SIZE - 1)) == 0
+                            })
+                            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
 
-            let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
-                boot_info,
-                executable_direct_alias,
-                recursive_index,
-            )?;
-            let executable_alias = translate_with_editor(
-                &mut executable_editor,
-                root_table_physical,
-                executable_direct_alias,
-            )
-            .map_err(PagingError::Translation)?;
-            let mut sibling_editor = KernelPageTableEditor::new_with_recursive_index(
-                boot_info,
-                sibling_direct_alias,
-                recursive_index,
-            )?;
-            let sibling_alias = translate_with_editor(
-                &mut sibling_editor,
-                root_table_physical,
-                sibling_direct_alias,
-            )
-            .map_err(PagingError::Translation)?;
+                        let mut editor = KernelPageTableEditor::new_with_recursive_index(
+                            boot_info,
+                            executable_direct_alias,
+                            recursive_index,
+                        )?;
+                        let alias = translate_with_editor(
+                            &mut editor,
+                            root_table_physical,
+                            executable_direct_alias,
+                        )
+                        .map_err(PagingError::Translation)?;
 
-            if (executable_alias.page_size != (1u64 << 21)
-                && executable_alias.page_size != (1u64 << 30))
-                || sibling_alias.page_size != executable_alias.page_size
-                || executable_alias.physical_address != executable_physical_page
-                || sibling_alias.physical_address != sibling_physical_page
-                || !executable_alias.writable
-                || executable_alias.user_accessible
-                || executable_alias.executable
-                || !sibling_alias.writable
-                || sibling_alias.user_accessible
-                || sibling_alias.executable
-                || executable_direct_alias & !(executable_alias.page_size - 1)
-                    != sibling_direct_alias & !(sibling_alias.page_size - 1)
-            {
-                return Ok(None);
-            }
+                        if (alias.page_size != (1u64 << 21)
+                            && alias.page_size != (1u64 << 30))
+                            || alias.physical_address != executable_physical_page
+                            || !alias.writable
+                            || alias.user_accessible
+                            || alias.executable
+                            || executable_direct_alias & !(alias.page_size - 1)
+                                != sibling_direct_alias & !(alias.page_size - 1)
+                        {
+                            return Ok(None);
+                        }
+                        Ok(Some(alias.page_size))
+                    })();
 
-            Ok(Some((
-                executable_direct_alias,
-                sibling_direct_alias,
-                executable_alias.page_size,
-            )))
-        })();
+                    match candidate {
+                        Ok(page_size) => {
+                            checked_region = Some((region_start, page_size));
+                            page_size
+                        }
+                        Err(error) => {
+                            let _ = release_data_frame_preserving_hint(executable_frame);
+                            let _ = release_data_frame_preserving_hint(current_frame);
+                            return Err(error);
+                        }
+                    }
+                }
+            };
 
-        match candidate {
-            Ok(Some((executable_direct_alias, _sibling_direct_alias, original_page_size))) => {
-                // SAFETY: the physical-offset alias maps an allocator-owned Usable
-                // frame and was checked as writable, supervisor-only, NX above.
-                // Seed a single RET byte before installing the separate RX alias.
-                unsafe { ptr::write_volatile(executable_direct_alias as *mut u8, 0xc3) };
-                return Ok(WxSiblingRegressionTest {
-                    executable_frame: Some(executable_frame),
-                    sibling_frame: Some(sibling_frame),
-                    executable_physical_page,
-                    sibling_physical_page,
-                    original_large_page_size: original_page_size,
-                    executable_virtual_address: None,
-                });
-            }
-            Ok(None) => {
-                let _ = release_data_frame_preserving_hint(executable_frame);
-                let _ = release_data_frame_preserving_hint(sibling_frame);
-            }
-            Err(error) => {
-                let _ = release_data_frame_preserving_hint(executable_frame);
-                let _ = release_data_frame_preserving_hint(sibling_frame);
-                return Err(error);
+            if let Some(original_page_size) = large_page_size {
+                let executable_direct_alias = physical_memory_offset
+                    .checked_add(executable_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                let sibling_direct_alias = physical_memory_offset
+                    .checked_add(sibling_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+
+                // A full large-page leaf covers both addresses. Verify that the
+                // aliases really share that leaf before accepting the owned pair.
+                if executable_direct_alias & !(original_page_size - 1)
+                    == sibling_direct_alias & !(original_page_size - 1)
+                {
+                    // SAFETY: the direct-map alias belongs to an allocator-owned
+                    // Usable frame and was checked as writable, supervisor-only, NX.
+                    // Seed a single RET byte before installing the separate RX alias.
+                    unsafe { ptr::write_volatile(executable_direct_alias as *mut u8, 0xc3) };
+                    return Ok(WxSiblingRegressionTest {
+                        executable_frame: Some(executable_frame),
+                        sibling_frame: Some(current_frame),
+                        executable_physical_page,
+                        sibling_physical_page,
+                        original_large_page_size,
+                        executable_virtual_address: None,
+                    });
+                }
             }
         }
+
+        // Advance by one allocation, not two: the current frame becomes the
+        // previous candidate so overlapping pairs are checked on the next pass.
+        let _ = release_data_frame_preserving_hint(executable_frame);
+        previous_frame = Some(current_frame);
+    }
+
+    if let Some(frame) = previous_frame.take() {
+        let _ = release_data_frame_preserving_hint(frame);
     }
 
     super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE LARGE-PAGE SIBLING PAIR FOUND\n");
