@@ -250,7 +250,6 @@ impl PagingError {
     }
 }
 
-
 /// Copies a small metadata range from the bootloader-owned in-memory ELF image.
 ///
 /// Every touched physical page must be fully Bootloader-owned, and its direct-map
@@ -726,7 +725,6 @@ fn translate_virtual_address(
         },
     )
 }
-
 
 mod editor;
 mod inspection;

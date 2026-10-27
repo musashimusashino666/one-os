@@ -2667,7 +2667,6 @@ pub fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usize>(
     Ok(())
 }
 
-
 pub use acceptance::{
     enforce_kernel_executable_alias_wx, has_pending_detached_private_table,
     teardown_inactive_user_address_space, teardown_inactive_user_address_space_with_table_release,

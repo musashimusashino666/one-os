@@ -516,4 +516,3 @@ fn audit_wx_table<const CAPACITY: usize>(
     }
     Ok(())
 }
-

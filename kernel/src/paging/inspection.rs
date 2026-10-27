@@ -6,7 +6,9 @@ use super::*;
 /// table pages. This avoids aliasing Bootloader-owned frames through the physical
 /// memory offset, which bootloader_api documents as safely accessible only for
 /// Usable frames. This module never writes a page-table entry.
-pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection, PagingError> {
+pub fn inspect_boot_mappings(
+    boot_info: &BootInfo,
+) -> Result<PageTableInspection, PagingError> {
     // Validate the index before deriving or dereferencing any recursive alias.
     // Index 0 produces virtual address 0 for the PML4 self-map and must fail closed.
     let recursive_index = match boot_info.recursive_index {
@@ -190,4 +192,3 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
         wx_audit_scope,
     })
 }
-
