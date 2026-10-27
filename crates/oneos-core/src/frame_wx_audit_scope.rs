@@ -385,6 +385,10 @@ mod tests {
         assert!(summary.root_inventory_sealed);
         assert_eq!(summary.declared_roots, 2);
         assert_eq!(summary.audited_roots, 2);
+        assert_eq!(summary.roots[0].physical_address, ROOT_A);
+        assert!(summary.roots[0].audited);
+        assert_eq!(summary.roots[1].physical_address, ROOT_B);
+        assert!(summary.roots[1].audited);
         assert_eq!(summary.missing_sources, 0);
         assert!(summary.complete);
     }
@@ -406,6 +410,10 @@ mod tests {
         }
         let summary = scope.summary();
         assert_eq!(summary.audited_roots, 1);
+        assert_eq!(summary.roots[0].physical_address, ROOT_A);
+        assert!(summary.roots[0].audited);
+        assert_eq!(summary.roots[1].physical_address, ROOT_B);
+        assert!(!summary.roots[1].audited);
         assert!(!summary.complete);
     }
 
