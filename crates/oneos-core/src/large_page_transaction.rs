@@ -350,7 +350,9 @@ pub fn demote_large_page<E: LargePageDemotionEditor>(
 }
 
 fn valid_table_frame(physical_address: u64, physical_address_bits: u8) -> bool {
-    physical_address & (PAGE_SIZE - 1) == 0 && physical_address < (1u64 << physical_address_bits)
+    physical_address != 0
+        && physical_address & (PAGE_SIZE - 1) == 0
+        && physical_address < (1u64 << physical_address_bits)
 }
 
 #[cfg(test)]
@@ -709,6 +711,42 @@ mod tests {
         );
         assert_eq!(editor.next_table, CHILD);
         assert!(editor.freed.is_empty());
+    }
+
+    #[test]
+    fn rejects_zero_root_or_parent_frames_before_allocating() {
+        let source = 0x0200_0000 | PRESENT | LARGE_PAGE;
+        let mut editor = MockEditor::new(0, source);
+
+        assert_eq!(
+            demote_large_page(&mut editor, 0, PARENT, 2, 0, 0xffff_8000_0000_0000),
+            Err(LargePageDemotionTransactionError::InvalidPhysicalAddress)
+        );
+        assert_eq!(
+            demote_large_page(&mut editor, ROOT, 0, 2, 0, 0xffff_8000_0000_0000),
+            Err(LargePageDemotionTransactionError::InvalidPhysicalAddress)
+        );
+        assert_eq!(editor.next_table, CHILD);
+        assert_eq!(editor.entry(PARENT, 0), source);
+        assert!(editor.freed.is_empty());
+        assert!(editor.published.is_empty());
+        assert!(editor.invalidations.is_empty());
+    }
+
+    #[test]
+    fn releases_and_rejects_a_zero_child_table_frame() {
+        let source = 0x0200_0000 | PRESENT | LARGE_PAGE;
+        let mut editor = MockEditor::new(0, source);
+        editor.next_table = 0;
+
+        assert_eq!(
+            demote_large_page(&mut editor, ROOT, PARENT, 2, 0, 0xffff_8000_0000_0000),
+            Err(LargePageDemotionTransactionError::InvalidPhysicalAddress)
+        );
+        assert_eq!(editor.entry(PARENT, 0), source);
+        assert_eq!(editor.freed, vec![0]);
+        assert!(editor.published.is_empty());
+        assert!(editor.invalidations.is_empty());
     }
 
     #[test]
