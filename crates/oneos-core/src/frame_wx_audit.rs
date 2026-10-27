@@ -10,6 +10,7 @@ use crate::{is_canonical_4level, PAGE_SIZE};
 
 const LOWER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
 const UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
+const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 /// Effective permissions accumulated through every page-table ancestor and the leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
