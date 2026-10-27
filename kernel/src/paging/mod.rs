@@ -27,7 +27,7 @@ use oneos_core::{
     BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
     FrameRegistryError, FrameWxAudit, FrameWxAuditEffectivePermissions, FrameWxAuditScope,
     FrameWxAuditScopeSummary, FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget,
-    FrameWxDirectMapCoverage, FrameWxError,
+    FrameWxDirectMapCoverage, FrameWxDirectMapCoverageSummary, FrameWxError,
     FrameWxPermissions, FrameWxRegistry, LargePageDemotionEditor, LargePageDemotionReceipt,
     PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
@@ -76,6 +76,8 @@ pub struct PageTableInspection {
     pub wx_audit: FrameWxAuditSummary,
     /// Coverage of the active root plus registered roots, with shared upper halves verified.
     pub wx_audit_scope: FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>,
+    /// Complete physical-memory-offset range checked for exact translation and NX permissions.
+    pub wx_direct_map_coverage: FrameWxDirectMapCoverageSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
