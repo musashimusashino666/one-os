@@ -4815,6 +4815,21 @@ pub struct WxSiblingRegressionTest {
     executable_virtual_address: Option<u64>,
 }
 
+/// Forms overlapping adjacent-frame candidates without skipping allocation positions.
+#[cfg(feature = "test-wx-runtime-audit")]
+fn take_adjacent_wx_frame_pair<T>(
+    previous: &mut Option<T>,
+    current: T,
+) -> Option<(T, T)> {
+    match previous.take() {
+        Some(previous) => Some((previous, current)),
+        None => {
+            *previous = Some(current);
+            None
+        }
+    }
+}
+
 /// Finds an owned pair in a real writable large-page direct-map leaf.
 ///
 /// The physical location of PT_LOAD segments is chosen by the bootloader and must not
@@ -4864,8 +4879,9 @@ pub fn verify_wx_sibling_large_page_precondition(
                 return Err(PagingError::FrameAllocationFailed);
             }
         };
-        let Some(executable_frame) = previous_frame.take() else {
-            previous_frame = Some(current_frame);
+        let Some((executable_frame, current_frame)) =
+            take_adjacent_wx_frame_pair(&mut previous_frame, current_frame)
+        else {
             continue;
         };
 
@@ -4877,25 +4893,34 @@ pub fn verify_wx_sibling_large_page_precondition(
 
         if same_2m_region {
             let region_start = executable_physical_page & !((1u64 << 21) - 1);
+            let direct_aliases = (|| -> Result<(u64, u64), PagingError> {
+                let executable_direct_alias = physical_memory_offset
+                    .checked_add(executable_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                let sibling_direct_alias = physical_memory_offset
+                    .checked_add(sibling_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                Ok((executable_direct_alias, sibling_direct_alias))
+            })();
+            let (executable_direct_alias, sibling_direct_alias) = match direct_aliases {
+                Ok(aliases) => aliases,
+                Err(error) => {
+                    let _ = release_data_frame_preserving_hint(executable_frame);
+                    let _ = release_data_frame_preserving_hint(current_frame);
+                    return Err(error);
+                }
+            };
+
             let large_page_size = match checked_region {
                 Some((checked_start, page_size)) if checked_start == region_start => page_size,
                 _ => {
                     let candidate = (|| -> Result<Option<u64>, PagingError> {
-                        let executable_direct_alias = physical_memory_offset
-                            .checked_add(executable_physical_page)
-                            .filter(|address| {
-                                is_canonical_4level(*address)
-                                    && (*address & (PAGE_SIZE - 1)) == 0
-                            })
-                            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-                        let sibling_direct_alias = physical_memory_offset
-                            .checked_add(sibling_physical_page)
-                            .filter(|address| {
-                                is_canonical_4level(*address)
-                                    && (*address & (PAGE_SIZE - 1)) == 0
-                            })
-                            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-
                         let mut editor = KernelPageTableEditor::new_with_recursive_index(
                             boot_info,
                             executable_direct_alias,
@@ -4937,19 +4962,6 @@ pub fn verify_wx_sibling_large_page_precondition(
             };
 
             if let Some(original_page_size) = large_page_size {
-                let executable_direct_alias = physical_memory_offset
-                    .checked_add(executable_physical_page)
-                    .filter(|address| {
-                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-                    })
-                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-                let sibling_direct_alias = physical_memory_offset
-                    .checked_add(sibling_physical_page)
-                    .filter(|address| {
-                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-                    })
-                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
-
                 // A full large-page leaf covers both addresses. Verify that the
                 // aliases really share that leaf before accepting the owned pair.
                 if executable_direct_alias & !(original_page_size - 1)
