@@ -399,8 +399,13 @@ fn validate_virtual_range(start: u64, length: u64) -> Result<(), FrameWxAuditErr
 /// catches both ancestor cycles and the same table reachable through two virtual
 /// paths. Shared upper-half mappings are walked once from the active root; private
 /// lower-half tables must not be shared between declared roots.
-pub fn frame_wx_audit_table_path_is_unique(visited_table_frames: &[u64], candidate_frame: u64) -> bool {
-    candidate_frame != 0
+pub fn frame_wx_audit_table_path_is_unique(
+    visited_table_frames: &[u64],
+    candidate_frame: u64,
+    maximum_tables: usize,
+) -> bool {
+    visited_table_frames.len() < maximum_tables
+        && candidate_frame != 0
         && candidate_frame & (PAGE_SIZE - 1) == 0
         && !visited_table_frames.contains(&candidate_frame)
 }
@@ -426,11 +431,12 @@ mod tests {
     fn duplicate_table_frames_and_cycles_are_rejected() {
         let visited = [0x1000, 0x2000, 0x9000];
 
-        assert!(frame_wx_audit_table_path_is_unique(&visited, 0x3000));
-        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x1000));
-        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2000));
-        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0));
-        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2001));
+        assert!(frame_wx_audit_table_path_is_unique(&visited, 0x3000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x1000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2001, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x3000, 3));
     }
 
     #[test]
