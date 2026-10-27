@@ -110,6 +110,8 @@ pub enum PagingError {
     InvalidStackMapping,
     InvalidBootInfoMapping,
     WxAuditFailed,
+    #[cfg(feature = "test-wx-runtime-audit")]
+    WxSiblingFrameUnavailable,
     Translation(PageTableError),
     InactiveAddressSpaceInvalid,
     InactivePageTableUnavailable,
@@ -152,6 +154,10 @@ impl PagingError {
             }
             Self::WxAuditFailed => {
                 b"Could not complete the bounded read-only W^X mapping inventory\n"
+            }
+            #[cfg(feature = "test-wx-runtime-audit")]
+            Self::WxSiblingFrameUnavailable => {
+                b"No unused Usable sibling frame could be reserved in the executable page's 2 MiB region\n"
             }
             Self::InactiveAddressSpaceInvalid => {
                 b"Inactive address-space root failed validation\n"
@@ -1834,6 +1840,8 @@ struct KernelPageTableEditor<'a> {
     recursive_index: u16,
     target_virtual_address: u64,
     physical_address_bits: u8,
+    #[cfg(feature = "test-wx-runtime-audit")]
+    wx_test_executable_frame: Option<u64>,
 }
 
 impl<'a> KernelPageTableEditor<'a> {
@@ -1976,6 +1984,8 @@ impl<'a> KernelPageTableEditor<'a> {
             recursive_index,
             target_virtual_address,
             physical_address_bits,
+            #[cfg(feature = "test-wx-runtime-audit")]
+            wx_test_executable_frame: None,
         })
     }
 
@@ -2323,6 +2333,47 @@ impl<'a> KernelPageTableEditor<'a> {
     }
 }
 
+#[cfg(feature = "test-wx-runtime-audit")]
+impl KernelPageTableEditor<'_> {
+    /// Temporarily allow one test-owned frame to receive an RX alias after its
+    /// physical-offset alias has been proven RO+NX. Ordinary executable mappings
+    /// remain denied by the PageTableEditor implementation.
+    fn allow_controlled_wx_test_executable_frame(
+        &mut self,
+        physical_page: u64,
+    ) -> Result<(), PagingError> {
+        if physical_page == 0
+            || physical_page & (PAGE_SIZE - 1) != 0
+            || !self.is_usable_frame(physical_page)
+            || !PageTableEditor::is_frame_allocated(self, physical_page)
+            || PageTableEditor::is_page_table_or_reserved_frame(self, physical_page)
+            || is_address_space_root_frame(physical_page)
+        {
+            return Err(PagingError::WxSiblingFrameUnavailable);
+        }
+
+        let direct_alias = self
+            .physical_memory_offset
+            .checked_add(physical_page)
+            .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        let root_table_physical = self.root_table_physical;
+        let direct_mapping = translate_with_editor(self, root_table_physical, direct_alias)
+            .map_err(PagingError::Translation)?;
+        if direct_mapping.physical_address != physical_page
+            || direct_mapping.page_size != PAGE_SIZE
+            || direct_mapping.writable
+            || direct_mapping.user_accessible
+            || direct_mapping.executable
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        self.wx_test_executable_frame = Some(physical_page);
+        Ok(())
+    }
+}
+
 impl PageTableEditor for KernelPageTableEditor<'_> {
     fn physical_address_bits(&self) -> u8 {
         self.physical_address_bits
@@ -2345,9 +2396,14 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
-        // The physical-memory-offset mapping is currently writable for Usable
-        // frames. Until the kernel can remove/downgrade every writable alias and
-        // track all aliases, executable mappings fail closed to preserve W^X.
+        // Normal executable mappings remain fail-closed while arbitrary writable
+        // aliases are not fully tracked and controlled.
+        #[cfg(feature = "test-wx-runtime-audit")]
+        if self.wx_test_executable_frame == Some(_physical_address) {
+            // This single test-owned frame is admitted only after the test helper
+            // has revalidated its physical-offset alias as RO+NX and 4 KiB.
+            return true;
+        }
         false
     }
 
@@ -4415,6 +4471,7 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
             return Err(PagingError::PhysicalMemoryOffsetUnavailable);
         }
     };
+
     let highest_physical_end = boot_info
         .memory_regions
         .iter()
@@ -4743,6 +4800,666 @@ pub fn kernel_executable_direct_alias_for_test(
         return Err(PagingError::WxAuditFailed);
     }
     Ok(direct_alias)
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_PRE_TRANSITION_SENTINEL: u64 = 0x4f4e_455f_5758_5052;
+#[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_ALIAS_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_414c;
+#[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_DIRECT_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_444d;
+
+/// Keeps two allocator-owned Usable frames that share one original large direct-map
+/// leaf and the same 2 MiB physical subregion. This provides a controlled test layout
+/// even when the bootloader has reserved every unused page beside the loaded kernel.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub struct WxSiblingRegressionTest {
+    executable_frame: Option<Frame>,
+    sibling_frame: Option<Frame>,
+    pub executable_physical_page: u64,
+    pub sibling_physical_page: u64,
+    pub original_large_page_size: u64,
+    executable_virtual_address: Option<u64>,
+}
+
+/// Forms overlapping adjacent-frame candidates without skipping allocation positions.
+#[cfg(feature = "test-wx-runtime-audit")]
+fn take_adjacent_wx_frame_pair<T>(previous: &mut Option<T>, current: T) -> Option<(T, T)> {
+    match previous.take() {
+        Some(previous) => Some((previous, current)),
+        None => {
+            *previous = Some(current);
+            None
+        }
+    }
+}
+
+/// Finds an owned pair in a real writable large-page direct-map leaf.
+///
+/// The physical location of PT_LOAD segments is chosen by the bootloader and must not
+/// be treated as a placement guarantee. Instead, allocate both test frames from memory
+/// explicitly reported as Usable, and retain their allocator tokens for the lifetime
+/// of the test. The test executable page is mapped RX separately before its physical
+/// offset alias is restricted to RO+NX.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_wx_sibling_large_page_precondition(
+    boot_info: &BootInfo,
+) -> Result<WxSiblingRegressionTest, PagingError> {
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let root_table_physical = active_root_table_physical();
+    if root_table_physical == 0
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+
+    // Search every frame that was free at entry, rather than stopping at an
+    // arbitrary physical range. Keep a one-frame sliding window so an eligible
+    // pair is found regardless of whether its two frames fall on odd/even
+    // allocation positions. Rejected frames are freed without rewinding next_hint.
+    let scan_budget =
+        super::memory::free_frame_count().map_err(|_| PagingError::FrameAllocationFailed)?;
+    if scan_budget < 2 {
+        super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE LARGE-PAGE SIBLING PAIR FOUND\n");
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    }
+    // Include one extra allocation to test the wraparound pair between the final
+    // free frame and the first one in the allocator's cyclic search order.
+    let scan_attempts = scan_budget
+        .checked_add(1)
+        .ok_or(PagingError::FrameAllocationFailed)?;
+    let mut previous_frame: Option<Frame> = None;
+    // Cache eligibility by aligned virtual 2 MiB region, not physical region:
+    // the physical-memory offset need not be 2 MiB aligned, and one physical
+    // region can straddle two independently mapped virtual large-page leaves.
+    // Within one aligned virtual 2 MiB region, a 2 MiB/1 GiB leaf covers every
+    // candidate; a 4 KiB page-table subtree cannot contain a large leaf.
+    let mut checked_region: Option<(u64, Option<u64>)> = None;
+
+    for _ in 0..scan_attempts {
+        let current_frame = match super::memory::allocate_frame() {
+            Ok(frame) => frame,
+            Err(_) => {
+                if let Some(frame) = previous_frame.take() {
+                    release_data_frame_preserving_hint(frame);
+                }
+                return Err(PagingError::FrameAllocationFailed);
+            }
+        };
+        let Some((executable_frame, current_frame)) =
+            take_adjacent_wx_frame_pair(&mut previous_frame, current_frame)
+        else {
+            continue;
+        };
+
+        let executable_physical_page = executable_frame.physical_address();
+        let sibling_physical_page = current_frame.physical_address();
+        let same_2m_region = executable_physical_page != sibling_physical_page
+            && executable_physical_page & !((1u64 << 21) - 1)
+                == sibling_physical_page & !((1u64 << 21) - 1);
+
+        if same_2m_region {
+            let region_start = executable_physical_page & !((1u64 << 21) - 1);
+            let direct_aliases = (|| -> Result<(u64, u64), PagingError> {
+                let executable_direct_alias = physical_memory_offset
+                    .checked_add(executable_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                let sibling_direct_alias = physical_memory_offset
+                    .checked_add(sibling_physical_page)
+                    .filter(|address| {
+                        is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+                    })
+                    .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+                Ok((executable_direct_alias, sibling_direct_alias))
+            })();
+            let (executable_direct_alias, sibling_direct_alias) = match direct_aliases {
+                Ok(aliases) => aliases,
+                Err(error) => {
+                    release_data_frame_preserving_hint(executable_frame);
+                    release_data_frame_preserving_hint(current_frame);
+                    return Err(error);
+                }
+            };
+            let virtual_region_start = executable_direct_alias & !((1u64 << 21) - 1);
+
+            let large_page_size = match checked_region {
+                Some((checked_start, page_size)) if checked_start == virtual_region_start => {
+                    page_size
+                }
+                _ => {
+                    let candidate = (|| -> Result<Option<u64>, PagingError> {
+                        let mut editor = KernelPageTableEditor::new_with_recursive_index(
+                            boot_info,
+                            executable_direct_alias,
+                            recursive_index,
+                        )?;
+                        let alias = translate_with_editor(
+                            &mut editor,
+                            root_table_physical,
+                            executable_direct_alias,
+                        )
+                        .map_err(PagingError::Translation)?;
+
+                        if (alias.page_size != (1u64 << 21) && alias.page_size != (1u64 << 30))
+                            || alias.physical_address != executable_physical_page
+                            || !alias.writable
+                            || alias.user_accessible
+                            || alias.executable
+                            || executable_direct_alias & !(alias.page_size - 1)
+                                != sibling_direct_alias & !(alias.page_size - 1)
+                        {
+                            return Ok(None);
+                        }
+                        Ok(Some(alias.page_size))
+                    })();
+
+                    match candidate {
+                        Ok(page_size) => {
+                            checked_region = Some((virtual_region_start, page_size));
+                            page_size
+                        }
+                        Err(error) => {
+                            release_data_frame_preserving_hint(executable_frame);
+                            release_data_frame_preserving_hint(current_frame);
+                            return Err(error);
+                        }
+                    }
+                }
+            };
+
+            if let Some(original_page_size) = large_page_size {
+                // A full large-page leaf covers both addresses. Verify that the
+                // aliases really share that leaf before accepting the owned pair.
+                if executable_direct_alias & !(original_page_size - 1)
+                    == sibling_direct_alias & !(original_page_size - 1)
+                {
+                    // SAFETY: the direct-map alias belongs to an allocator-owned
+                    // Usable frame and was checked as writable, supervisor-only, NX.
+                    // Seed a single RET byte before installing the separate RX alias.
+                    unsafe {
+                        ptr::write_volatile(executable_direct_alias as *mut u8, 0xc3);
+                        ptr::write_volatile(
+                            sibling_direct_alias as *mut u64,
+                            WX_SIBLING_PRE_TRANSITION_SENTINEL,
+                        );
+                    }
+                    return Ok(WxSiblingRegressionTest {
+                        executable_frame: Some(executable_frame),
+                        sibling_frame: Some(current_frame),
+                        executable_physical_page,
+                        sibling_physical_page,
+                        original_large_page_size: original_page_size,
+                        executable_virtual_address: None,
+                    });
+                }
+            }
+        }
+
+        // Advance by one allocation, not two: the current frame becomes the
+        // previous candidate so overlapping pairs are checked on the next pass.
+        release_data_frame_preserving_hint(executable_frame);
+        previous_frame = Some(current_frame);
+    }
+
+    if let Some(frame) = previous_frame.take() {
+        release_data_frame_preserving_hint(frame);
+    }
+
+    super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE LARGE-PAGE SIBLING PAIR FOUND\n");
+    Err(PagingError::WxSiblingFrameUnavailable)
+}
+
+/// Maps the owned test executable page as supervisor RX and ensures its direct-map
+/// alias is RO+NX. If the kernel PT_LOAD transition already split this same 2 MiB
+/// region, this verifies that the sibling remained writable; otherwise it invokes
+/// the same guarded direct-map restriction primitive to exercise the demotion path.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn apply_wx_sibling_test_transition(
+    boot_info: &BootInfo,
+    test: &mut WxSiblingRegressionTest,
+) -> Result<(), PagingError> {
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let root_table_physical = active_root_table_physical();
+    if !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+        || test.executable_frame.as_ref().map(Frame::physical_address)
+            != Some(test.executable_physical_page)
+        || test.sibling_frame.as_ref().map(Frame::physical_address)
+            != Some(test.sibling_physical_page)
+        || test.original_large_page_size != (1u64 << 21)
+            && test.original_large_page_size != (1u64 << 30)
+        || test.executable_physical_page & !((1u64 << 21) - 1)
+            != test.sibling_physical_page & !((1u64 << 21) - 1)
+    {
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    }
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let executable_direct_alias = physical_memory_offset
+        .checked_add(test.executable_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+
+    // The precondition is checked before the PT_LOAD transition. An original
+    // 1 GiB leaf may now be a 2 MiB child if PT_LOAD demoted a different child,
+    // or a 4 KiB leaf if PT_LOAD touched this same physical 2 MiB region.
+    let mut direct_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_direct_alias,
+        recursive_index,
+    )?;
+    let direct_before = translate_with_editor(
+        &mut direct_editor,
+        root_table_physical,
+        executable_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    let valid_demotion_progress = oneos_core::is_valid_large_page_demotion_progress(
+        test.original_large_page_size,
+        direct_before.page_size,
+    );
+    let direct_mapping_is_writable_supervisor_nx =
+        direct_before.writable && !direct_before.user_accessible && !direct_before.executable;
+    if direct_before.physical_address != test.executable_physical_page
+        || !valid_demotion_progress
+        || !direct_mapping_is_writable_supervisor_nx
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    // Restrict the owned test frame's physical-offset alias before publishing any
+    // executable alias. This avoids a transient W+X alias even with interrupts off.
+    // If PT_LOAD already demoted this exact 2 MiB child, this changes the frame's
+    // writable 4 KiB alias to RO+NX; otherwise the helper performs the remaining
+    // 1 GiB-to-2 MiB or 2 MiB-to-4 KiB demotion required for this test frame.
+    restrict_physical_offset_alias_read_only_nx(
+        boot_info,
+        root_table_physical,
+        executable_direct_alias,
+        test.executable_physical_page,
+    )?;
+
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let physical_mapping_end = physical_memory_offset
+        .checked_add(highest_physical_end)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut mapped_virtual_address = None;
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
+            continue;
+        }
+        let mut editor = match KernelPageTableEditor::new_with_recursive_index(
+            boot_info,
+            candidate,
+            recursive_index,
+        ) {
+            Ok(editor) => editor,
+            Err(error) => return Err(error),
+        };
+        // This per-editor permission is available only in the dedicated regression
+        // image and only after verifying this frame's direct-map alias is RO+NX.
+        #[cfg(feature = "test-wx-runtime-audit")]
+        editor.allow_controlled_wx_test_executable_frame(test.executable_physical_page)?;
+        // SAFETY: the owned executable test frame remains allocated for the test's
+        // lifetime. The mapping is supervisor-only and deliberately not writable.
+        match unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                candidate,
+                test.executable_physical_page,
+                PagePermissions::new(false, false, true),
+                &mut editor,
+            )
+        } {
+            Ok(()) => {
+                invalidate_local_tlb(candidate);
+                let mut verify_editor = KernelPageTableEditor::new_with_recursive_index(
+                    boot_info,
+                    candidate,
+                    recursive_index,
+                )?;
+                let mapped =
+                    translate_with_editor(&mut verify_editor, root_table_physical, candidate)
+                        .map_err(PagingError::Translation)?;
+                if mapped.physical_address != test.executable_physical_page
+                    || mapped.page_size != PAGE_SIZE
+                    || mapped.writable
+                    || mapped.user_accessible
+                    || !mapped.executable
+                {
+                    return Err(PagingError::InvalidKernelCodeMapping);
+                }
+                mapped_virtual_address = Some(candidate);
+                break;
+            }
+            Err(error) if error.is_retryable_for_mapping_candidate() => continue,
+            Err(error) => return Err(PagingError::MappingMutation(error)),
+        }
+    }
+    let executable_virtual_address =
+        mapped_virtual_address.ok_or(PagingError::NoUnusedVirtualAddress)?;
+    test.executable_virtual_address = Some(executable_virtual_address);
+
+    // Verify the actual effective permissions on both aliases after the change.
+    let mut executable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_address,
+        recursive_index,
+    )?;
+    let executable_alias = translate_with_editor(
+        &mut executable_alias_editor,
+        root_table_physical,
+        executable_virtual_address,
+    )
+    .map_err(PagingError::Translation)?;
+    let mut direct_alias_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_direct_alias,
+        recursive_index,
+    )?;
+    let direct_alias = translate_with_editor(
+        &mut direct_alias_editor,
+        root_table_physical,
+        executable_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    let sibling_direct_alias = physical_memory_offset
+        .checked_add(test.sibling_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut sibling_alias_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_direct_alias,
+        recursive_index,
+    )?;
+    let sibling_alias = translate_with_editor(
+        &mut sibling_alias_editor,
+        root_table_physical,
+        sibling_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable_alias.physical_address != test.executable_physical_page
+        || executable_alias.page_size != PAGE_SIZE
+        || executable_alias.writable
+        || executable_alias.user_accessible
+        || !executable_alias.executable
+        || direct_alias.physical_address != test.executable_physical_page
+        || direct_alias.page_size != PAGE_SIZE
+        || direct_alias.writable
+        || direct_alias.user_accessible
+        || direct_alias.executable
+        || sibling_alias.physical_address != test.sibling_physical_page
+        || sibling_alias.page_size != PAGE_SIZE
+        || !sibling_alias.writable
+        || sibling_alias.user_accessible
+        || sibling_alias.executable
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+    Ok(())
+}
+
+/// Verifies that the controlled RX test frame's direct-map alias is read-only/NX
+/// while the writable data sibling remains writable/NX after large-page demotion.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_wx_sibling_test_after_transition(
+    boot_info: &BootInfo,
+    test: &mut WxSiblingRegressionTest,
+    recursive_index: u16,
+) -> Result<(), PagingError> {
+    if test.executable_frame.as_ref().map(Frame::physical_address)
+        != Some(test.executable_physical_page)
+        || test.sibling_frame.as_ref().map(Frame::physical_address)
+            != Some(test.sibling_physical_page)
+        || test.executable_physical_page & !((1u64 << 21) - 1)
+            != test.sibling_physical_page & !((1u64 << 21) - 1)
+    {
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    }
+    let executable_virtual_address = test
+        .executable_virtual_address
+        .ok_or(PagingError::InvalidKernelCodeMapping)?;
+    let root_table_physical = active_root_table_physical();
+    if !validate_recursive_mapping_entry(recursive_index, root_table_physical) {
+        return Err(PagingError::InvalidRecursiveMapping);
+    }
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let executable_direct_alias = physical_memory_offset
+        .checked_add(test.executable_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let sibling_direct_alias = physical_memory_offset
+        .checked_add(test.sibling_physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+
+    let mut executable_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_address,
+        recursive_index,
+    )?;
+    let executable_alias = translate_with_editor(
+        &mut executable_editor,
+        root_table_physical,
+        executable_virtual_address,
+    )
+    .map_err(PagingError::Translation)?;
+    let mut direct_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_direct_alias,
+        recursive_index,
+    )?;
+    let direct_alias = translate_with_editor(
+        &mut direct_editor,
+        root_table_physical,
+        executable_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    let mut sibling_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_direct_alias,
+        recursive_index,
+    )?;
+    let sibling_alias = translate_with_editor(
+        &mut sibling_editor,
+        root_table_physical,
+        sibling_direct_alias,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable_alias.physical_address != test.executable_physical_page
+        || executable_alias.page_size != PAGE_SIZE
+        || executable_alias.writable
+        || executable_alias.user_accessible
+        || !executable_alias.executable
+        || direct_alias.physical_address != test.executable_physical_page
+        || direct_alias.page_size != PAGE_SIZE
+        || direct_alias.writable
+        || direct_alias.user_accessible
+        || direct_alias.executable
+        || sibling_alias.physical_address != test.sibling_physical_page
+        || sibling_alias.page_size != PAGE_SIZE
+        || !sibling_alias.writable
+        || sibling_alias.user_accessible
+        || sibling_alias.executable
+    {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+
+    // Map the sibling frame through a second, independent virtual address.
+    // The direct map and this test alias must see the same physical contents in both
+    // write directions, including the value seeded before the large-page transition.
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let physical_mapping_end = physical_memory_offset
+        .checked_add(highest_physical_end)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut sibling_virtual_address = None;
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
+            continue;
+        }
+        let mut editor =
+            KernelPageTableEditor::new_with_recursive_index(boot_info, candidate, recursive_index)?;
+        // SAFETY: the sibling frame remains allocator-owned. This additional alias
+        // is supervisor-only, writable, NX, and does not grant executable access.
+        match unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                candidate,
+                test.sibling_physical_page,
+                PagePermissions::new(true, false, false),
+                &mut editor,
+            )
+        } {
+            Ok(()) => {
+                invalidate_local_tlb(candidate);
+                sibling_virtual_address = Some(candidate);
+                break;
+            }
+            Err(error) if error.is_retryable_for_mapping_candidate() => continue,
+            Err(error) => return Err(PagingError::MappingMutation(error)),
+        }
+    }
+    let sibling_virtual_address =
+        sibling_virtual_address.ok_or(PagingError::NoUnusedVirtualAddress)?;
+
+    let alias_check = (|| -> Result<(), PagingError> {
+        let mut alias_editor = KernelPageTableEditor::new_with_recursive_index(
+            boot_info,
+            sibling_virtual_address,
+            recursive_index,
+        )?;
+        let alias = translate_with_editor(
+            &mut alias_editor,
+            root_table_physical,
+            sibling_virtual_address,
+        )
+        .map_err(PagingError::Translation)?;
+        if alias.physical_address != test.sibling_physical_page
+            || alias.page_size != PAGE_SIZE
+            || !alias.writable
+            || alias.user_accessible
+            || alias.executable
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the additional alias is a validated writable mapping of the
+        // retained sibling frame. This value was written before the transition.
+        let before_transition =
+            unsafe { ptr::read_volatile(sibling_virtual_address as *const u64) };
+        if before_transition != WX_SIBLING_PRE_TRANSITION_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the mapped alias is writable and addresses the retained frame.
+        unsafe {
+            ptr::write_volatile(
+                sibling_virtual_address as *mut u64,
+                WX_SIBLING_ALIAS_WRITE_SENTINEL,
+            );
+        }
+        // SAFETY: this reads the same frame through the separately validated direct map.
+        let through_direct_map = unsafe { ptr::read_volatile(sibling_direct_alias as *const u64) };
+        if through_direct_map != WX_SIBLING_ALIAS_WRITE_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the direct-map leaf was verified writable, supervisor-only, NX.
+        unsafe {
+            ptr::write_volatile(
+                sibling_direct_alias as *mut u64,
+                WX_SIBLING_DIRECT_WRITE_SENTINEL,
+            );
+        }
+        // SAFETY: independently read the write through the additional virtual alias.
+        let through_test_alias =
+            unsafe { ptr::read_volatile(sibling_virtual_address as *const u64) };
+        if through_test_alias != WX_SIBLING_DIRECT_WRITE_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        Ok(())
+    })();
+
+    // Never release the data frame while its additional alias is still present.
+    let mut cleanup_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_virtual_address,
+        recursive_index,
+    )?;
+    let unmapped = unmap_4k(
+        root_table_physical,
+        sibling_virtual_address,
+        &mut cleanup_editor,
+    )
+    .map_err(PagingError::MappingMutation)?;
+    invalidate_local_tlb(sibling_virtual_address);
+    let mut verify_unmap_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_virtual_address,
+        recursive_index,
+    )?;
+    let after_unmap = translate_with_editor(
+        &mut verify_unmap_editor,
+        root_table_physical,
+        sibling_virtual_address,
+    );
+    let removed_correctly = unmapped.physical_address == test.sibling_physical_page
+        && unmapped.permissions == PagePermissions::new(true, false, false)
+        && matches!(after_unmap, Err(PageTableError::NotPresent { .. }));
+    if !removed_correctly {
+        return Err(PagingError::LargePageDemotionFailed);
+    }
+    alias_check?;
+
+    // The sibling's independent alias is removed and its TLB entry invalidated.
+    // Its physical-offset alias remains writable/NX; the RX test frame stays owned.
+    let sibling_frame = test
+        .sibling_frame
+        .take()
+        .ok_or(PagingError::WxSiblingFrameUnavailable)?;
+    release_data_frame(sibling_frame)?;
+    Ok(())
 }
 
 /// Demotes a physical-offset leaf as needed, then removes write access using
@@ -5622,5 +6339,25 @@ fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
     match super::memory::free_frame(frame) {
         Ok(()) => Ok(()),
         Err((_error, _frame)) => Err(PagingError::FrameReleaseFailed),
+    }
+}
+
+/// Releases a rejected W^X scan candidate without rewinding the allocator hint.
+#[cfg(feature = "test-wx-runtime-audit")]
+fn release_data_frame_preserving_hint(frame: Frame) {
+    match super::memory::free_frame_preserving_hint(frame) {
+        Ok(()) => {}
+        Err((error, frame)) => {
+            // A failed free returns ownership of the still-allocated frame. This
+            // test has no ownership registry to retain that token for a retry, so
+            // stop immediately while the token is still live instead of continuing
+            // the scan and silently stranding it.
+            let physical_address = frame.physical_address();
+            super::serial_write(error.message());
+            panic!(
+                "failed to release W^X scan frame {:#x}; halting with frame token retained",
+                physical_address
+            );
+        }
     }
 }

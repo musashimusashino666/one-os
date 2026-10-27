@@ -284,6 +284,43 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     };
 
+    // The bootloader may place writable PT_LOAD pages far from executable code.
+    // The dedicated test therefore allocates an owned RX test frame and a writable
+    // sibling frame in a controlled 2 MiB physical region with an original large leaf.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let mut wx_sibling_test = match paging::verify_wx_sibling_large_page_precondition(boot_info) {
+        Ok(test) => test,
+        Err(error) => {
+            serial_write(b"\nONE OS W^X LARGE-PAGE PRECONDITION FAILED\n");
+            serial_write(error.message());
+            halt_forever()
+        }
+    };
+    #[cfg(feature = "test-wx-runtime-audit")]
+    {
+        interrupts::write_hex(
+            b"ONE OS W^X TEST EXECUTABLE PHYSICAL PAGE: ",
+            wx_sibling_test.executable_physical_page,
+        );
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING DATA FRAME PHYSICAL: ",
+            wx_sibling_test.sibling_physical_page,
+        );
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING PHYSICAL REGION START: ",
+            wx_sibling_test.executable_physical_page & !((1u64 << 21) - 1),
+        );
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING PHYSICAL REGION END: ",
+            (wx_sibling_test.executable_physical_page & !((1u64 << 21) - 1)) + (1u64 << 21),
+        );
+        interrupts::write_hex(
+            b"ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ",
+            wx_sibling_test.original_large_page_size,
+        );
+        serial_write(b"ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS\n");
+    }
+
     // Exercise both allocation and release only after loaded kernel frames
     // have been excluded from the allocator bitmap.
     let probe_frame = match memory::allocate_frame() {
@@ -426,6 +463,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             executable_pages as u64,
         );
         serial_write(b"ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS\n");
+    }
+
+    #[cfg(feature = "test-wx-runtime-audit")]
+    if let Err(error) = paging::apply_wx_sibling_test_transition(boot_info, &mut wx_sibling_test) {
+        serial_write(b"\nONE OS W^X SIBLING DEMOTION SETUP FAILED\n");
+        serial_write(error.message());
+        halt_forever()
     }
 
     if let Err(error) = address_space::verify_root_initialization_smoke_test(boot_info) {
@@ -817,6 +861,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 halt_forever()
             }
             serial_write(b"ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS\n");
+
+            if let Err(error) = paging::verify_wx_sibling_test_after_transition(
+                boot_info,
+                &mut wx_sibling_test,
+                _active_root.recursive_index(),
+            ) {
+                serial_write(b"\nONE OS W^X WRITABLE SIBLING DIRECT-MAP FAILED\n");
+                serial_write(error.message());
+                halt_forever()
+            }
+            serial_write(b"ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS\n");
+            serial_write(b"ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS\n");
+            serial_write(b"ONE OS W^X SIBLING ALIAS DATA CONSISTENCY PASS\n");
         }
 
         // The active handle carries the private recursive index installed in

@@ -305,8 +305,30 @@ impl<'a> FrameAllocator<'a> {
     /// Returns an allocated frame to the allocator that issued its token.
     ///
     /// The token is consumed, preventing ordinary safe Rust code from freeing
-    /// the same frame twice or returning it to two allocator instances.
+    /// the same frame twice or returning it to two allocator instances. The hint
+    /// is rewound so ordinary allocation can quickly reuse a recently freed frame.
     pub fn free_frame(&mut self, frame: Frame) -> Result<(), (FrameAllocatorError, Frame)> {
+        self.free_frame_with_hint_policy(frame, true)
+    }
+
+    /// Returns a frame without rewinding the allocation hint.
+    ///
+    /// This is for bounded allocation scans that immediately release rejected
+    /// candidates: rewinding to each rejected frame would cause the next scan to
+    /// select the same candidate again. The hint remains the position reached by
+    /// allocations, while ordinary free_frame retains its reuse behavior.
+    pub fn free_frame_preserving_hint(
+        &mut self,
+        frame: Frame,
+    ) -> Result<(), (FrameAllocatorError, Frame)> {
+        self.free_frame_with_hint_policy(frame, false)
+    }
+
+    fn free_frame_with_hint_policy(
+        &mut self,
+        frame: Frame,
+        rewind_hint: bool,
+    ) -> Result<(), (FrameAllocatorError, Frame)> {
         if frame.allocator_id != self.allocator_id {
             return Err((FrameAllocatorError::ForeignFrame, frame));
         }
@@ -321,7 +343,7 @@ impl<'a> FrameAllocator<'a> {
 
         self.set_allocated(index, false);
         self.allocated_frames -= 1;
-        if index < self.next_hint {
+        if rewind_hint && index < self.next_hint {
             self.next_hint = index;
         }
         Ok(())
@@ -609,6 +631,30 @@ mod tests {
         let reused = allocator.allocate_frame().unwrap();
         assert_eq!(reused.physical_address(), first_address);
         assert_eq!(second.physical_address(), 0x2000);
+        assert_eq!(allocator.stats().allocated_frames, 2);
+    }
+
+    #[test]
+    fn releasing_candidate_pair_preserving_hint_advances_search() {
+        let regions = [(0x1000, 0x9000, true)];
+        let mut slots = [SLOT; 1];
+        let mut bitmap = [0u64; 1];
+        let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        let rejected_first = allocator.allocate_frame().unwrap();
+        let rejected_second = allocator.allocate_frame().unwrap();
+        allocator
+            .free_frame_preserving_hint(rejected_first)
+            .unwrap();
+        allocator
+            .free_frame_preserving_hint(rejected_second)
+            .unwrap();
+
+        let next_first = allocator.allocate_frame().unwrap();
+        let next_second = allocator.allocate_frame().unwrap();
+
+        assert_eq!(next_first.physical_address(), 0x3000);
+        assert_eq!(next_second.physical_address(), 0x4000);
         assert_eq!(allocator.stats().allocated_frames, 2);
     }
 

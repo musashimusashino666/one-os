@@ -17,6 +17,22 @@ const ENTRIES_PER_TABLE: usize = 512;
 const MIN_PHYSICAL_ADDRESS_BITS: u8 = 32;
 const MAX_PHYSICAL_ADDRESS_BITS: u8 = 52;
 
+/// Returns whether an observed leaf size is a valid stage of a large-page demotion.
+///
+/// A 2 MiB leaf can remain 2 MiB or become 4 KiB. A 1 GiB leaf can remain
+/// 1 GiB, be split to 2 MiB leaves, or be split further to 4 KiB leaves.
+pub const fn is_valid_large_page_demotion_progress(
+    original_page_size: u64,
+    observed_page_size: u64,
+) -> bool {
+    (original_page_size == PAGE_SIZE_1G
+        && (observed_page_size == PAGE_SIZE_1G
+            || observed_page_size == PAGE_SIZE_2M
+            || observed_page_size == PAGE_SIZE_4K))
+        || (original_page_size == PAGE_SIZE_2M
+            && (observed_page_size == PAGE_SIZE_2M || observed_page_size == PAGE_SIZE_4K))
+}
+
 /// Errors returned while validating a large-page demotion source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LargePageDemotionError {
@@ -157,8 +173,8 @@ impl LargePageDemotion {
 #[cfg(test)]
 mod tests {
     use super::{
-        LargePageDemotion, LargePageDemotionError, LARGE_PAGE, LARGE_PAGE_PAT,
-        PHYSICAL_ADDRESS_MASK, SMALL_PAGE_PAT,
+        is_valid_large_page_demotion_progress, LargePageDemotion, LargePageDemotionError,
+        LARGE_PAGE, LARGE_PAGE_PAT, PHYSICAL_ADDRESS_MASK, SMALL_PAGE_PAT,
     };
 
     const PRESENT: u64 = 1;
@@ -182,6 +198,19 @@ mod tests {
         | SOFTWARE
         | NX
         | PROTECTION_KEY;
+
+    #[test]
+    fn accepts_only_valid_large_page_demotion_progress() {
+        assert!(is_valid_large_page_demotion_progress(1 << 30, 1 << 30));
+        assert!(is_valid_large_page_demotion_progress(1 << 30, 1 << 21));
+        assert!(is_valid_large_page_demotion_progress(1 << 30, 1 << 12));
+        assert!(is_valid_large_page_demotion_progress(1 << 21, 1 << 21));
+        assert!(is_valid_large_page_demotion_progress(1 << 21, 1 << 12));
+
+        assert!(!is_valid_large_page_demotion_progress(1 << 21, 1 << 30));
+        assert!(!is_valid_large_page_demotion_progress(1 << 30, 1 << 16));
+        assert!(!is_valid_large_page_demotion_progress(1 << 12, 1 << 12));
+    }
 
     #[test]
     fn demotes_1g_leaf_to_512_2m_leaves_without_losing_attributes() {
