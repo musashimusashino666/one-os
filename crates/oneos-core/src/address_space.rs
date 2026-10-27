@@ -672,12 +672,12 @@ fn validate_root_frame_address(
 #[cfg(test)]
 mod tests {
     use super::{
-        shared_recursive_slots_are_valid, validate_deactivation_root,
-        validate_root_frame_address, validate_user_virtual_range, ActiveAddressSpaceRoot,
-        AddressSpaceRoot, AddressSpaceRootDeactivationError, AddressSpaceRootEditor,
-        AddressSpaceRootError, AddressSpaceRootInitializationError, SharedRecursiveSlotEntries,
-        UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
-        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE, ACCESSED,
+        shared_recursive_slots_are_valid, validate_deactivation_root, validate_root_frame_address,
+        validate_user_virtual_range, ActiveAddressSpaceRoot, AddressSpaceRoot,
+        AddressSpaceRootDeactivationError, AddressSpaceRootEditor, AddressSpaceRootError,
+        AddressSpaceRootInitializationError, SharedRecursiveSlotEntries, UserVirtualRangeError,
+        ACCESSED, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
+        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
@@ -723,24 +723,38 @@ mod tests {
     fn rejects_mappings_in_either_roots_reserved_recursive_slot() {
         let mut entries = valid_shared_recursive_entries();
         entries.active_target_slot = 0x3000 | PRESENT | WRITABLE | NO_EXECUTE;
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 510, 511, entries
+        ));
 
         let mut entries = valid_shared_recursive_entries();
         entries.target_active_slot = 0x4000 | PRESENT | WRITABLE | NO_EXECUTE;
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 510, 511, entries
+        ));
     }
 
     #[test]
     fn rejects_malformed_self_references_and_invalid_recursive_indices() {
         let mut entries = valid_shared_recursive_entries();
         entries.target_self_entry |= USER_ACCESSIBLE;
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 510, 511, entries
+        ));
 
         let entries = valid_shared_recursive_entries();
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 510, entries));
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 255, 511, entries));
-        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 512, entries));
-        assert!(!shared_recursive_slots_are_valid(0, 0x2000, 510, 511, entries));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 510, 510, entries
+        ));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 255, 511, entries
+        ));
+        assert!(!shared_recursive_slots_are_valid(
+            0x1000, 0x2000, 510, 512, entries
+        ));
+        assert!(!shared_recursive_slots_are_valid(
+            0, 0x2000, 510, 511, entries
+        ));
     }
 
     #[test]
