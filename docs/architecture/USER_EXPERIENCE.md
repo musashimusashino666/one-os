@@ -16,7 +16,7 @@ The user environment must make the system controllable and understandable withou
 
 ## Permission model at the interface boundary
 
-The UI may present a request and help the user understand it. It is not the source of truth for authority. The kernel or trusted service must validate the grant when the protected operation executes. A hidden background task cannot inherit broader rights merely because a foreground application once received permission.
+The UI may present a request and help the user understand it. It is not the source of truth for authority. The kernel MUST validate kernel-owned authority at the point where every protected operation executes. A policy or broker service may propose a decision or relay a request, but its own “allow” response cannot grant rights or override a kernel denial. A hidden background task cannot inherit broader rights merely because a foreground application once received permission. A compromised service is limited to its own explicitly delegated capabilities; this does not guarantee safe behavior within that service's own scope.
 
 Revocation semantics must define whether existing handles are invalidated, in-flight operations finish or cancel, and resources are reclaimed. If these effects cannot be guaranteed, the UI must not promise instantaneous revocation.
 
