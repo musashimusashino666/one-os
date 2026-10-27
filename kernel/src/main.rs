@@ -367,6 +367,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"ONE OS W^X AUDIT CONFLICT EVENTS: ",
         paging_stats.wx_audit.conflicting_overlap_events,
     );
+    serial_write(b"ONE OS DIRECT-MAP COVERAGE: COMPLETE FOR DECLARED MEMORY RANGE\n");
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP VIRTUAL OFFSET: ",
+        paging_stats.wx_direct_map_coverage.virtual_offset,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP PHYSICAL END: ",
+        paging_stats.wx_direct_map_coverage.physical_end,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP COVERED VIRTUAL END: ",
+        paging_stats.wx_direct_map_coverage.covered_virtual_end,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP COVERED LEAF MAPPINGS: ",
+        paging_stats.wx_direct_map_coverage.covered_leaf_mappings,
+    );
     serial_write(b"ONE OS W^X ALIAS WALK FINISHED (DECLARED ROOTS)\n");
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOT INVENTORY SEALED: ",
