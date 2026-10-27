@@ -131,6 +131,33 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(valid, message)
 
+    def test_rejects_partial_width_xchg_for_cr4_provenance(self):
+        # A partial-width XCHG cannot preserve the original 64-bit CR4 value.
+        # Without width-aware tracking, these sequences can appear valid even
+        # though RBX/RDI no longer contain the original full-width value.
+        partial_exchanges = (
+            "xchgl %ebx, %edi",
+            "xchgw %bx, %di",
+            "xchgb %bl, %dil",
+        )
+        for exchange in partial_exchanges:
+            with self.subTest(exchange=exchange):
+                valid, message = validate_function_body(
+                    [
+                        "movq %cr4, %rbx",
+                        "movq %rbx, %rdi",
+                        "cpuid",
+                        exchange,
+                        "movq %rbx, %rax",
+                        "andq $-129, %rax",
+                        "movq %rax, %cr4",
+                        "movq %r12, %cr3",
+                        "movq %rbx, %cr4",
+                        "retq",
+                    ]
+                )
+                self.assertFalse(valid, f"{exchange}: {message}")
+
     def test_rejects_cr3_write_before_pge_disable(self):
         valid, message = validate_function_body(
             [
