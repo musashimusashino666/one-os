@@ -34,9 +34,10 @@ Exit evidence: pinned toolchain builds the BIOS image; required host checks pass
 Implemented slices include a fixed-capacity physical-frame allocator, selected boot mapping inspection, a new kernel root, guarded 4 KiB mapping operations, selected supervisor/NX protections, local TLB transition tests, large-page demotion integration, and direct-map permission transitions for validated executable kernel pages.
 
 Blocking work:
-- Complete declared-root and mapping-source inventory for frame-wide W^X.
-- Ensure partial coverage, unknown roots, malformed structures, and capacity exhaustion cannot report success.
-- Verify every physical overlap across supported page sizes, recursive aliases, direct-map aliases, and inherited mappings in scope.
+- Complete and independently validate the authoritative inventory of every root the kernel can activate and every mapping source that can create a physical alias.
+- Keep duplicate/cyclic page-table paths, unknown roots, malformed structures, root-snapshot changes, and range/table/recursive/path budget exhaustion fail-closed; the bounded audit must never treat partial coverage as clean.
+- Verify every physical overlap across supported page sizes, recursive aliases, direct-map aliases, and inherited mappings in scope; report both coverage completeness and conflict status separately.
+- Complete the broader Issue #26 boot-mapping inventory and unexpected/missing mapping rejection; the current PT_LOAD/stack/BootInfo checks are bounded and do not independently prove every bootloader mapping is expected.
 - Reconcile open [Issue #49](https://github.com/musashimusashino666/one-os/issues/49) against merged implementation PRs #50 and #52; update or close it only after its acceptance criteria are rechecked against current main.
 - Close [Issue #26](https://github.com/musashimusashino666/one-os/issues/26) and [Issue #46](https://github.com/musashimusashino666/one-os/issues/46) only when their stated criteria pass on the exact candidate.
 

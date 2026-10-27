@@ -1,11 +1,20 @@
 use super::*;
 
+const AUDIT_UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
+
 pub fn audit_registered_wx_roots(
     boot_info: &BootInfo,
     root_table_physical: u64,
     recursive_index: u16,
     physical_address_bits: u8,
-) -> Result<(FrameWxAuditSummary, FrameWxAuditScopeSummary), PagingError> {
+) -> Result<
+    (
+        FrameWxAuditSummary,
+        FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>,
+        FrameWxDirectMapCoverageSummary,
+    ),
+    PagingError,
+> {
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
@@ -65,6 +74,24 @@ pub fn audit_registered_wx_roots(
         .seal_root_inventory()
         .map_err(|_| PagingError::WxAuditFailed)?;
 
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::WxAuditFailed),
+    };
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let mut direct_map_coverage = FrameWxDirectMapCoverage::new(
+        physical_address_bits,
+        physical_memory_offset,
+        highest_physical_end,
+    )
+    .map_err(|_| PagingError::WxAuditFailed)?;
+
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
     let mut recursive_aliases = RecursiveAliasSet::new()?;
@@ -80,11 +107,12 @@ pub fn audit_registered_wx_roots(
         root_table_physical,
         4,
         0,
-        true,
-        true,
+        FrameWxAuditEffectivePermissions::unrestricted(),
         AuditRootRange::All,
         true,
         Some(recursive_index),
+        &mut direct_map_coverage,
+        true,
         &mut recursive_aliases,
         &mut visited_path,
         0,
@@ -136,11 +164,12 @@ pub fn audit_registered_wx_roots(
             registered_root,
             4,
             0,
-            true,
-            true,
+            FrameWxAuditEffectivePermissions::unrestricted(),
             AuditRootRange::LowerHalf,
             true,
             Some(target_recursive_index),
+            &mut direct_map_coverage,
+            false,
             &mut recursive_aliases,
             &mut visited_path,
             0,
@@ -156,6 +185,14 @@ pub fn audit_registered_wx_roots(
     // leaf inventory only after all roots have been walked; doing this late avoids
     // missing executable leaves that appear later in page-table traversal order.
     recursive_aliases.check_conflicts(&mut audit)?;
+
+    // The active root must provide a complete, offset-correct, NX physical-memory
+    // mapping through the highest firmware region (and at least 4 GiB). This check
+    // observes every leaf, including read-only/NX leaves omitted from the W/X range
+    // inventory. Inactive roots share this PML4 region and were checked entry-for-entry.
+    let direct_map_summary = direct_map_coverage
+        .finish()
+        .map_err(|_| PagingError::WxAuditFailed)?;
 
     // All present W/X leaves in every declared root were enumerated before this
     // point, including any physical-offset/direct-map aliases; those aliases are
@@ -186,7 +223,7 @@ pub fn audit_registered_wx_roots(
         return Err(PagingError::WxAuditFailed);
     }
 
-    Ok((audit.summary(), scope_summary))
+    Ok((audit.summary(), scope_summary, direct_map_summary))
 }
 
 fn find_root_recursive_index(
@@ -282,11 +319,14 @@ enum AuditRootRange {
 // Store audit scratch in BSS rather than the constrained bootstrap/kernel stack.
 // The lease prevents re-entrant or concurrent walkers from observing each other's
 // entries; this OS currently requires single-CPU, maskable-interrupts-disabled use.
+// Table-path inventory has a separate fixed capacity and fails the audit closed if
+// it fills; it catches a table frame reached through two different virtual paths.
 static WX_AUDIT_RECURSIVE_FRAMES_BUSY: AtomicBool = AtomicBool::new(false);
 static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
+static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_TABLE_PATHS] = [0; MAX_WX_AUDIT_TABLE_PATHS];
 
 /// Physical frames whose writable recursive aliases must be checked after the
 /// complete ordinary leaf inventory has been collected. Shared page-table frames
@@ -294,6 +334,7 @@ static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
 /// extent and effective W/NX rights once shared PML4 entries are validated equal.
 struct RecursiveAliasSet {
     count: usize,
+    visited_table_count: usize,
 }
 
 impl RecursiveAliasSet {
@@ -301,7 +342,36 @@ impl RecursiveAliasSet {
         WX_AUDIT_RECURSIVE_FRAMES_BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| PagingError::WxAuditFailed)?;
-        Ok(Self { count: 0 })
+        Ok(Self {
+            count: 0,
+            visited_table_count: 0,
+        })
+    }
+
+    /// Records every table in the declared walk, not only tables with writable
+    /// recursive aliases. A duplicate physical frame is an unsupported shared or
+    /// cyclic table path and therefore makes the audit incomplete.
+    fn visit_table(&mut self, table_physical: u64) -> Result<(), PagingError> {
+        // SAFETY: the audit lease is held for this object's lifetime and the
+        // count is bounded by the fixed table-path buffer.
+        let table_frames = core::ptr::addr_of!(WX_AUDIT_VISITED_TABLES).cast::<u64>();
+        // SAFETY: only initialized entries below visited_table_count are exposed.
+        let visited =
+            unsafe { core::slice::from_raw_parts(table_frames, self.visited_table_count) };
+        if !frame_wx_audit_table_path_is_unique(visited, table_physical, MAX_WX_AUDIT_TABLE_PATHS) {
+            return Err(PagingError::WxAuditFailed);
+        }
+        // SAFETY: the exclusive audit lease is held and capacity was checked above.
+        unsafe {
+            ptr::write(
+                core::ptr::addr_of_mut!(WX_AUDIT_VISITED_TABLES)
+                    .cast::<u64>()
+                    .add(self.visited_table_count),
+                table_physical,
+            );
+        }
+        self.visited_table_count += 1;
+        Ok(())
     }
 
     fn observe(
@@ -390,11 +460,12 @@ fn audit_wx_table<const CAPACITY: usize>(
     table_physical: u64,
     level: u8,
     virtual_prefix: u64,
-    ancestors_writable: bool,
-    ancestors_executable: bool,
+    effective_ancestors: FrameWxAuditEffectivePermissions,
     root_range: AuditRootRange,
     record_leaf_mappings: bool,
     recursive_view_index: Option<u16>,
+    direct_map_coverage: &mut FrameWxDirectMapCoverage,
+    track_direct_map_coverage: bool,
     recursive_aliases: &mut RecursiveAliasSet,
     visited_path: &mut [u64; 4],
     depth: usize,
@@ -407,6 +478,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     {
         return Err(PagingError::WxAuditFailed);
     }
+    recursive_aliases.visit_table(table_physical)?;
     table_budget
         .visit()
         .map_err(|_| PagingError::WxAuditFailed)?;
@@ -423,7 +495,7 @@ fn audit_wx_table<const CAPACITY: usize>(
             level,
         )
         .ok_or(PagingError::WxAuditFailed)?;
-        recursive_aliases.observe(table_physical, view_virtual, ancestors_writable)?;
+        recursive_aliases.observe(table_physical, view_virtual, effective_ancestors.writable)?;
     }
 
     // The active root is read through its checked recursive alias. For an
@@ -474,8 +546,13 @@ fn audit_wx_table<const CAPACITY: usize>(
         if raw_physical >= (1u64 << physical_address_bits) {
             return Err(PagingError::WxAuditFailed);
         }
-        let writable = ancestors_writable && entry & WRITABLE != 0;
-        let executable = ancestors_executable && entry & NO_EXECUTE == 0;
+        let effective_permissions = effective_ancestors.through_entry(
+            entry & WRITABLE != 0,
+            entry & USER_ACCESSIBLE != 0,
+            entry & NO_EXECUTE != 0,
+        );
+        let writable = effective_permissions.writable;
+        let executable = effective_permissions.executable;
         let shift = 12 + (9 * (level - 1));
         let virtual_start = if level == 4 {
             let prefix = (index as u64) << 39;
@@ -488,12 +565,24 @@ fn audit_wx_table<const CAPACITY: usize>(
             virtual_prefix | ((index as u64) << shift)
         };
 
+        // A present high-half mapping must remain effectively supervisor-only.
+        // User bits may be set on an individual descendant only when an ancestor
+        // already blocks U/S; effective access is the intersection through the path.
+        if virtual_start >= AUDIT_UPPER_CANONICAL_START && effective_permissions.user_accessible {
+            return Err(PagingError::WxAuditFailed);
+        }
+
         if level == 1 || large_page {
-            let page_size = if large_page { 1u64 << shift } else { PAGE_SIZE };
-            if large_page && raw_physical & ((page_size - 1) & !(1 << 12)) != 0 {
-                return Err(PagingError::WxAuditFailed);
+            let extent =
+                frame_wx_audit_leaf_extent(raw_physical, level, large_page, physical_address_bits)
+                    .map_err(|_| PagingError::WxAuditFailed)?;
+            let page_size = extent.length;
+            let physical_start = extent.physical_start;
+            if track_direct_map_coverage {
+                direct_map_coverage
+                    .observe_leaf(virtual_start, physical_start, page_size, executable)
+                    .map_err(|_| PagingError::WxAuditFailed)?;
             }
-            let physical_start = raw_physical & !(page_size - 1);
             if record_leaf_mappings {
                 audit
                     .record_alias(
@@ -520,11 +609,12 @@ fn audit_wx_table<const CAPACITY: usize>(
             child_physical,
             level - 1,
             virtual_start,
-            writable,
-            executable,
+            effective_permissions,
             AuditRootRange::All,
             record_leaf_mappings,
             recursive_view_index,
+            direct_map_coverage,
+            track_direct_map_coverage,
             recursive_aliases,
             visited_path,
             depth + 1,

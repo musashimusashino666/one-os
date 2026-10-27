@@ -19,7 +19,7 @@ use core::arch::asm;
 ))]
 use core::arch::global_asm;
 use core::panic::PanicInfo;
-use oneos_core::{validate_memory_map, MemoryMapError};
+use oneos_core::{validate_memory_map, FrameWxAuditSource, MemoryMapError};
 
 #[cfg(any(
     all(feature = "test-exception", feature = "test-general-protection"),
@@ -367,7 +367,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         b"ONE OS W^X AUDIT CONFLICT EVENTS: ",
         paging_stats.wx_audit.conflicting_overlap_events,
     );
-    serial_write(b"ONE OS W^X ALIAS WALK FINISHED (ACTIVE ROOT ONLY)\n");
+    serial_write(b"ONE OS DIRECT-MAP COVERAGE: COMPLETE FOR DECLARED MEMORY RANGE\n");
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP VIRTUAL OFFSET: ",
+        paging_stats.wx_direct_map_coverage.virtual_offset,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP PHYSICAL END: ",
+        paging_stats.wx_direct_map_coverage.physical_end,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP COVERED VIRTUAL END: ",
+        paging_stats.wx_direct_map_coverage.covered_virtual_end,
+    );
+    interrupts::write_hex(
+        b"ONE OS DIRECT-MAP COVERED LEAF MAPPINGS: ",
+        paging_stats.wx_direct_map_coverage.covered_leaf_mappings,
+    );
+    serial_write(b"ONE OS W^X ALIAS WALK FINISHED (DECLARED ROOTS)\n");
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOT INVENTORY SEALED: ",
         if paging_stats.wx_audit_scope.root_inventory_sealed {
@@ -383,6 +400,63 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     interrupts::write_hex(
         b"ONE OS W^X AUDIT ROOTS WALKED: ",
         paging_stats.wx_audit_scope.audited_roots as u64,
+    );
+    for root in
+        paging_stats.wx_audit_scope.roots[..paging_stats.wx_audit_scope.declared_roots].iter()
+    {
+        interrupts::write_hex(b"ONE OS W^X AUDIT ROOT PHYSICAL: ", root.physical_address);
+        interrupts::write_hex(
+            b"ONE OS W^X AUDIT ROOT COMPLETE: ",
+            if root.audited { 1 } else { 0 },
+        );
+    }
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT ACCOUNTED SOURCE MASK: ",
+        paging_stats.wx_audit_scope.accounted_sources as u64,
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT DIRECT MAP SOURCE ACCOUNTED: ",
+        if paging_stats.wx_audit_scope.accounted_sources
+            & FrameWxAuditSource::PhysicalMemoryOffsetAlias.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT RECURSIVE VIEW SOURCE ACCOUNTED: ",
+        if paging_stats.wx_audit_scope.accounted_sources
+            & FrameWxAuditSource::RecursivePageTableView.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT SHARED KERNEL SOURCE ACCOUNTED: ",
+        if paging_stats.wx_audit_scope.accounted_sources
+            & FrameWxAuditSource::SharedKernelMappings.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    interrupts::write_hex(
+        b"ONE OS W^X AUDIT LARGE PAGE SOURCE ACCOUNTED: ",
+        if paging_stats.wx_audit_scope.accounted_sources
+            & FrameWxAuditSource::LargePageLeaves.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
     );
     interrupts::write_hex(
         b"ONE OS W^X AUDIT MISSING SOURCE MASK: ",

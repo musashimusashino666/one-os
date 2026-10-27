@@ -674,7 +674,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // must walk their actual child tables, not only inspect empty PML4 roots.
     let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
     #[cfg(feature = "test-wx-runtime-audit")]
-    let (audit, scope) = super::paging::audit_registered_wx_roots(
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
@@ -682,7 +682,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
     #[cfg(not(feature = "test-wx-runtime-audit"))]
-    let (audit, scope) = super::paging::audit_registered_wx_roots(
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
@@ -699,6 +699,75 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
         audit.conflicting_overlap_events,
     );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP OFFSET: ",
+        direct_map_coverage.virtual_offset,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP PHYSICAL END: ",
+        direct_map_coverage.physical_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP COVERED VIRTUAL END: ",
+        direct_map_coverage.covered_virtual_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP LEAF MAPPINGS: ",
+        direct_map_coverage.covered_leaf_mappings,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION ACCOUNTED SOURCE MASK: ",
+        scope.accounted_sources as u64,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP SOURCE ACCOUNTED: ",
+        if scope.accounted_sources
+            & oneos_core::FrameWxAuditSource::PhysicalMemoryOffsetAlias.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION RECURSIVE VIEW SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION SHARED KERNEL SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::SharedKernelMappings.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION LARGE PAGE SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::LargePageLeaves.mask() != 0 {
+            1
+        } else {
+            0
+        },
+    );
+    for root in scope.roots[..scope.declared_roots].iter() {
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT PHYSICAL: ",
+            root.physical_address,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT COMPLETE: ",
+            if root.audited { 1 } else { 0 },
+        );
+    }
     if let Some(conflict) = audit.first_conflict {
         super::serial_write(b"ONE OS W^X POST-ACTIVATION FIRST CONFLICT\n");
         super::interrupts::write_hex(

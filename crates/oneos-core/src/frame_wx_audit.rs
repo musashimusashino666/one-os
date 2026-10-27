@@ -10,6 +10,43 @@ use crate::{is_canonical_4level, PAGE_SIZE};
 
 const LOWER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
 const UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
+const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+/// Effective permissions accumulated through every page-table ancestor and the leaf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditEffectivePermissions {
+    /// True only when every entry through the leaf permits writes.
+    pub writable: bool,
+    /// True only when every entry through the leaf permits user-mode access.
+    pub user_accessible: bool,
+    /// True only when no entry through the leaf sets NX.
+    pub executable: bool,
+}
+
+impl FrameWxAuditEffectivePermissions {
+    /// Permission state before entering a root table.
+    pub const fn unrestricted() -> Self {
+        Self {
+            writable: true,
+            user_accessible: true,
+            executable: true,
+        }
+    }
+
+    /// Combines inherited permissions with one present paging entry.
+    pub const fn through_entry(
+        self,
+        entry_writable: bool,
+        entry_user_accessible: bool,
+        entry_no_execute: bool,
+    ) -> Self {
+        Self {
+            writable: self.writable && entry_writable,
+            user_accessible: self.user_accessible && entry_user_accessible,
+            executable: self.executable && !entry_no_execute,
+        }
+    }
+}
 
 /// One concrete writable/executable physical overlap observed by the audit.
 ///
@@ -63,6 +100,270 @@ pub enum FrameWxAuditError {
     InvalidPhysicalRange,
     /// The fixed-capacity inventory cannot represent another non-coalescible alias.
     CapacityExhausted,
+}
+
+/// Fail-closed verification of the physical-memory-offset mapping's full expected extent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameWxDirectMapCoverageError {
+    /// MAXPHYADDR is outside the supported 32..=52-bit range.
+    InvalidPhysicalAddressWidth,
+    /// The physical-memory offset or its expected virtual extent is invalid.
+    InvalidOffsetOrExtent,
+    /// A leaf is not aligned, has an empty length, or crosses a canonical boundary.
+    InvalidLeafRange,
+    /// A leaf range extends beyond the CPU's reported physical-address width.
+    PhysicalAddressOutOfRange,
+    /// The next leaf does not begin exactly where the previous direct-map leaf ended.
+    MissingOrOutOfOrderMapping,
+    /// The observed physical address differs from virtual address minus the offset.
+    PhysicalTranslationMismatch,
+    /// Any direct-map leaf in the required extent is executable.
+    ExecutableDirectMapAlias,
+    /// The leaf walk ended without covering the full required interval.
+    IncompleteCoverage,
+}
+
+/// Summary of the direct-map interval proven by a complete ordered leaf walk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxDirectMapCoverageSummary {
+    /// Base virtual address corresponding to physical address zero.
+    pub virtual_offset: u64,
+    /// Exclusive end of the expected physical mapping, rounded up to a page.
+    pub physical_end: u64,
+    /// Exclusive virtual address through which contiguous direct-map coverage was verified.
+    pub covered_virtual_end: u64,
+    /// Number of leaf mappings that contributed bytes to the verified interval.
+    pub covered_leaf_mappings: u64,
+}
+
+/// A validated physical extent represented by one 4 KiB, 2 MiB, or 1 GiB leaf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditLeafExtent {
+    /// First physical byte mapped by the leaf.
+    pub physical_start: u64,
+    /// Number of bytes mapped by the leaf.
+    pub length: u64,
+}
+
+/// Structural or address-width error found while validating a page-table leaf extent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameWxAuditLeafExtentError {
+    /// MAXPHYADDR is outside the supported 32..=52-bit range.
+    InvalidPhysicalAddressWidth,
+    /// The level/large-page combination does not describe a supported leaf.
+    UnsupportedLeafLevel,
+    /// Reserved large-page alignment bits are set.
+    MalformedLargePage,
+    /// The leaf's physical extent is outside MAXPHYADDR.
+    PhysicalAddressOutOfRange,
+}
+
+/// Validates the physical extent of a present page-table leaf.
+///
+/// `raw_physical` is the entry's address field after applying PHYSICAL_ADDRESS_MASK.
+/// `level` is 1 for a 4 KiB PTE, 2 for a 2 MiB PDE, or 3 for a 1 GiB PDPTE.
+/// Large-page PAT at bit 12 is excluded from alignment validation.
+pub fn frame_wx_audit_leaf_extent(
+    raw_physical: u64,
+    level: u8,
+    large_page: bool,
+    physical_address_bits: u8,
+) -> Result<FrameWxAuditLeafExtent, FrameWxAuditLeafExtentError> {
+    if !(32..=52).contains(&physical_address_bits) {
+        return Err(FrameWxAuditLeafExtentError::InvalidPhysicalAddressWidth);
+    }
+
+    let length = match (level, large_page) {
+        (1, false) => PAGE_SIZE,
+        (2, true) => 1 << 21,
+        (3, true) => 1 << 30,
+        _ => return Err(FrameWxAuditLeafExtentError::UnsupportedLeafLevel),
+    };
+
+    if raw_physical & !PHYSICAL_ADDRESS_MASK != 0 {
+        return Err(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange);
+    }
+    let addressable_mask = ((1u64 << physical_address_bits) - 1) & PHYSICAL_ADDRESS_MASK;
+    if raw_physical & !addressable_mask != 0 {
+        return Err(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange);
+    }
+
+    if large_page && raw_physical & ((length - 1) & !(1 << 12)) != 0 {
+        return Err(FrameWxAuditLeafExtentError::MalformedLargePage);
+    }
+
+    let physical_start = raw_physical & !(length - 1);
+    if physical_start
+        .checked_add(length)
+        .filter(|end| *end <= (1u64 << physical_address_bits))
+        .is_none()
+    {
+        return Err(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange);
+    }
+
+    Ok(FrameWxAuditLeafExtent {
+        physical_start,
+        length,
+    })
+}
+
+/// Consumes leaf mappings in virtual-address order and requires complete, exact direct-map coverage.
+///
+/// This proves the expected physical-memory-offset range is actually mapped and that each
+/// mapped direct-map byte resolves to the physical byte implied by the reported offset. It
+/// separately rejects executable direct-map leaves, including read-only ones.
+pub struct FrameWxDirectMapCoverage {
+    physical_address_bits: u8,
+    virtual_offset: u64,
+    physical_end: u64,
+    virtual_end: u64,
+    next_virtual: u64,
+    covered_leaf_mappings: u64,
+    failed: bool,
+}
+
+impl FrameWxDirectMapCoverage {
+    /// Creates a checker for physical address zero through the highest expected physical end.
+    ///
+    /// The bootloader's mapping contract rounds memory coverage to page granularity and maps
+    /// at least 4 GiB; callers pass the maximum of 4 GiB and the last memory-map end.
+    pub fn new(
+        physical_address_bits: u8,
+        virtual_offset: u64,
+        expected_physical_end: u64,
+    ) -> Result<Self, FrameWxDirectMapCoverageError> {
+        if !(32..=52).contains(&physical_address_bits) {
+            return Err(FrameWxDirectMapCoverageError::InvalidPhysicalAddressWidth);
+        }
+        let rounded_end = expected_physical_end
+            .checked_add(PAGE_SIZE - 1)
+            .map(|end| end & !(PAGE_SIZE - 1))
+            .filter(|end| *end != 0)
+            .ok_or(FrameWxDirectMapCoverageError::InvalidOffsetOrExtent)?;
+        if rounded_end > (1u64 << physical_address_bits) {
+            return Err(FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange);
+        }
+        let virtual_end = virtual_offset
+            .checked_add(rounded_end)
+            .ok_or(FrameWxDirectMapCoverageError::InvalidOffsetOrExtent)?;
+        let final_virtual = virtual_end
+            .checked_sub(1)
+            .ok_or(FrameWxDirectMapCoverageError::InvalidOffsetOrExtent)?;
+        if virtual_offset & (PAGE_SIZE - 1) != 0
+            || virtual_offset < UPPER_CANONICAL_START
+            || !is_canonical_4level(virtual_offset)
+            || !is_canonical_4level(final_virtual)
+            || final_virtual < UPPER_CANONICAL_START
+        {
+            return Err(FrameWxDirectMapCoverageError::InvalidOffsetOrExtent);
+        }
+
+        Ok(Self {
+            physical_address_bits,
+            virtual_offset,
+            physical_end: rounded_end,
+            virtual_end,
+            next_virtual: virtual_offset,
+            covered_leaf_mappings: 0,
+            failed: false,
+        })
+    }
+
+    /// Observes one mapped page/table leaf in the walk's virtual-address order.
+    ///
+    /// Leaves outside the expected direct-map interval are ignored. Every intersecting
+    /// byte range must be contiguous, offset-correct, and non-executable.
+    pub fn observe_leaf(
+        &mut self,
+        virtual_start: u64,
+        physical_start: u64,
+        length: u64,
+        effective_executable: bool,
+    ) -> Result<(), FrameWxDirectMapCoverageError> {
+        let fail = |this: &mut Self, error| {
+            this.failed = true;
+            Err(error)
+        };
+        if self.failed {
+            return Err(FrameWxDirectMapCoverageError::IncompleteCoverage);
+        }
+        if validate_virtual_range(virtual_start, length).is_err()
+            || physical_start & (PAGE_SIZE - 1) != 0
+            || length == 0
+            || length & (PAGE_SIZE - 1) != 0
+        {
+            return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange);
+        }
+        if physical_start
+            .checked_add(length)
+            .filter(|end| *end <= (1u64 << self.physical_address_bits))
+            .is_none()
+        {
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange,
+            );
+        }
+
+        let leaf_start = u128::from(virtual_start);
+        let leaf_end = leaf_start + u128::from(length);
+        let intersection_start = leaf_start.max(u128::from(self.virtual_offset));
+        let intersection_end = leaf_end.min(u128::from(self.virtual_end));
+        if intersection_start >= intersection_end {
+            return Ok(());
+        }
+        let intersection_start = match u64::try_from(intersection_start) {
+            Ok(value) => value,
+            Err(_) => return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange),
+        };
+        let intersection_end = match u64::try_from(intersection_end) {
+            Ok(value) => value,
+            Err(_) => return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange),
+        };
+        if intersection_start != self.next_virtual {
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::MissingOrOutOfOrderMapping,
+            );
+        }
+        let leaf_offset = intersection_start - virtual_start;
+        let observed_physical = match physical_start.checked_add(leaf_offset) {
+            Some(value) => value,
+            None => return fail(self, FrameWxDirectMapCoverageError::InvalidLeafRange),
+        };
+        if observed_physical != intersection_start - self.virtual_offset {
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::PhysicalTranslationMismatch,
+            );
+        }
+        if effective_executable {
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::ExecutableDirectMapAlias,
+            );
+        }
+
+        self.next_virtual = intersection_end;
+        self.covered_leaf_mappings = self.covered_leaf_mappings.saturating_add(1);
+        Ok(())
+    }
+
+    /// Returns a summary only if the entire expected interval was covered without a gap.
+    pub fn finish(&self) -> Result<FrameWxDirectMapCoverageSummary, FrameWxDirectMapCoverageError> {
+        if self.failed {
+            return Err(FrameWxDirectMapCoverageError::IncompleteCoverage);
+        }
+        if self.next_virtual != self.virtual_end || self.covered_leaf_mappings == 0 {
+            return Err(FrameWxDirectMapCoverageError::IncompleteCoverage);
+        }
+        Ok(FrameWxDirectMapCoverageSummary {
+            virtual_offset: self.virtual_offset,
+            physical_end: self.physical_end,
+            covered_virtual_end: self.next_virtual,
+            covered_leaf_mappings: self.covered_leaf_mappings,
+        })
+    }
 }
 
 /// Maximum number of page-table visits permitted in the bounded W^X audit.
@@ -391,11 +692,30 @@ fn validate_virtual_range(start: u64, length: u64) -> Result<(), FrameWxAuditErr
     Ok(())
 }
 
+/// Returns whether a page-table frame is a new node in the bounded audit walk.
+///
+/// The kernel uses this predicate before descending into each present child
+/// table. Rejecting a physical frame already seen anywhere in the declared walk
+/// catches both ancestor cycles and the same table reachable through two virtual
+/// paths. Shared upper-half mappings are walked once from the active root; private
+/// lower-half tables must not be shared between declared roots.
+pub fn frame_wx_audit_table_path_is_unique(
+    visited_table_frames: &[u64],
+    candidate_frame: u64,
+    maximum_tables: usize,
+) -> bool {
+    visited_table_frames.len() < maximum_tables
+        && candidate_frame != 0
+        && candidate_frame & (PAGE_SIZE - 1) == 0
+        && !visited_table_frames.contains(&candidate_frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameWxAudit, FrameWxAuditError, FrameWxAuditTableBudget, FrameWxAuditTableBudgetError,
-        FRAME_WX_AUDIT_MAX_TABLES,
+        frame_wx_audit_leaf_extent, frame_wx_audit_table_path_is_unique, FrameWxAudit,
+        FrameWxAuditEffectivePermissions, FrameWxAuditError, FrameWxAuditLeafExtentError,
+        FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
     };
     use crate::frame_wx::FrameWxPermissions;
 
@@ -406,6 +726,220 @@ mod tests {
 
     fn permissions(writable: bool, executable: bool) -> FrameWxPermissions {
         FrameWxPermissions::new(writable, executable)
+    }
+
+    #[test]
+    fn validates_leaf_alignment_and_physical_address_width() {
+        let small = frame_wx_audit_leaf_extent(0x20_0000, 1, false, 32).unwrap();
+        assert_eq!(small.physical_start, 0x20_0000);
+        assert_eq!(small.length, PAGE);
+
+        let two_mib = frame_wx_audit_leaf_extent(0x20_0000, 2, true, 32).unwrap();
+        assert_eq!(two_mib.physical_start, 0x20_0000);
+        assert_eq!(two_mib.length, 1 << 21);
+
+        let one_gib = frame_wx_audit_leaf_extent(0x4000_0000, 3, true, 48).unwrap();
+        assert_eq!(one_gib.physical_start, 0x4000_0000);
+        assert_eq!(one_gib.length, 1 << 30);
+
+        assert_eq!(
+            frame_wx_audit_leaf_extent(0x20_0000 | (1 << 13), 2, true, 48),
+            Err(FrameWxAuditLeafExtentError::MalformedLargePage)
+        );
+        assert_eq!(
+            frame_wx_audit_leaf_extent(0x4000_0000 | (1 << 21), 3, true, 48),
+            Err(FrameWxAuditLeafExtentError::MalformedLargePage)
+        );
+        assert_eq!(
+            frame_wx_audit_leaf_extent(1u64 << 32, 1, false, 32),
+            Err(FrameWxAuditLeafExtentError::PhysicalAddressOutOfRange)
+        );
+        assert_eq!(
+            frame_wx_audit_leaf_extent(0x1000, 1, false, 31),
+            Err(FrameWxAuditLeafExtentError::InvalidPhysicalAddressWidth)
+        );
+        assert_eq!(
+            frame_wx_audit_leaf_extent(0x1000, 4, false, 48),
+            Err(FrameWxAuditLeafExtentError::UnsupportedLeafLevel)
+        );
+    }
+
+    #[test]
+    fn direct_map_coverage_requires_contiguous_offset_correct_nx_leaves() {
+        use super::{FrameWxDirectMapCoverage, FrameWxDirectMapCoverageError};
+
+        const OFFSET: u64 = 0xffff_9000_0000_0000;
+        const TWO_MIB: u64 = 1 << 21;
+        const ONE_GIB: u64 = 1 << 30;
+        let expected_end = ONE_GIB + TWO_MIB + PAGE;
+        let mut coverage = FrameWxDirectMapCoverage::new(48, OFFSET, expected_end).unwrap();
+        coverage.observe_leaf(OFFSET, 0, ONE_GIB, false).unwrap();
+        coverage
+            .observe_leaf(OFFSET + ONE_GIB, ONE_GIB, TWO_MIB, false)
+            .unwrap();
+        coverage
+            .observe_leaf(OFFSET + ONE_GIB + TWO_MIB, ONE_GIB + TWO_MIB, PAGE, false)
+            .unwrap();
+        let summary = coverage.finish().unwrap();
+        assert_eq!(summary.virtual_offset, OFFSET);
+        assert_eq!(summary.physical_end, expected_end);
+        assert_eq!(summary.covered_virtual_end, OFFSET + expected_end);
+        assert_eq!(summary.covered_leaf_mappings, 3);
+
+        let mut gap = FrameWxDirectMapCoverage::new(48, OFFSET, 3 * PAGE).unwrap();
+        gap.observe_leaf(OFFSET, 0, PAGE, false).unwrap();
+        assert_eq!(
+            gap.observe_leaf(OFFSET + 2 * PAGE, 2 * PAGE, PAGE, false),
+            Err(FrameWxDirectMapCoverageError::MissingOrOutOfOrderMapping)
+        );
+        assert_eq!(
+            gap.finish(),
+            Err(FrameWxDirectMapCoverageError::IncompleteCoverage)
+        );
+    }
+
+    #[test]
+    fn direct_map_coverage_rejects_wrong_translation_and_executable_aliases() {
+        use super::{FrameWxDirectMapCoverage, FrameWxDirectMapCoverageError};
+
+        const OFFSET: u64 = 0xffff_9000_0000_0000;
+        const PAGE: u64 = 4096;
+
+        let mut wrong = FrameWxDirectMapCoverage::new(48, OFFSET, PAGE).unwrap();
+        assert_eq!(
+            wrong.observe_leaf(OFFSET, PAGE, PAGE, false),
+            Err(FrameWxDirectMapCoverageError::PhysicalTranslationMismatch)
+        );
+
+        let mut executable = FrameWxDirectMapCoverage::new(48, OFFSET, PAGE).unwrap();
+        assert_eq!(
+            executable.observe_leaf(OFFSET, 0, PAGE, true),
+            Err(FrameWxDirectMapCoverageError::ExecutableDirectMapAlias)
+        );
+
+        assert!(FrameWxDirectMapCoverage::new(48, 0x1000, PAGE).is_err());
+        assert!(FrameWxDirectMapCoverage::new(48, OFFSET, 0).is_err());
+
+        assert!(FrameWxDirectMapCoverage::new(31, OFFSET, PAGE).is_err());
+        assert!(matches!(
+            FrameWxDirectMapCoverage::new(32, OFFSET, (1u64 << 32) + PAGE),
+            Err(FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange)
+        ));
+
+        let mut beyond_width = FrameWxDirectMapCoverage::new(32, OFFSET, PAGE).unwrap();
+        assert_eq!(
+            beyond_width.observe_leaf(OFFSET, 1u64 << 32, PAGE, false),
+            Err(FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange)
+        );
+        assert_eq!(
+            beyond_width.finish(),
+            Err(FrameWxDirectMapCoverageError::IncompleteCoverage)
+        );
+    }
+
+    #[test]
+    fn effective_permissions_are_intersected_through_every_ancestor() {
+        let root_permissions = FrameWxAuditEffectivePermissions::unrestricted();
+        let supervisor_nx = root_permissions.through_entry(true, false, true);
+        let writable_user_child = supervisor_nx.through_entry(true, true, false);
+        assert_eq!(
+            writable_user_child,
+            FrameWxAuditEffectivePermissions {
+                writable: true,
+                user_accessible: false,
+                executable: false,
+            }
+        );
+
+        let readonly_ancestor = root_permissions.through_entry(false, true, false);
+        let writable_child = readonly_ancestor.through_entry(true, true, false);
+        assert!(!writable_child.writable);
+
+        let supervisor_ancestor = root_permissions.through_entry(true, false, false);
+        let user_leaf = supervisor_ancestor.through_entry(true, true, false);
+        assert!(!user_leaf.user_accessible);
+
+        let executable_ancestor = root_permissions.through_entry(true, true, false);
+        let nx_leaf = executable_ancestor.through_entry(true, true, true);
+        assert!(!nx_leaf.executable);
+    }
+
+    #[test]
+    fn duplicate_table_frames_and_cycles_are_rejected() {
+        let visited = [0x1000, 0x2000, 0x9000];
+
+        assert!(frame_wx_audit_table_path_is_unique(&visited, 0x3000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x1000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2000, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x2001, 4));
+        assert!(!frame_wx_audit_table_path_is_unique(&visited, 0x3000, 3));
+    }
+
+    #[test]
+    fn detects_distinct_virtual_4k_writable_executable_aliases_in_both_orders() {
+        let executable_va = BASE_VA + (8 * PAGE);
+        let writable_va = BASE_VA + (24 * PAGE);
+
+        let mut executable_first = FrameWxAudit::<4>::new(48).unwrap();
+        executable_first
+            .record_alias(executable_va, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        executable_first
+            .record_alias(writable_va, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
+        let conflict = executable_first
+            .summary()
+            .first_conflict
+            .expect("distinct virtual aliases must not hide a physical-frame conflict");
+        assert_eq!(conflict.physical_start, BASE_PA);
+        assert_eq!(conflict.length, PAGE);
+        assert_eq!(conflict.first_virtual_start, executable_va);
+        assert_eq!(conflict.second_virtual_start, writable_va);
+
+        let mut writable_first = FrameWxAudit::<4>::new(48).unwrap();
+        writable_first
+            .record_alias(writable_va, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
+        writable_first
+            .record_alias(executable_va, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        assert!(writable_first.summary().conflicting_overlap_events > 0);
+        assert!(writable_first.summary().first_conflict.is_some());
+    }
+
+    #[test]
+    fn detects_1g_exec_and_4k_write_overlap_in_both_mapping_orders() {
+        const ONE_GIB: u64 = 1 << 30;
+        let nested_pa = LARGE_BASE_PA + (37 * PAGE);
+        let small_va = BASE_VA + (2 * ONE_GIB);
+        let large_va = BASE_VA + (4 * ONE_GIB);
+
+        let mut large_first = FrameWxAudit::<4>::new(48).unwrap();
+        large_first
+            .record_alias(large_va, LARGE_BASE_PA, ONE_GIB, permissions(false, true))
+            .unwrap();
+        large_first
+            .record_alias(small_va, nested_pa, PAGE, permissions(true, false))
+            .unwrap();
+        let first = large_first.summary().first_conflict.expect("1 GiB overlap");
+        assert_eq!(first.physical_start, nested_pa);
+        assert_eq!(first.length, PAGE);
+
+        let mut small_first = FrameWxAudit::<4>::new(48).unwrap();
+        small_first
+            .record_alias(small_va, nested_pa, PAGE, permissions(true, false))
+            .unwrap();
+        small_first
+            .record_alias(large_va, LARGE_BASE_PA, ONE_GIB, permissions(false, true))
+            .unwrap();
+        let reverse = small_first
+            .summary()
+            .first_conflict
+            .expect("inverse 1 GiB overlap");
+        assert_eq!(reverse.physical_start, nested_pa);
+        assert_eq!(reverse.length, PAGE);
+        assert!(small_first.summary().conflicting_overlap_events > 0);
     }
 
     #[test]

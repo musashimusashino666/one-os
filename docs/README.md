@@ -12,6 +12,10 @@ This directory is the authoritative documentation set for ONE OS. Documents desc
 6. [Implementation status](project/IMPLEMENTATION_STATUS.md) — what exists now, what has been tested, and what has not been proved.
 7. [Roadmap](project/ROADMAP.md) — ordered milestones and exit criteria.
 
+## Top-level entry points
+
+The files `SECURITY.md`, `DEVELOPMENT.md`, and `ROADMAP.md` are concise entry points for repository consumers and issue acceptance links. The canonical detailed documents remain `architecture/SECURITY_MODEL.md`, `engineering/DEVELOPMENT.md`, and `project/ROADMAP.md`; update those source documents when behavior or evidence changes.
+
 ## By purpose
 
 - **Vision:** `vision/VISION.md`, `vision/PRINCIPLES.md`, `vision/SUCCESS_CRITERIA.md`

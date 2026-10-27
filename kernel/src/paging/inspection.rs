@@ -173,7 +173,7 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
     // transactional integration tracked by Issue #26. The recursive self-map is
     // intentionally excluded because it is a paging-structure view, not a data map.
     let physical_address_bits = (__cpuid(CPUID_PHYSICAL_ADDRESS_WIDTH).eax & 0xff) as u8;
-    let (wx_audit, wx_audit_scope) = audit_registered_wx_roots(
+    let (wx_audit, wx_audit_scope, wx_direct_map_coverage) = audit_registered_wx_roots(
         boot_info,
         root_table_physical,
         recursive_index,
@@ -188,5 +188,6 @@ pub fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection
             .saturating_add(validated_memory_region_pages),
         wx_audit,
         wx_audit_scope,
+        wx_direct_map_coverage,
     })
 }
