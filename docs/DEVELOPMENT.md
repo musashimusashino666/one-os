@@ -121,6 +121,18 @@ The normal BIOS image requests a recursive page-table mapping from the bootloade
 
 The host-side tests for oneos-core exercise 4 KiB, 2 MiB, and 1 GiB translations, canonical-address boundaries, absent entries, unavailable table pages, invalid roots, malformed large-page alignment bits, and malformed ELF headers/program-header tables/PT_LOAD ranges. This is an inspection-only milestone: it does not allocate page-table frames, create or remove mappings, enforce page permissions, or establish process isolation.
 
+## Kernel paging module layout
+
+The kernel paging implementation is organized under `kernel/src/paging/`:
+
+- `mod.rs` defines the shared paging types, errors, constants, and validation helpers.
+- `inspection.rs` contains the read-only bootstrap page-table inspection path.
+- `editor.rs` contains the guarded page-table editors and frame-ownership helpers.
+- `editor/wx_audit.rs` contains the registered-root W^X audit.
+- `editor/acceptance.rs` contains boot, mapping, teardown, and QEMU acceptance helpers.
+
+These files remain a single Rust module tree, not separate security boundaries. Keep the current `paging::...` entry points stable unless an API change is intentional, and validate the exact PR head with the full CI/QEMU suite after moving code between modules.
+
 ## Host-testable page-table mutation
 
 The oneos-core crate provides callback-driven map_4k and unmap_4k primitives for
