@@ -347,6 +347,23 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
                 )
             return tuple(state), stage
 
+        if mnemonic.startswith("xchg") and len(operands) == 2:
+            # LLVM preserves RBX around CPUID by saving it in a caller-saved
+            # register and exchanging the values back afterward. Track GPR/GPR
+            # XCHG as a value swap instead of forgetting both register tags.
+            left = _operand_register(operands[0])
+            right = _operand_register(operands[1])
+            left_slot = reg_index.get(left) if left is not None else None
+            right_slot = reg_index.get(right) if right is not None else None
+            if left_slot is not None and right_slot is not None:
+                state[left_slot], state[right_slot] = state[right_slot], state[left_slot]
+            else:
+                if left_slot is not None:
+                    state[left_slot] = NONE
+                if right_slot is not None:
+                    state[right_slot] = NONE
+            return tuple(state), stage
+
         clobbered = _clobbered_gpr(raw_line)
         if clobbered in reg_index:
             state[reg_index[clobbered]] = NONE
@@ -355,11 +372,6 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             register = _operand_register(destination) if destination else None
             if register in reg_index:
                 state[reg_index[register]] = NONE
-        if mnemonic.startswith("xchg"):
-            for operand in operands:
-                register = _operand_register(operand)
-                if register in reg_index:
-                    state[reg_index[register]] = NONE
         return tuple(state), stage
 
     saw_clear_instruction = any(
