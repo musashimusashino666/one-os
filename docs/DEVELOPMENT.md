@@ -1,0 +1,9 @@
+# Development and Verification Entry Point
+
+The complete contributor instructions are maintained in [Engineering Development Guide](engineering/DEVELOPMENT.md), and the paging-specific contract is in [Virtual-Memory Acceptance](specs/VIRTUAL_MEMORY_ACCEPTANCE.md).
+
+For W^X and boot-mapping work, the current required acceptance sequence is: run formatting, host tests, all Clippy/build checks, and the configured QEMU acceptance suite; inspect the latest PR-context CI result on the exact candidate HEAD; and review the declared-root/source coverage and documented exclusions. A run for an older SHA or a manual/non-PR run is not evidence for the current PR head.
+
+The current audit is read-only and bounded at 128 W/X ranges, 16,384 page-table visits, and 2,048 recursive-alias and duplicate-table-path records. It intersects R/W, U/S, and NX permissions through each ancestor/leaf, checks the expected direct-map interval, and fails closed on malformed entries, duplicate/cyclic table paths, an incomplete direct-map range, root changes, or exhausted capacity. Tests must exercise exact budget boundaries, overflow, malformed inputs, alias overlap across page sizes in both insertion orders, and negative access checks in QEMU.
+
+A bounded clean audit is not a global W^X proof. Do not enable arbitrary executable mappings or claim Issue #26 complete until every boot mapping category and physical alias in the intended security contract is accounted for and the permission-transition path is proven. SMP/remote TLB shootdown is unsupported. Keep implementation claims, exact-head evidence, and known gaps synchronized with the canonical documents.
