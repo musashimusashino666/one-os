@@ -716,8 +716,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     );
     super::interrupts::write_hex(
         b"ONE OS W^X POST-ACTIVATION RECURSIVE VIEW SOURCE ACCOUNTED: ",
-        if scope.accounted_sources
-            & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
             != 0
         {
             1
@@ -727,8 +726,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     );
     super::interrupts::write_hex(
         b"ONE OS W^X POST-ACTIVATION SHARED KERNEL SOURCE ACCOUNTED: ",
-        if scope.accounted_sources
-            & oneos_core::FrameWxAuditSource::SharedKernelMappings.mask()
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::SharedKernelMappings.mask()
             != 0
         {
             1
@@ -738,10 +736,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     );
     super::interrupts::write_hex(
         b"ONE OS W^X POST-ACTIVATION LARGE PAGE SOURCE ACCOUNTED: ",
-        if scope.accounted_sources
-            & oneos_core::FrameWxAuditSource::LargePageLeaves.mask()
-            != 0
-        {
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::LargePageLeaves.mask() != 0 {
             1
         } else {
             0
