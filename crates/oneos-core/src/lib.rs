@@ -60,8 +60,9 @@ pub use frame_wx::{
     FrameWxReservation, FrameWxReservationError,
 };
 pub use frame_wx_audit::{
-    FrameWxAudit, FrameWxAuditConflict, FrameWxAuditError, FrameWxAuditSummary,
-    FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
+    frame_wx_audit_table_path_is_unique, FrameWxAudit, FrameWxAuditConflict, FrameWxAuditError,
+    FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxAuditTableBudgetError,
+    FRAME_WX_AUDIT_MAX_TABLES,
 };
 pub use frame_wx_audit_scope::{
     frame_wx_audit_snapshot_matches, frame_wx_root_registry_matches, FrameWxAuditScope,
