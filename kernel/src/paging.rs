@@ -6155,6 +6155,7 @@ fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
 }
 
 /// Releases a rejected W^X scan candidate without rewinding the allocator hint.
+#[cfg(feature = "test-wx-runtime-audit")]
 fn release_data_frame_preserving_hint(frame: Frame) -> Result<(), PagingError> {
     match super::memory::free_frame_preserving_hint(frame) {
         Ok(()) => Ok(()),
