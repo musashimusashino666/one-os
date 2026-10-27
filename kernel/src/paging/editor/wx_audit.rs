@@ -11,6 +11,7 @@ pub fn audit_registered_wx_roots(
     (
         FrameWxAuditSummary,
         FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>,
+        FrameWxDirectMapCoverageSummary,
     ),
     PagingError,
 > {
@@ -186,7 +187,7 @@ pub fn audit_registered_wx_roots(
     // mapping through the highest firmware region (and at least 4 GiB). This check
     // observes every leaf, including read-only/NX leaves omitted from the W/X range
     // inventory. Inactive roots share this PML4 region and were checked entry-for-entry.
-    direct_map_coverage
+    let direct_map_summary = direct_map_coverage
         .finish()
         .map_err(|_| PagingError::WxAuditFailed)?;
 
@@ -219,7 +220,7 @@ pub fn audit_registered_wx_roots(
         return Err(PagingError::WxAuditFailed);
     }
 
-    Ok((audit.summary(), scope_summary))
+    Ok((audit.summary(), scope_summary, direct_map_summary))
 }
 
 fn find_root_recursive_index(
