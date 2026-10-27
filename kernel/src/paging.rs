@@ -4934,7 +4934,9 @@ pub fn verify_wx_sibling_large_page_precondition(
             let virtual_region_start = executable_direct_alias & !((1u64 << 21) - 1);
 
             let large_page_size = match checked_region {
-                Some((checked_start, page_size)) if checked_start == virtual_region_start => page_size,
+                Some((checked_start, page_size)) if checked_start == virtual_region_start => {
+                    page_size
+                }
                 _ => {
                     let candidate = (|| -> Result<Option<u64>, PagingError> {
                         let mut editor = KernelPageTableEditor::new_with_recursive_index(
@@ -5336,11 +5338,8 @@ pub fn verify_wx_sibling_test_after_transition(
         if candidate >= physical_memory_offset && candidate < physical_mapping_end {
             continue;
         }
-        let mut editor = KernelPageTableEditor::new_with_recursive_index(
-            boot_info,
-            candidate,
-            recursive_index,
-        )?;
+        let mut editor =
+            KernelPageTableEditor::new_with_recursive_index(boot_info, candidate, recursive_index)?;
         // SAFETY: the sibling frame remains allocator-owned. This additional alias
         // is supervisor-only, writable, NX, and does not grant executable access.
         match unsafe {
@@ -5401,8 +5400,7 @@ pub fn verify_wx_sibling_test_after_transition(
             );
         }
         // SAFETY: this reads the same frame through the separately validated direct map.
-        let through_direct_map =
-            unsafe { ptr::read_volatile(sibling_direct_alias as *const u64) };
+        let through_direct_map = unsafe { ptr::read_volatile(sibling_direct_alias as *const u64) };
         if through_direct_map != WX_SIBLING_ALIAS_WRITE_SENTINEL {
             return Err(PagingError::LargePageDemotionFailed);
         }
@@ -5429,8 +5427,12 @@ pub fn verify_wx_sibling_test_after_transition(
         sibling_virtual_address,
         recursive_index,
     )?;
-    let unmapped = unmap_4k(root_table_physical, sibling_virtual_address, &mut cleanup_editor)
-        .map_err(PagingError::MappingMutation)?;
+    let unmapped = unmap_4k(
+        root_table_physical,
+        sibling_virtual_address,
+        &mut cleanup_editor,
+    )
+    .map_err(PagingError::MappingMutation)?;
     invalidate_local_tlb(sibling_virtual_address);
     let mut verify_unmap_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
