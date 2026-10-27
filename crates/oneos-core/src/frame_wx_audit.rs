@@ -298,7 +298,10 @@ impl FrameWxDirectMapCoverage {
             .filter(|end| *end <= (1u64 << self.physical_address_bits))
             .is_none()
         {
-            return fail(self, FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange);
+            return fail(
+                self,
+                FrameWxDirectMapCoverageError::PhysicalAddressOutOfRange,
+            );
         }
 
         let leaf_start = u128::from(virtual_start);
