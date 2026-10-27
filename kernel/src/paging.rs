@@ -1840,6 +1840,8 @@ struct KernelPageTableEditor<'a> {
     recursive_index: u16,
     target_virtual_address: u64,
     physical_address_bits: u8,
+    #[cfg(feature = "test-wx-runtime-audit")]
+    wx_test_executable_frame: Option<u64>,
 }
 
 impl<'a> KernelPageTableEditor<'a> {
@@ -1982,6 +1984,8 @@ impl<'a> KernelPageTableEditor<'a> {
             recursive_index,
             target_virtual_address,
             physical_address_bits,
+            #[cfg(feature = "test-wx-runtime-audit")]
+            wx_test_executable_frame: None,
         })
     }
 
@@ -2329,6 +2333,49 @@ impl<'a> KernelPageTableEditor<'a> {
     }
 }
 
+#[cfg(feature = "test-wx-runtime-audit")]
+impl KernelPageTableEditor<'_> {
+    /// Temporarily allow one test-owned frame to receive an RX alias after its
+    /// physical-offset alias has been proven RO+NX. Ordinary executable mappings
+    /// remain denied by the PageTableEditor implementation.
+    fn allow_controlled_wx_test_executable_frame(
+        &mut self,
+        physical_page: u64,
+    ) -> Result<(), PagingError> {
+        if physical_page == 0
+            || physical_page & (PAGE_SIZE - 1) != 0
+            || !self.is_usable_frame(physical_page)
+            || !PageTableEditor::is_frame_allocated(self, physical_page)
+            || PageTableEditor::is_page_table_or_reserved_frame(self, physical_page)
+            || is_address_space_root_frame(physical_page)
+        {
+            return Err(PagingError::WxSiblingFrameUnavailable);
+        }
+
+        let direct_alias = self
+            .physical_memory_offset
+            .checked_add(physical_page)
+            .filter(|address| {
+                is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
+            })
+            .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+        let root_table_physical = self.root_table_physical;
+        let direct_mapping = translate_with_editor(self, root_table_physical, direct_alias)
+            .map_err(PagingError::Translation)?;
+        if direct_mapping.physical_address != physical_page
+            || direct_mapping.page_size != PAGE_SIZE
+            || direct_mapping.writable
+            || direct_mapping.user_accessible
+            || direct_mapping.executable
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        self.wx_test_executable_frame = Some(physical_page);
+        Ok(())
+    }
+}
+
 impl PageTableEditor for KernelPageTableEditor<'_> {
     fn physical_address_bits(&self) -> u8 {
         self.physical_address_bits
@@ -2350,10 +2397,15 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
         super::memory::is_frame_allocated(physical_address).unwrap_or(false)
     }
 
-    fn executable_mapping_allowed(&self, _physical_address: u64) -> bool {
-        // The physical-memory-offset mapping is currently writable for Usable
-        // frames. Until the kernel can remove/downgrade every writable alias and
-        // track all aliases, executable mappings fail closed to preserve W^X.
+    fn executable_mapping_allowed(&self, physical_address: u64) -> bool {
+        // Normal executable mappings remain fail-closed while arbitrary writable
+        // aliases are not fully tracked and controlled.
+        #[cfg(feature = "test-wx-runtime-audit")]
+        if self.wx_test_executable_frame == Some(physical_address) {
+            // This single test-owned frame is admitted only after the test helper
+            // has revalidated its physical-offset alias as RO+NX and 4 KiB.
+            return true;
+        }
         false
     }
 
@@ -5010,6 +5062,10 @@ pub fn apply_wx_sibling_test_transition(
             Ok(editor) => editor,
             Err(error) => return Err(error),
         };
+        // This per-editor permission is available only in the dedicated regression
+        // image and only after verifying this frame's direct-map alias is RO+NX.
+        #[cfg(feature = "test-wx-runtime-audit")]
+        editor.allow_controlled_wx_test_executable_frame(test.executable_physical_page)?;
         // SAFETY: the owned executable test frame remains allocated for the test's
         // lifetime. The mapping is supervisor-only and deliberately not writable.
         match unsafe {
