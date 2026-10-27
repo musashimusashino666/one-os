@@ -1085,7 +1085,9 @@ fn reserve_kernel_load_frame(
         Some(MemoryRegionKind::Usable) => {
             let reserved = crate::memory::reserve_frame(physical_page)
                 .map_err(|_| PagingError::KernelFrameReservationFailed)?;
-            if reserved {
+            if reserved
+                && matches!(crate::memory::is_permanently_reserved(physical_page), Ok(true))
+            {
                 Ok(())
             } else {
                 Err(PagingError::KernelFrameReservationFailed)
@@ -1149,7 +1151,16 @@ fn reserve_bootstrap_frame(
         _ => BootstrapBackingKind::ReservedOrUnknown,
     };
     match reserve_bootstrap_backing_frame(kind, || crate::memory::reserve_frame(physical_page)) {
-        Ok(()) => Ok(()),
+        Ok(()) if kind == BootstrapBackingKind::Bootloader => Ok(()),
+        Ok(()) => {
+            // Prove that a successful Usable-frame reservation was also recorded
+            // in the side metadata used by ordinary mapping-target validation.
+            if matches!(crate::memory::is_permanently_reserved(physical_page), Ok(true)) {
+                Ok(())
+            } else {
+                Err(PagingError::BootstrapFrameReservationFailed)
+            }
+        }
         Err(BootstrapFrameReservationError::DisallowedRegion) => Err(mapping_error),
         Err(
             BootstrapFrameReservationError::FrameNotManaged
