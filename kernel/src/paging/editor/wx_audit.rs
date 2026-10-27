@@ -5,7 +5,13 @@ pub fn audit_registered_wx_roots(
     root_table_physical: u64,
     recursive_index: u16,
     physical_address_bits: u8,
-) -> Result<(FrameWxAuditSummary, FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>), PagingError> {
+) -> Result<
+    (
+        FrameWxAuditSummary,
+        FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>,
+    ),
+    PagingError,
+> {
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
@@ -289,8 +295,7 @@ static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
-static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_TABLE_PATHS] =
-    [0; MAX_WX_AUDIT_TABLE_PATHS];
+static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_TABLE_PATHS] = [0; MAX_WX_AUDIT_TABLE_PATHS];
 
 /// Physical frames whose writable recursive aliases must be checked after the
 /// complete ordinary leaf inventory has been collected. Shared page-table frames
@@ -320,14 +325,9 @@ impl RecursiveAliasSet {
         // count is bounded by the fixed table-path buffer.
         let table_frames = core::ptr::addr_of!(WX_AUDIT_VISITED_TABLES).cast::<u64>();
         // SAFETY: only initialized entries below visited_table_count are exposed.
-        let visited = unsafe {
-            core::slice::from_raw_parts(table_frames, self.visited_table_count)
-        };
-        if !frame_wx_audit_table_path_is_unique(
-            visited,
-            table_physical,
-            MAX_WX_AUDIT_TABLE_PATHS,
-        ) {
+        let visited =
+            unsafe { core::slice::from_raw_parts(table_frames, self.visited_table_count) };
+        if !frame_wx_audit_table_path_is_unique(visited, table_physical, MAX_WX_AUDIT_TABLE_PATHS) {
             return Err(PagingError::WxAuditFailed);
         }
         // SAFETY: the exclusive audit lease is held and capacity was checked above.
