@@ -38,6 +38,29 @@ Capability identifiers that are process-local must not be accepted as globally u
 
 The current oneos-core capability types are a host-testable reference authorization model. They are not a hardware or process enforcement boundary.
 
+## Service compromise and confused-deputy resistance
+
+The kernel is the mandatory reference monitor for protected operations. A policy service may recommend allow/deny, present the owner's request, or broker IPC, but its own assertion cannot authorize an operation. For every protected operation, the kernel MUST validate kernel-owned authority state, the authenticated calling principal, the resource, the requested right, the grant's scope/lifetime, and its revocation state.
+
+Services MUST NOT be able to mint new authority, widen a received capability, impersonate another principal by supplying an identity field, or turn the kernel into a confused deputy. Delegation can only attenuate an existing valid grant unless a new grant is established through the documented owner-authorized path. Restarted services and local caches are not authoritative for revocation or grant validity.
+
+This contract contains a compromised service to the rights actually delegated to it; it does not claim that a compromised service will behave correctly within its own scope. Its capabilities must therefore be narrow, attributable, and revocable. If a service is designed to issue unrestricted grants or bypass kernel authorization, it is part of the enforcement TCB and violates the target architecture described in the [Security Model](../architecture/SECURITY_MODEL.md).
+
+### Required adversarial acceptance tests
+
+The real kernel protected-operation path (not a host-only model) MUST demonstrate:
+
+- A malicious broker/service without a capability is denied cross-process reads/writes and protected resource operations.
+- Forged, foreign, stale, revoked, or widened capabilities are rejected, including attempts to add rights or extend lifetime/scope.
+- A broker cannot impersonate a caller or confuse the kernel by supplying a different principal/object identity in request data.
+- A delegated capability permits only the granted resource and operations; further delegation is limited to an attenuated subset.
+- Revocation prevents subsequent protected operations even if a service retains a copied handle, cached allow decision, or pre-restart state.
+- A compromised broker cannot bypass a kernel denial by asking another service to act as a deputy without independently valid authority.
+- A service restart, crash, or missing policy state fails closed for protected operations; it never restores authority from an untrusted cache.
+- Valid in-scope requests still follow the documented policy, and audit attribution identifies both the caller and the service exercising its own authority.
+
+Each negative case MUST assert an explicit denial/fault result and verify no protected state was changed. Record candidate SHA, test profile, exact case/marker, and logs. The service-compromise guarantee remains unverified until these tests pass in the integrated kernel path.
+
 ## IPC and resource transfer
 
 Before IPC is considered secure, its contract must define message framing, length limits, caller identity, authority transfer, resource ownership, cancellation, timeout semantics, errors, and behavior during process death. Malformed and oversized messages must fail without corrupting ownership state or disclosing unrelated memory.
@@ -65,6 +88,7 @@ Track the remaining work in [Issue #23](https://github.com/musashimusashino666/o
 - Stale TLB mappings and frame reuse after unmap or teardown.
 - Allocation, registry-capacity, and mapping-publication failures.
 - Process exit during IPC and resource transfer.
+- Compromised broker/service attempts to forge, widen, replay, or use revoked authority and to act as a confused deputy (see the service-compromise acceptance contract above).
 - No user-visible mapping before initialization and ownership validation succeed.
 
 The isolation milestone is incomplete until the relevant tests execute through the real kernel enforcement path and fail closed on the exact reviewed revision.

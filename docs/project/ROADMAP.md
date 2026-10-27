@@ -4,6 +4,21 @@
 
 Milestones are completed by acceptance evidence, not by the presence of code or documentation. Dependencies that protect security boundaries block later milestones even when unrelated features could be prototyped in parallel.
 
+The product definition in [Vision](../vision/VISION.md) is a set of hypotheses until validated with users and comparative evidence. Keep user/product validation distinct from kernel implementation status; do not claim product-market fit or superiority based on technical progress alone.
+
+## P0 — Validate the product thesis
+
+**Status: definition documented; validation not yet demonstrated.** This work can proceed in parallel with kernel milestones, but M3's integrated product scope should not be treated as committed until its user and security prerequisites are satisfied.
+
+Required work:
+- Test the initial target-cohort assumption with representative users; identify the highest-value workflows and where users misunderstand or cannot control authority.
+- Compare relevant existing systems and execution approaches against the same named workflows. Record the threat model and configuration; do not assume that ONE OS is unique or superior.
+- Prioritize an initial usable-system scope and explicitly defer features that do not advance the core promise of enforceable, understandable, revocable authority and safe recovery.
+- Define task-study and performance-baseline methods before collecting results. Keep numeric targets marked TBD until their baseline and rationale are recorded.
+- Record the resulting scope, unresolved assumptions, trade-offs, and decisions in maintained project documentation; create an ADR where a decision changes long-lived architecture or a security boundary.
+
+Exit evidence: a published, privacy-preserving research summary; a target-user and core-workflow definition supported by that evidence; a versioned initial product scope with explicit non-goals; and an evaluation plan with named comparators, methods, and unresolved assumptions. If evidence contradicts the current thesis, revise the vision rather than forcing the findings to fit it.
+
 ## M0 — Repository and boot foundation
 
 **Status: established for the current QEMU profile.**
@@ -47,7 +62,7 @@ Exit gate: negative tests prove that one process cannot access another's private
 
 **Status: not started as an integrated system.**
 
-Candidate scope: persistent storage, driver model, networking, isolated service manager, process supervision, basic system shell, and a small set of useful applications. Each service must have an explicit privilege boundary and recovery behavior. Do not expand into a large feature surface before M2 is demonstrated.
+Candidate scope: persistent storage, driver model, networking, isolated service manager, process supervision, basic system shell, and a small set of useful applications. Each service must have an explicit privilege boundary and recovery behavior. Do not expand into a large feature surface before M2 is demonstrated. Final MVP scope must also satisfy the P0 product-validation exit evidence; this list is a candidate scope, not a commitment to build every listed component.
 
 ## M4 — Owner-controlled, resilient user environment
 
@@ -63,4 +78,4 @@ Required before a release claim: authenticated boot, signed and recoverable upda
 
 ## Sequencing rule
 
-Do not enable SMP, unrestricted executable mappings, or general untrusted user execution before their resource-lifetime and permission contracts have adversarial acceptance tests. Work on documentation, tooling, and host-testable algorithms can proceed in parallel without relaxing these gates.
+Do not enable SMP, unrestricted executable mappings, or general untrusted user execution before their resource-lifetime and permission contracts have adversarial acceptance tests. Work on documentation, tooling, product validation, and host-testable algorithms can proceed in parallel without relaxing these gates.
