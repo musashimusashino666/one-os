@@ -2715,10 +2715,6 @@ fn translate_with_editor(
     result
 }
 
-/// Exercise a real active-kernel map/access/unmap cycle before reporting
-/// bootstrap completion. Dedicated protected-write and NX fault images remain
-/// separate acceptance tests; this smoke test does not claim those tests exist.
-
 fn invalidate_local_tlb(virtual_address: u64) {
     // SAFETY: INVLPG is available in the current x86_64 kernel and operates on
     // the target virtual address in the local CPU's translation cache.

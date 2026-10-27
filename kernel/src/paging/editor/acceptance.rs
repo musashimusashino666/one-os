@@ -321,6 +321,9 @@ pub fn verify_user_frame_zeroing_test_with_recursive_index(
     }
 }
 
+/// Exercise a real active-kernel map/access/unmap cycle before reporting
+/// bootstrap completion. Dedicated protected-write and NX fault images remain
+/// separate acceptance tests; this smoke test does not claim those tests exist.
 pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     // The caller has already initialized and smoke-tested the physical allocator.
     let data_frame =
