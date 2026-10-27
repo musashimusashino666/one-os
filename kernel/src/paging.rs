@@ -4421,16 +4421,6 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
             return Err(PagingError::PhysicalMemoryOffsetUnavailable);
         }
     };
-    // Restrict this test frame's physical-offset alias before publishing any
-    // executable alias. This avoids a transient W+X alias even with interrupts off.
-    // The real PT_LOAD transition may already have split the shared 2 MiB leaf, in
-    // which case this frame remains a writable 4 KiB sibling until this call.
-    restrict_physical_offset_alias_read_only_nx(
-        boot_info,
-        root_table_physical,
-        executable_direct_alias,
-        test.executable_physical_page,
-    )?;
 
     let highest_physical_end = boot_info
         .memory_regions
@@ -4954,8 +4944,8 @@ pub fn apply_wx_sibling_test_transition(
         .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
 
     // The precondition is checked before the PT_LOAD transition. Accept either the
-    // still-large writable alias or the already-demoted RO+NX alias if the actual
-    // PT_LOAD transition happened to touch this same physical 2 MiB region.
+    // still-large writable alias or the already-demoted writable/NX 4 KiB alias if
+    // the actual PT_LOAD transition touched this same physical 2 MiB region.
     let mut direct_editor = KernelPageTableEditor::new_with_recursive_index(
         boot_info,
         executable_direct_alias,
@@ -4980,6 +4970,17 @@ pub fn apply_wx_sibling_test_transition(
     if !still_large_and_writable && !already_demoted_writable {
         return Err(PagingError::LargePageDemotionFailed);
     }
+
+    // Restrict the owned test frame's physical-offset alias before publishing any
+    // executable alias. This avoids a transient W+X alias even with interrupts off.
+    // If PT_LOAD already demoted the shared leaf, this changes the frame's writable
+    // 4 KiB alias to RO+NX; otherwise the helper performs the large-page demotion.
+    restrict_physical_offset_alias_read_only_nx(
+        boot_info,
+        root_table_physical,
+        executable_direct_alias,
+        test.executable_physical_page,
+    )?;
 
     let highest_physical_end = boot_info
         .memory_regions
