@@ -182,6 +182,20 @@ pub fn reserve_frame(physical_address: u64) -> Result<bool, MemoryError> {
         .map_err(MemoryError::Allocator)
 }
 
+/// Returns the current number of frames available to a bounded, exhaustive scan.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn free_frame_count() -> Result<usize, MemoryError> {
+    let _guard = GLOBAL.acquire()?;
+    if !GLOBAL.initialized.load(Ordering::Acquire) {
+        return Err(MemoryError::NotInitialized);
+    }
+
+    // SAFETY: the initialized flag was published after writing the allocator,
+    // and the lock provides exclusive access for the duration of this query.
+    let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
+    Ok(allocator.stats().free_frames)
+}
+
 /// Queries whether a frame is currently allocated by the global allocator.
 ///
 /// The allocator lock protects the bitmap read. The current page-table mutation
