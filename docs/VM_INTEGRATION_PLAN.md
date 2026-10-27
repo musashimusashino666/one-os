@@ -13,7 +13,7 @@ The active mapping contract remains single-CPU with maskable interrupts disabled
 - The mutation helpers validate four-level canonical addresses, alignment, physical
   address width, ancestor permissions, and large-page conflicts; enforce W^X at the
   leaf; and roll back intermediate-table allocations on allocation failure.
-- `kernel/src/paging.rs` inspects bootloader mappings and now contains a guarded
+- `kernel/src/paging/` inspects bootloader mappings and now contains a guarded
   `PageTableEditor` for active four-level page tables. It resolves reachable tables
   through recursive aliases and accesses only owned, unpublished Usable frames through
   a verified writable physical-memory-offset mapping.
