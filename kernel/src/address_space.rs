@@ -699,6 +699,20 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
         audit.conflicting_overlap_events,
     );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION ACCOUNTED SOURCE MASK: ",
+        scope.accounted_sources as u64,
+    );
+    for root in scope.roots[..scope.declared_roots].iter() {
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT PHYSICAL: ",
+            root.physical_address,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT COMPLETE: ",
+            if root.audited { 1 } else { 0 },
+        );
+    }
     if let Some(conflict) = audit.first_conflict {
         super::serial_write(b"ONE OS W^X POST-ACTIVATION FIRST CONFLICT\n");
         super::interrupts::write_hex(
