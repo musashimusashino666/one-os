@@ -73,6 +73,21 @@ pub fn audit_registered_wx_roots(
         .seal_root_inventory()
         .map_err(|_| PagingError::WxAuditFailed)?;
 
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::WxAuditFailed),
+    };
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let mut direct_map_coverage =
+        FrameWxDirectMapCoverage::new(physical_memory_offset, highest_physical_end)
+            .map_err(|_| PagingError::WxAuditFailed)?;
+
     let mut visited_path = [0u64; 4];
     let mut table_budget = FrameWxAuditTableBudget::<MAX_WX_AUDIT_TABLES>::new();
     let mut recursive_aliases = RecursiveAliasSet::new()?;
@@ -92,6 +107,8 @@ pub fn audit_registered_wx_roots(
         AuditRootRange::All,
         true,
         Some(recursive_index),
+        &mut direct_map_coverage,
+        true,
         &mut recursive_aliases,
         &mut visited_path,
         0,
@@ -147,6 +164,8 @@ pub fn audit_registered_wx_roots(
             AuditRootRange::LowerHalf,
             true,
             Some(target_recursive_index),
+            &mut direct_map_coverage,
+            false,
             &mut recursive_aliases,
             &mut visited_path,
             0,
@@ -162,6 +181,14 @@ pub fn audit_registered_wx_roots(
     // leaf inventory only after all roots have been walked; doing this late avoids
     // missing executable leaves that appear later in page-table traversal order.
     recursive_aliases.check_conflicts(&mut audit)?;
+
+    // The active root must provide a complete, offset-correct, NX physical-memory
+    // mapping through the highest firmware region (and at least 4 GiB). This check
+    // observes every leaf, including read-only/NX leaves omitted from the W/X range
+    // inventory. Inactive roots share this PML4 region and were checked entry-for-entry.
+    direct_map_coverage
+        .finish()
+        .map_err(|_| PagingError::WxAuditFailed)?;
 
     // All present W/X leaves in every declared root were enumerated before this
     // point, including any physical-offset/direct-map aliases; those aliases are
@@ -433,6 +460,8 @@ fn audit_wx_table<const CAPACITY: usize>(
     root_range: AuditRootRange,
     record_leaf_mappings: bool,
     recursive_view_index: Option<u16>,
+    direct_map_coverage: &mut FrameWxDirectMapCoverage,
+    track_direct_map_coverage: bool,
     recursive_aliases: &mut RecursiveAliasSet,
     visited_path: &mut [u64; 4],
     depth: usize,
@@ -545,6 +574,11 @@ fn audit_wx_table<const CAPACITY: usize>(
                 return Err(PagingError::WxAuditFailed);
             }
             let physical_start = raw_physical & !(page_size - 1);
+            if track_direct_map_coverage {
+                direct_map_coverage
+                    .observe_leaf(virtual_start, physical_start, page_size, executable)
+                    .map_err(|_| PagingError::WxAuditFailed)?;
+            }
             if record_leaf_mappings {
                 audit
                     .record_alias(
@@ -575,6 +609,8 @@ fn audit_wx_table<const CAPACITY: usize>(
             AuditRootRange::All,
             record_leaf_mappings,
             recursive_view_index,
+            direct_map_coverage,
+            track_direct_map_coverage,
             recursive_aliases,
             visited_path,
             depth + 1,
