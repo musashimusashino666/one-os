@@ -141,8 +141,6 @@ impl<'a> KernelUserFrameInitializer<'a> {
     }
 }
 
-
-
 // SAFETY: zero_frame verifies allocator ownership, excludes active/page-table
 // frames, validates the full supervisor-writable/NX alias through the active
 // page tables, and verifies all 4096 bytes after writing. Interrupts must remain
@@ -322,7 +320,6 @@ pub fn verify_user_frame_zeroing_test_with_recursive_index(
         }
     }
 }
-
 
 pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     // The caller has already initialized and smoke-tested the physical allocator.
@@ -2201,8 +2198,6 @@ impl MappingTransitionTest {
         Ok(())
     }
 }
-
-
 
 fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
     match crate::memory::free_frame(frame) {
