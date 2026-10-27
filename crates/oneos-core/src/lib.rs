@@ -60,8 +60,9 @@ pub use frame_wx::{
     FrameWxReservation, FrameWxReservationError,
 };
 pub use frame_wx_audit::{
-    frame_wx_audit_table_path_is_unique, FrameWxAudit, FrameWxAuditConflict,
-    FrameWxAuditEffectivePermissions, FrameWxAuditError, FrameWxAuditSummary,
+    frame_wx_audit_leaf_extent, frame_wx_audit_table_path_is_unique, FrameWxAudit,
+    FrameWxAuditConflict, FrameWxAuditEffectivePermissions, FrameWxAuditError,
+    FrameWxAuditLeafExtent, FrameWxAuditLeafExtentError, FrameWxAuditSummary,
     FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FrameWxDirectMapCoverage,
     FrameWxDirectMapCoverageError, FrameWxDirectMapCoverageSummary, FRAME_WX_AUDIT_MAX_TABLES,
 };
