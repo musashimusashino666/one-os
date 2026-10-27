@@ -5016,8 +5016,9 @@ pub fn apply_wx_sibling_test_transition(
                     candidate,
                     recursive_index,
                 )?;
-                let mapped = translate_with_editor(&mut verify_editor, root_table_physical, candidate)
-                    .map_err(PagingError::Translation)?;
+                let mapped =
+                    translate_with_editor(&mut verify_editor, root_table_physical, candidate)
+                        .map_err(PagingError::Translation)?;
                 if mapped.physical_address != test.executable_physical_page
                     || mapped.page_size != PAGE_SIZE
                     || mapped.writable
