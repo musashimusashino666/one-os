@@ -4806,6 +4806,13 @@ pub fn kernel_executable_direct_alias_for_test(
 /// leaf and the same 2 MiB physical subregion. This provides a controlled test layout
 /// even when the bootloader has reserved every unused page beside the loaded kernel.
 #[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_PRE_TRANSITION_SENTINEL: u64 = 0x4f4e_455f_5758_5052;
+#[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_ALIAS_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_414c;
+#[cfg(feature = "test-wx-runtime-audit")]
+const WX_SIBLING_DIRECT_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_444d;
+
+#[cfg(feature = "test-wx-runtime-audit")]
 pub struct WxSiblingRegressionTest {
     executable_frame: Option<Frame>,
     sibling_frame: Option<Frame>,
@@ -4970,7 +4977,13 @@ pub fn verify_wx_sibling_large_page_precondition(
                     // SAFETY: the direct-map alias belongs to an allocator-owned
                     // Usable frame and was checked as writable, supervisor-only, NX.
                     // Seed a single RET byte before installing the separate RX alias.
-                    unsafe { ptr::write_volatile(executable_direct_alias as *mut u8, 0xc3) };
+                    unsafe {
+                        ptr::write_volatile(executable_direct_alias as *mut u8, 0xc3);
+                        ptr::write_volatile(
+                            sibling_direct_alias as *mut u64,
+                            WX_SIBLING_PRE_TRANSITION_SENTINEL,
+                        );
+                    }
                     return Ok(WxSiblingRegressionTest {
                         executable_frame: Some(executable_frame),
                         sibling_frame: Some(current_frame),
@@ -5292,20 +5305,145 @@ pub fn verify_wx_sibling_test_after_transition(
         return Err(PagingError::LargePageDemotionFailed);
     }
 
-    // SAFETY: the sibling frame is allocator-owned and its direct-map leaf was
-    // just validated as a writable supervisor-only NX 4 KiB mapping.
-    unsafe {
-        ptr::write_volatile(sibling_direct_alias as *mut u64, 0x4f4e_455f_5758_5041);
+    // Map the sibling frame through a second, independent virtual address.
+    // The direct map and this test alias must see the same physical contents in both
+    // write directions, including the value seeded before the large-page transition.
+    let highest_physical_end = boot_info
+        .memory_regions
+        .iter()
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+        .max(1u64 << 32);
+    let physical_mapping_end = physical_memory_offset
+        .checked_add(highest_physical_end)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+    let mut sibling_virtual_address = None;
+    for candidate_pml4_index in FIRST_CANDIDATE_PML4_INDEX..512 {
+        if candidate_pml4_index == recursive_index {
+            continue;
+        }
+        let raw_candidate = u64::from(candidate_pml4_index) << 39;
+        let candidate = raw_candidate | 0xffff_0000_0000_0000;
+        if candidate >= physical_memory_offset && candidate < physical_mapping_end {
+            continue;
+        }
+        let mut editor = KernelPageTableEditor::new_with_recursive_index(
+            boot_info,
+            candidate,
+            recursive_index,
+        )?;
+        // SAFETY: the sibling frame remains allocator-owned. This additional alias
+        // is supervisor-only, writable, NX, and does not grant executable access.
+        match unsafe {
+            map_supervisor_4k(
+                root_table_physical,
+                candidate,
+                test.sibling_physical_page,
+                PagePermissions::new(true, false, false),
+                &mut editor,
+            )
+        } {
+            Ok(()) => {
+                invalidate_local_tlb(candidate);
+                sibling_virtual_address = Some(candidate);
+                break;
+            }
+            Err(error) if error.is_retryable_for_mapping_candidate() => continue,
+            Err(error) => return Err(PagingError::MappingMutation(error)),
+        }
     }
-    // SAFETY: immediately read back the same validated, writable sibling alias.
-    let observed = unsafe { ptr::read_volatile(sibling_direct_alias as *const u64) };
-    if observed != 0x4f4e_455f_5758_5041 {
+    let sibling_virtual_address =
+        sibling_virtual_address.ok_or(PagingError::NoUnusedVirtualAddress)?;
+
+    let alias_check = (|| -> Result<(), PagingError> {
+        let mut alias_editor = KernelPageTableEditor::new_with_recursive_index(
+            boot_info,
+            sibling_virtual_address,
+            recursive_index,
+        )?;
+        let alias = translate_with_editor(
+            &mut alias_editor,
+            root_table_physical,
+            sibling_virtual_address,
+        )
+        .map_err(PagingError::Translation)?;
+        if alias.physical_address != test.sibling_physical_page
+            || alias.page_size != PAGE_SIZE
+            || !alias.writable
+            || alias.user_accessible
+            || alias.executable
+        {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the additional alias is a validated writable mapping of the
+        // retained sibling frame. This value was written before the transition.
+        let before_transition =
+            unsafe { ptr::read_volatile(sibling_virtual_address as *const u64) };
+        if before_transition != WX_SIBLING_PRE_TRANSITION_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the mapped alias is writable and addresses the retained frame.
+        unsafe {
+            ptr::write_volatile(
+                sibling_virtual_address as *mut u64,
+                WX_SIBLING_ALIAS_WRITE_SENTINEL,
+            );
+        }
+        // SAFETY: this reads the same frame through the separately validated direct map.
+        let through_direct_map =
+            unsafe { ptr::read_volatile(sibling_direct_alias as *const u64) };
+        if through_direct_map != WX_SIBLING_ALIAS_WRITE_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+
+        // SAFETY: the direct-map leaf was verified writable, supervisor-only, NX.
+        unsafe {
+            ptr::write_volatile(
+                sibling_direct_alias as *mut u64,
+                WX_SIBLING_DIRECT_WRITE_SENTINEL,
+            );
+        }
+        // SAFETY: independently read the write through the additional virtual alias.
+        let through_test_alias =
+            unsafe { ptr::read_volatile(sibling_virtual_address as *const u64) };
+        if through_test_alias != WX_SIBLING_DIRECT_WRITE_SENTINEL {
+            return Err(PagingError::LargePageDemotionFailed);
+        }
+        Ok(())
+    })();
+
+    // Never release the data frame while its additional alias is still present.
+    let mut cleanup_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_virtual_address,
+        recursive_index,
+    )?;
+    let unmapped = unmap_4k(root_table_physical, sibling_virtual_address, &mut cleanup_editor)
+        .map_err(PagingError::MappingMutation)?;
+    invalidate_local_tlb(sibling_virtual_address);
+    let mut verify_unmap_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        sibling_virtual_address,
+        recursive_index,
+    )?;
+    let after_unmap = translate_with_editor(
+        &mut verify_unmap_editor,
+        root_table_physical,
+        sibling_virtual_address,
+    );
+    let removed_correctly = unmapped.physical_address == test.sibling_physical_page
+        && unmapped.permissions == PagePermissions::new(true, false, false)
+        && matches!(after_unmap, Err(PageTableError::NotPresent { .. }));
+    if !removed_correctly {
         return Err(PagingError::LargePageDemotionFailed);
     }
+    alias_check?;
 
-    // The sibling remains mapped only through the direct map and is writable, so it
-    // can be returned to the allocator. Keep the test executable frame allocated and
-    // its RX alias mapped because its physical-offset alias is permanently read-only.
+    // The sibling's independent alias is removed and its TLB entry invalidated.
+    // Its physical-offset alias remains writable/NX; the RX test frame stays owned.
     let sibling_frame = test
         .sibling_frame
         .take()
