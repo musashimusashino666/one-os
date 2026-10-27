@@ -726,6 +726,32 @@ fn translate_virtual_address(
     )
 }
 
+fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError {
+    match error {
+        PagingPreconditionError::ExtendedLeafUnavailable {
+            required_leaf,
+            maximum_leaf,
+        } => PagingError::ExtendedCpuidLeafUnavailable {
+            required_leaf,
+            maximum_leaf,
+        },
+        PagingPreconditionError::NxUnsupported => PagingError::UnsupportedNx,
+        PagingPreconditionError::NxEnableDisabled => PagingError::NxEnableDisabled,
+        PagingPreconditionError::InvalidPhysicalAddressWidth { bits } => {
+            PagingError::InvalidPhysicalAddressWidth { bits }
+        }
+        PagingPreconditionError::SupervisorWriteProtectionDisabled => {
+            PagingError::SupervisorWriteProtectionDisabled
+        }
+        PagingPreconditionError::MaskableInterruptsEnabled => PagingError::InterruptsEnabled,
+        PagingPreconditionError::PagingDisabled => PagingError::PagingDisabled,
+        PagingPreconditionError::FiveLevelPagingUnsupported => {
+            PagingError::UnsupportedFiveLevelPaging
+        }
+        PagingPreconditionError::PcidUnsupported => PagingError::PcidUnsupported,
+    }
+}
+
 mod editor;
 mod inspection;
 
@@ -737,9 +763,7 @@ pub(super) use editor::{
     teardown_inactive_user_address_space_with_table_release, unregister_address_space_root,
     validate_inactive_user_address_space, verify_large_page_demotion_smoke_test,
     verify_mapping_smoke_test, verify_teardown_corruption_preflight_for_smoke,
-    verify_user_frame_initialization_failure_releases_frame_for_smoke,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
-    KernelUserFrameInitializer,
 };
 pub(super) use inspection::inspect_boot_mappings;
 

@@ -72,31 +72,7 @@ pub fn initialize_paging_controls() -> Result<(), PagingError> {
     Ok(())
 }
 
-fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError {
-    match error {
-        PagingPreconditionError::ExtendedLeafUnavailable {
-            required_leaf,
-            maximum_leaf,
-        } => PagingError::ExtendedCpuidLeafUnavailable {
-            required_leaf,
-            maximum_leaf,
-        },
-        PagingPreconditionError::NxUnsupported => PagingError::UnsupportedNx,
-        PagingPreconditionError::NxEnableDisabled => PagingError::NxEnableDisabled,
-        PagingPreconditionError::InvalidPhysicalAddressWidth { bits } => {
-            PagingError::InvalidPhysicalAddressWidth { bits }
-        }
-        PagingPreconditionError::SupervisorWriteProtectionDisabled => {
-            PagingError::SupervisorWriteProtectionDisabled
-        }
-        PagingPreconditionError::MaskableInterruptsEnabled => PagingError::InterruptsEnabled,
-        PagingPreconditionError::PagingDisabled => PagingError::PagingDisabled,
-        PagingPreconditionError::FiveLevelPagingUnsupported => {
-            PagingError::UnsupportedFiveLevelPaging
-        }
-        PagingPreconditionError::PcidUnsupported => PagingError::PcidUnsupported,
-    }
-}
+
 
 struct TableFrameRegistry {
     held: AtomicBool,
@@ -2405,8 +2381,8 @@ fn initialize_user_frame_or_release_on_error<E>(
 
 /// Exercises the initializer-failure path and verifies that the exact returned
 /// frame token reaches the allocator-release callback instead of being dropped.
-pub fn verify_user_frame_initialization_failure_releases_frame_for_smoke() -> Result<(), PagingError>
-{
+pub fn verify_user_frame_initialization_failure_releases_frame_for_smoke(
+) -> Result<(), PagingError> {
     let frame = crate::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let expected_physical = frame.physical_address();
     let mut initializer = FailingUserFrameInitializer;
@@ -2665,6 +2641,96 @@ pub fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usize>(
         return Err(PagingError::InactivePageTableMalformed);
     }
     Ok(())
+}
+
+struct FailingUserFrameInitializer;
+
+// SAFETY: this test initializer always fails and never claims that any frame is
+// zeroed, so initialize_user_frame cannot create an invalid ZeroedFrame token.
+unsafe impl UserFrameInitializer for FailingUserFrameInitializer {
+    fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
+        Err(UserFrameInitializationError::InitializationFailed)
+    }
+}
+
+fn active_root_table_physical() -> u64 {
+    let cr3: u64;
+    // SAFETY: CR3 is readable in privileged x86_64 kernel execution.
+    unsafe {
+        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+    }
+    cr3 & PHYSICAL_ADDRESS_MASK
+}
+
+fn valid_physical_page(address: u64, bits: u8) -> bool {
+    if !(32..=52).contains(&bits) || address == 0 || address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    let mask = ((1u64 << bits) - 1) & PHYSICAL_ADDRESS_MASK;
+    address & !mask == 0
+}
+
+fn virtual_index(virtual_address: u64, level: u8) -> Option<usize> {
+    if !(1..=4).contains(&level) {
+        return None;
+    }
+    let shift = 12 + u32::from(level - 1) * 9;
+    Some(((virtual_address >> shift) & 0x1ff) as usize)
+}
+
+fn entry_pointer_from_page(table_virtual_address: u64, index: usize) -> Option<*mut u64> {
+    if index >= 512
+        || !is_canonical_4level(table_virtual_address)
+        || table_virtual_address & (PAGE_SIZE - 1) != 0
+    {
+        return None;
+    }
+    let offset = u64::try_from(index)
+        .ok()?
+        .checked_mul(size_of::<u64>() as u64)?;
+    let address = table_virtual_address.checked_add(offset)?;
+    let end = address.checked_add(size_of::<u64>() as u64 - 1)?;
+    if !is_canonical_4level(address) || !is_canonical_4level(end) || address & 7 != 0 {
+        return None;
+    }
+    Some(usize::try_from(address).ok()? as *mut u64)
+}
+
+fn translate_with_editor(
+    editor: &mut KernelPageTableEditor<'_>,
+    root_table_physical: u64,
+    virtual_address: u64,
+) -> Result<PageTranslation, PageTableError> {
+    // entry_pointer() derives recursive aliases from editor.target_virtual_address.
+    // That context must describe the address being translated, not the unrelated
+    // mapping candidate the editor was originally created for. Restore the prior
+    // target afterwards so a caller can continue its existing map/unmap operation.
+    let previous_target = editor.target_virtual_address;
+    editor.target_virtual_address = virtual_address;
+    let mut level = 4u8;
+    let result = translate_4level(virtual_address, root_table_physical, |table, index| {
+        let current_level = level;
+        level = level.saturating_sub(1);
+        editor.read_entry(table, index, current_level)
+    });
+    editor.target_virtual_address = previous_target;
+    result
+}
+
+/// Exercise a real active-kernel map/access/unmap cycle before reporting
+/// bootstrap completion. Dedicated protected-write and NX fault images remain
+/// separate acceptance tests; this smoke test does not claim those tests exist.
+
+fn invalidate_local_tlb(virtual_address: u64) {
+    // SAFETY: INVLPG is available in the current x86_64 kernel and operates on
+    // the target virtual address in the local CPU's translation cache.
+    unsafe {
+        asm!(
+            "invlpg [{}]",
+            in(reg) virtual_address,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 pub use acceptance::{

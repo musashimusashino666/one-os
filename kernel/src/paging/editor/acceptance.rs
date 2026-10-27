@@ -141,15 +141,7 @@ impl<'a> KernelUserFrameInitializer<'a> {
     }
 }
 
-struct FailingUserFrameInitializer;
 
-// SAFETY: this test initializer always fails and never claims that any frame is
-// zeroed, so initialize_user_frame cannot create an invalid ZeroedFrame token.
-unsafe impl UserFrameInitializer for FailingUserFrameInitializer {
-    fn zero_frame(&mut self, _frame: &Frame) -> Result<(), UserFrameInitializationError> {
-        Err(UserFrameInitializationError::InitializationFailed)
-    }
-}
 
 // SAFETY: zero_frame verifies allocator ownership, excludes active/page-table
 // frames, validates the full supervisor-writable/NX alias through the active
@@ -331,73 +323,7 @@ pub fn verify_user_frame_zeroing_test_with_recursive_index(
     }
 }
 
-fn active_root_table_physical() -> u64 {
-    let cr3: u64;
-    // SAFETY: CR3 is readable in privileged x86_64 kernel execution.
-    unsafe {
-        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-    }
-    cr3 & PHYSICAL_ADDRESS_MASK
-}
 
-fn valid_physical_page(address: u64, bits: u8) -> bool {
-    if !(32..=52).contains(&bits) || address == 0 || address & (PAGE_SIZE - 1) != 0 {
-        return false;
-    }
-    let mask = ((1u64 << bits) - 1) & PHYSICAL_ADDRESS_MASK;
-    address & !mask == 0
-}
-
-fn virtual_index(virtual_address: u64, level: u8) -> Option<usize> {
-    if !(1..=4).contains(&level) {
-        return None;
-    }
-    let shift = 12 + u32::from(level - 1) * 9;
-    Some(((virtual_address >> shift) & 0x1ff) as usize)
-}
-
-fn entry_pointer_from_page(table_virtual_address: u64, index: usize) -> Option<*mut u64> {
-    if index >= 512
-        || !is_canonical_4level(table_virtual_address)
-        || table_virtual_address & (PAGE_SIZE - 1) != 0
-    {
-        return None;
-    }
-    let offset = u64::try_from(index)
-        .ok()?
-        .checked_mul(size_of::<u64>() as u64)?;
-    let address = table_virtual_address.checked_add(offset)?;
-    let end = address.checked_add(size_of::<u64>() as u64 - 1)?;
-    if !is_canonical_4level(address) || !is_canonical_4level(end) || address & 7 != 0 {
-        return None;
-    }
-    Some(usize::try_from(address).ok()? as *mut u64)
-}
-
-fn translate_with_editor(
-    editor: &mut KernelPageTableEditor<'_>,
-    root_table_physical: u64,
-    virtual_address: u64,
-) -> Result<PageTranslation, PageTableError> {
-    // entry_pointer() derives recursive aliases from editor.target_virtual_address.
-    // That context must describe the address being translated, not the unrelated
-    // mapping candidate the editor was originally created for. Restore the prior
-    // target afterwards so a caller can continue its existing map/unmap operation.
-    let previous_target = editor.target_virtual_address;
-    editor.target_virtual_address = virtual_address;
-    let mut level = 4u8;
-    let result = translate_4level(virtual_address, root_table_physical, |table, index| {
-        let current_level = level;
-        level = level.saturating_sub(1);
-        editor.read_entry(table, index, current_level)
-    });
-    editor.target_virtual_address = previous_target;
-    result
-}
-
-/// Exercise a real active-kernel map/access/unmap cycle before reporting
-/// bootstrap completion. Dedicated protected-write and NX fault images remain
-/// separate acceptance tests; this smoke test does not claim those tests exist.
 pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError> {
     // The caller has already initialized and smoke-tested the physical allocator.
     let data_frame =
@@ -2276,17 +2202,7 @@ impl MappingTransitionTest {
     }
 }
 
-fn invalidate_local_tlb(virtual_address: u64) {
-    // SAFETY: INVLPG is available in the current x86_64 kernel and operates on
-    // the target virtual address in the local CPU's translation cache.
-    unsafe {
-        asm!(
-            "invlpg [{}]",
-            in(reg) virtual_address,
-            options(nostack, preserves_flags)
-        );
-    }
-}
+
 
 fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
     match crate::memory::free_frame(frame) {
