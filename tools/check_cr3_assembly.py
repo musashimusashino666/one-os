@@ -16,7 +16,7 @@ SIZE_RE_TEMPLATE = r"^\s*\.size\s+{}\s*,"
 INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)(?:\s+(.+?))?\s*$")
 GPR_RE = re.compile(
     r"^(?:r(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+[dwb]?|"
-    r"e(?:ax|bx|cx|dx|si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
+    r"e(?:ax|bx|cx|dx|si|di|bp|sp)|(?:si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
     re.IGNORECASE,
 )
 
@@ -99,6 +99,15 @@ def _operand_register(operand: str) -> str | None:
 
 def _register_name(operand: str) -> str:
     return operand.strip().lstrip("%").lower()
+
+
+def _is_64_bit_gpr(operand: str) -> bool:
+    """Return whether an operand is a full-width x86-64 general-purpose register."""
+    name = _register_name(operand)
+    return name in {
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+        *(f"r{i}" for i in range(8, 16)),
+    }
 
 
 def _source_destination(operands: list[str]) -> tuple[str, str] | None:
@@ -348,20 +357,28 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
             return tuple(state), stage
 
         if mnemonic.startswith("xchg") and len(operands) == 2:
-            # LLVM preserves RBX around CPUID by saving it in a caller-saved
-            # register and exchanging the values back afterward. Track GPR/GPR
-            # XCHG as a value swap instead of forgetting both register tags.
+            # Only a full-width exchange preserves the tracked 64-bit values.
+            # Partial-width XCHG changes the register contents; xchgl also
+            # zero-extends both destinations, so invalidate provenance instead.
             left = _operand_register(operands[0])
             right = _operand_register(operands[1])
             left_slot = reg_index.get(left) if left is not None else None
             right_slot = reg_index.get(right) if right is not None else None
-            if left_slot is not None and right_slot is not None:
+            full_width_gpr_exchange = (
+                mnemonic in ("xchg", "xchgq")
+                and _is_64_bit_gpr(operands[0])
+                and _is_64_bit_gpr(operands[1])
+            )
+            if (
+                full_width_gpr_exchange
+                and left_slot is not None
+                and right_slot is not None
+            ):
                 state[left_slot], state[right_slot] = state[right_slot], state[left_slot]
             else:
-                if left_slot is not None:
-                    state[left_slot] = NONE
-                if right_slot is not None:
-                    state[right_slot] = NONE
+                for slot in (left_slot, right_slot):
+                    if slot is not None:
+                        state[slot] = NONE
             return tuple(state), stage
 
         clobbered = _clobbered_gpr(raw_line)
