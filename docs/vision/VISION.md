@@ -8,7 +8,7 @@
 
 ## Product thesis
 
-People should not need to grant software broad, invisible, or permanent authority simply to use a computer. The operating system should make important authority boundaries enforceable, understandable, observable, and revocable. Those guarantees must continue to hold when applications are buggy, a service is compromised, an update is interrupted, or an automation/AI feature acts on a user's behalf.
+People should not need to grant software broad, invisible, or permanent authority simply to use a computer. The operating system should make important authority boundaries enforceable, understandable, observable, and revocable. A buggy or compromised non-kernel service must not gain authority beyond its explicit grants or cross into unrelated protected components. This guarantee is about containment: a compromised service may still misuse the rights explicitly delegated to it and may deny service, so grants must be narrow, attributable, revocable, and tested. An ordinary service or broker must never be an unchecked alternative to kernel enforcement. Update interruption and automation/AI actions must remain subject to the same rules.
 
 ONE OS treats security, owner control, recoverability, usability, and compatibility as one system-design problem. A permission screen without enforcement is not a security boundary; a secure mechanism that users cannot understand or operate is not a complete product; and a recovery plan that can silently reinstall a vulnerable version is not a safe recovery plan.
 
@@ -51,7 +51,7 @@ The phrase does **not** mean universally best at every workload or a single scor
 A defensible claim requires all of the following:
 
 1. **A declared scope:** intended users, supported hardware/software, threat model, and exclusions are published.
-2. **Hard security gates:** no known unresolved critical boundary failure in the declared scope; required adversarial tests pass on the exact candidate; relevant independent review is complete. Passing tests are evidence about their coverage, not proof of zero vulnerabilities.
+2. **Hard security gates:** no unresolved Critical security finding in the declared scope; every Critical finding must be fixed and its regression/acceptance tests must pass on the exact release candidate. No exception may waive a Critical finding or a failed hard gate. A High finding that could violate a hard gate also blocks release. Any other High-finding exception must satisfy the documented approval, evidence, scope, expiry, and disclosure policy in [Success Criteria](SUCCESS_CRITERIA.md). Passing tests are evidence about their coverage, not proof of zero vulnerabilities.
 3. **Recoverable operation:** update integrity, interruption handling, downgrade policy, and recovery behavior are tested before production claims.
 4. **Usable owner control:** representative users can understand, grant, inspect, and revoke sensitive access, with task outcomes and errors reported using a published method.
 5. **Honest compatibility and performance:** representative application and hardware sets are named; performance is compared against relevant alternatives using repeatable workloads and reported variance. Targets are set before results are collected.
