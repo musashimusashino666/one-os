@@ -64,7 +64,8 @@ pub use frame_wx_audit::{
     FrameWxAuditTableBudget, FrameWxAuditTableBudgetError, FRAME_WX_AUDIT_MAX_TABLES,
 };
 pub use frame_wx_audit_scope::{
-    FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditScopeSummary, FrameWxAuditSource,
+    frame_wx_audit_snapshot_matches, frame_wx_root_registry_matches, FrameWxAuditScope,
+    FrameWxAuditScopeError, FrameWxAuditScopeSummary, FrameWxAuditSource,
     FRAME_WX_AUDIT_REQUIRED_SOURCES,
 };
 pub use large_page::{

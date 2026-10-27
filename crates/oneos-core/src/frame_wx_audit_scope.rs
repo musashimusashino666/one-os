@@ -243,11 +243,77 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 }
 
+/// Returns whether a registered-root table still represents the exact root set
+/// captured before a W^X audit.
+///
+/// `expected_roots` is the compact, validated list captured at audit start.
+/// `read_slot` reads a slot from the live fixed-capacity registry. The function
+/// rejects missing, added, replaced, zero-valued expected, or duplicate roots.
+/// Slot reads may be repeated to detect duplicates without allocating another
+/// root-sized scratch array. The caller must preserve the registry's serialization
+/// contract for the duration of this check; the current kernel contract is single
+/// CPU with maskable interrupts disabled.
+pub fn frame_wx_root_registry_matches<F>(
+    expected_roots: &[u64],
+    slot_count: usize,
+    mut read_slot: F,
+) -> bool
+where
+    F: FnMut(usize) -> u64,
+{
+    if expected_roots.len() > slot_count || expected_roots.contains(&0) {
+        return false;
+    }
+    for (index, root) in expected_roots.iter().enumerate() {
+        if expected_roots[..index].contains(root) {
+            return false;
+        }
+    }
+
+    let mut observed_count = 0usize;
+    for slot_index in 0..slot_count {
+        let root = read_slot(slot_index);
+        if root == 0 {
+            continue;
+        }
+        if !expected_roots.contains(&root) {
+            return false;
+        }
+        for previous_index in 0..slot_index {
+            if read_slot(previous_index) == root {
+                return false;
+            }
+        }
+        observed_count += 1;
+    }
+
+    observed_count == expected_roots.len()
+}
+
+/// Validates the active-root identity and exact root inventory at the end of a W^X audit.
+///
+/// This pure predicate is shared by the kernel's final audit gate and host tests, so
+/// CR3 changes and root-registry mutations cannot be tested only in a parallel model.
+pub fn frame_wx_audit_snapshot_matches<F>(
+    expected_active_root: u64,
+    observed_active_root: u64,
+    expected_roots: &[u64],
+    slot_count: usize,
+    read_slot: F,
+) -> bool
+where
+    F: FnMut(usize) -> u64,
+{
+    expected_active_root != 0
+        && observed_active_root == expected_active_root
+        && frame_wx_root_registry_matches(expected_roots, slot_count, read_slot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditSource,
-        FRAME_WX_AUDIT_REQUIRED_SOURCES,
+        frame_wx_audit_snapshot_matches, frame_wx_root_registry_matches, FrameWxAuditScope,
+        FrameWxAuditScopeError, FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
     };
 
     const ROOT_A: u64 = 0x1000;
@@ -416,5 +482,133 @@ mod tests {
         let summary = scope.summary();
         assert!(summary.audit_failed);
         assert!(!summary.complete);
+    }
+    #[test]
+    fn audit_final_revalidation_rejects_cr3_or_registry_changes() {
+        const ROOT_C: u64 = 0x3000;
+        let expected_roots = [ROOT_A, ROOT_B];
+        let unchanged = [ROOT_A, ROOT_B, 0, 0];
+
+        assert!(frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // The active CR3 changed after the initial snapshot, even though the
+        // registered root set itself remains unchanged.
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_B,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // Each registry mutation is observed at the final gate against the
+        // exact root set captured before the audit walk.
+        let added = [ROOT_A, ROOT_B, ROOT_C, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            added.len(),
+            |index| added[index],
+        ));
+
+        let removed = [ROOT_A, 0, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            removed.len(),
+            |index| removed[index],
+        ));
+
+        let replaced = [ROOT_A, ROOT_C, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            replaced.len(),
+            |index| replaced[index],
+        ));
+
+        let duplicated = [ROOT_A, ROOT_A, 0, 0];
+        assert!(!frame_wx_audit_snapshot_matches(
+            ROOT_A,
+            ROOT_A,
+            &expected_roots,
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+
+        assert!(!frame_wx_audit_snapshot_matches(
+            0,
+            0,
+            &expected_roots,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+    }
+
+    #[test]
+    fn root_registry_snapshot_requires_exact_unique_membership() {
+        const ROOT_C: u64 = 0x3000;
+        let expected = [ROOT_A, ROOT_B];
+        let unchanged = [ROOT_A, 0, ROOT_B, 0];
+        assert!(frame_wx_root_registry_matches(
+            &expected,
+            unchanged.len(),
+            |index| unchanged[index],
+        ));
+
+        // Slot positions may change, but membership must remain exactly the same.
+        let reordered = [0, ROOT_B, 0, ROOT_A];
+        assert!(frame_wx_root_registry_matches(
+            &expected,
+            reordered.len(),
+            |index| reordered[index],
+        ));
+
+        let added = [ROOT_A, ROOT_B, ROOT_C, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            added.len(),
+            |index| added[index],
+        ));
+
+        let removed = [ROOT_A, 0, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            removed.len(),
+            |index| removed[index],
+        ));
+
+        let replaced = [ROOT_A, ROOT_C, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            replaced.len(),
+            |index| replaced[index],
+        ));
+
+        let duplicated = [ROOT_A, ROOT_A, 0, 0];
+        assert!(!frame_wx_root_registry_matches(
+            &expected,
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+        assert!(!frame_wx_root_registry_matches(
+            &[ROOT_A, ROOT_A],
+            duplicated.len(),
+            |index| duplicated[index],
+        ));
+
+        let empty = [0, 0, 0];
+        assert!(frame_wx_root_registry_matches(&[], empty.len(), |index| {
+            empty[index]
+        },));
     }
 }
