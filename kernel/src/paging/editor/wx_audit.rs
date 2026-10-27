@@ -517,8 +517,3 @@ fn audit_wx_table<const CAPACITY: usize>(
     Ok(())
 }
 
-/// Copies a small metadata range from the bootloader-owned in-memory ELF image.
-///
-/// Every touched physical page must be fully Bootloader-owned, and its direct-map
-/// alias must translate to that exact page with supervisor, writable, NX access.
-/// No Rust reference or slice to the aliased source memory is constructed.

@@ -1,5 +1,11 @@
 use super::*;
 
+/// Failure from kernel-backed inactive address-space teardown.
+///
+/// A user-page mutation failure retains its partial result and the remaining
+/// registry entries so a caller can decide whether to retry or fail-stop without
+/// losing ownership of frames already removed. Do not free, reactivate, or reuse
+/// the root merely because this error is returned.
 #[derive(Debug)]
 pub enum InactiveAddressSpaceTeardownError<const CAPACITY: usize> {
     Kernel(PagingError),

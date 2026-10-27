@@ -1,5 +1,11 @@
 use super::*;
 
+/// Walks the current PML4 read-only and verifies core bootstrap mappings.
+///
+/// The bootloader's recursive page-table mapping is required to inspect active
+/// table pages. This avoids aliasing Bootloader-owned frames through the physical
+/// memory offset, which bootloader_api documents as safely accessible only for
+/// Usable frames. This module never writes a page-table entry.
 pub(super) fn inspect_boot_mappings(boot_info: &BootInfo) -> Result<PageTableInspection, PagingError> {
     // Validate the index before deriving or dereferencing any recursive alias.
     // Index 0 produces virtual address 0 for the PML4 self-map and must fail closed.

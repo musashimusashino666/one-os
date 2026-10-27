@@ -250,13 +250,12 @@ impl PagingError {
     }
 }
 
-/// Walks the current PML4 read-only and verifies core bootstrap mappings.
-///
-/// The bootloader's recursive page-table mapping is required to inspect active
-/// table pages. This avoids aliasing Bootloader-owned frames through the physical
-/// memory offset, which bootloader_api documents as safely accessible only for
-/// Usable frames. This module never writes a page-table entry.
 
+/// Copies a small metadata range from the bootloader-owned in-memory ELF image.
+///
+/// Every touched physical page must be fully Bootloader-owned, and its direct-map
+/// alias must translate to that exact page with supervisor, writable, NX access.
+/// No Rust reference or slice to the aliased source memory is constructed.
 fn read_kernel_elf_bytes(
     boot_info: &BootInfo,
     file_offset: u64,
@@ -728,10 +727,6 @@ fn translate_virtual_address(
     )
 }
 
-/// Establish CPU controls required before interpreting or changing leaf permissions.
-///
-/// NX is mandatory for this milestone: the kernel fails closed if the processor
-/// does not advertise NX or the extended physical-address-width leaf.
 
 mod editor;
 mod inspection;

@@ -3,6 +3,10 @@ use super::*;
 mod acceptance;
 mod wx_audit;
 
+/// Establish CPU controls required before interpreting or changing leaf permissions.
+///
+/// NX is mandatory for this milestone: the kernel fails closed if the processor
+/// does not advertise NX or the extended physical-address-width leaf.
 pub fn initialize_paging_controls() -> Result<(), PagingError> {
     // SAFETY: CPUID is available at the x86_64 kernel privilege level.
     let maximum_extended_leaf = __cpuid(0x8000_0000).eax;
@@ -2663,12 +2667,6 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
     Ok(())
 }
 
-/// Failure from kernel-backed inactive address-space teardown.
-///
-/// A user-page mutation failure retains its partial result and the remaining
-/// registry entries so a caller can decide whether to retry or fail-stop without
-/// losing ownership of frames already removed. Do not free, reactivate, or reuse
-/// the root merely because this error is returned.
 
 pub(super) use acceptance::{
     enforce_kernel_executable_alias_wx, has_pending_detached_private_table,
