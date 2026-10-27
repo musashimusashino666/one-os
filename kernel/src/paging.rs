@@ -651,10 +651,8 @@ fn validate_shared_kernel_half(
 ) -> Result<(), PagingError> {
     let active_index = usize::from(active_recursive_index);
     let target_index = usize::from(target_recursive_index);
-    if active_index < LOWER_HALF_PML4_ENTRIES
-        || target_index < LOWER_HALF_PML4_ENTRIES
-        || active_index >= PML4_ENTRY_COUNT
-        || target_index >= PML4_ENTRY_COUNT
+    if !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT).contains(&active_index)
+        || !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT).contains(&target_index)
         || active_index == target_index
     {
         return Err(PagingError::WxAuditFailed);
