@@ -5,7 +5,7 @@ pub fn audit_registered_wx_roots(
     root_table_physical: u64,
     recursive_index: u16,
     physical_address_bits: u8,
-) -> Result<(FrameWxAuditSummary, FrameWxAuditScopeSummary), PagingError> {
+) -> Result<(FrameWxAuditSummary, FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>), PagingError> {
     if active_root_table_physical() != root_table_physical {
         return Err(PagingError::WxAuditFailed);
     }
