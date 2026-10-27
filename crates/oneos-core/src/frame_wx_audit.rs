@@ -725,6 +725,72 @@ mod tests {
     }
 
     #[test]
+    fn detects_distinct_virtual_4k_writable_executable_aliases_in_both_orders() {
+        let executable_va = BASE_VA + (8 * PAGE);
+        let writable_va = BASE_VA + (24 * PAGE);
+
+        let mut executable_first = FrameWxAudit::<4>::new(48).unwrap();
+        executable_first
+            .record_alias(executable_va, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        executable_first
+            .record_alias(writable_va, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
+        let conflict = executable_first
+            .summary()
+            .first_conflict
+            .expect("different virtual roots must not hide a physical-frame conflict");
+        assert_eq!(conflict.physical_start, BASE_PA);
+        assert_eq!(conflict.length, PAGE);
+        assert_eq!(conflict.first_virtual_start, executable_va);
+        assert_eq!(conflict.second_virtual_start, writable_va);
+
+        let mut writable_first = FrameWxAudit::<4>::new(48).unwrap();
+        writable_first
+            .record_alias(writable_va, BASE_PA, PAGE, permissions(true, false))
+            .unwrap();
+        writable_first
+            .record_alias(executable_va, BASE_PA, PAGE, permissions(false, true))
+            .unwrap();
+        assert!(writable_first.summary().conflicting_overlap_events > 0);
+        assert!(writable_first.summary().first_conflict.is_some());
+    }
+
+    #[test]
+    fn detects_1g_exec_and_4k_write_overlap_in_both_mapping_orders() {
+        const ONE_GIB: u64 = 1 << 30;
+        let nested_pa = LARGE_BASE_PA + (37 * PAGE);
+        let small_va = BASE_VA + (2 * ONE_GIB);
+        let large_va = BASE_VA + (4 * ONE_GIB);
+
+        let mut large_first = FrameWxAudit::<4>::new(48).unwrap();
+        large_first
+            .record_alias(large_va, LARGE_BASE_PA, ONE_GIB, permissions(false, true))
+            .unwrap();
+        large_first
+            .record_alias(small_va, nested_pa, PAGE, permissions(true, false))
+            .unwrap();
+        let first = large_first.summary().first_conflict.expect("1 GiB overlap");
+        assert_eq!(first.physical_start, nested_pa);
+        assert_eq!(first.length, PAGE);
+
+        let mut small_first = FrameWxAudit::<4>::new(48).unwrap();
+        small_first
+            .record_alias(small_va, nested_pa, PAGE, permissions(true, false))
+            .unwrap();
+        small_first
+            .record_alias(large_va, LARGE_BASE_PA, ONE_GIB, permissions(false, true))
+            .unwrap();
+        let reverse = small_first
+            .summary()
+            .first_conflict
+            .expect("inverse 1 GiB overlap");
+        assert_eq!(reverse.physical_start, nested_pa);
+        assert_eq!(reverse.length, PAGE);
+        assert!(small_first.summary().conflicting_overlap_events > 0);
+    }
+
+    #[test]
     fn detects_overlapping_aliases_in_either_insertion_order() {
         let mut executable_first = FrameWxAudit::<8>::new(48).unwrap();
         executable_first
