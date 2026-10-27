@@ -282,10 +282,14 @@ enum AuditRootRange {
 // Store audit scratch in BSS rather than the constrained bootstrap/kernel stack.
 // The lease prevents re-entrant or concurrent walkers from observing each other's
 // entries; this OS currently requires single-CPU, maskable-interrupts-disabled use.
+// Table-path inventory has a separate fixed capacity and fails the audit closed if
+// it fills; it catches a table frame reached through two different virtual paths.
 static WX_AUDIT_RECURSIVE_FRAMES_BUSY: AtomicBool = AtomicBool::new(false);
 static mut WX_AUDIT_RECURSIVE_FRAMES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
+    [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
+static mut WX_AUDIT_VISITED_TABLES: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
     [0; MAX_WX_AUDIT_RECURSIVE_FRAMES];
 
 /// Physical frames whose writable recursive aliases must be checked after the
@@ -294,6 +298,7 @@ static mut WX_AUDIT_RECURSIVE_VIRTUALS: [u64; MAX_WX_AUDIT_RECURSIVE_FRAMES] =
 /// extent and effective W/NX rights once shared PML4 entries are validated equal.
 struct RecursiveAliasSet {
     count: usize,
+    visited_table_count: usize,
 }
 
 impl RecursiveAliasSet {
@@ -301,7 +306,39 @@ impl RecursiveAliasSet {
         WX_AUDIT_RECURSIVE_FRAMES_BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| PagingError::WxAuditFailed)?;
-        Ok(Self { count: 0 })
+        Ok(Self {
+            count: 0,
+            visited_table_count: 0,
+        })
+    }
+
+    /// Records every table in the declared walk, not only tables with writable
+    /// recursive aliases. A duplicate physical frame is an unsupported shared or
+    /// cyclic table path and therefore makes the audit incomplete.
+    fn visit_table(&mut self, table_physical: u64) -> Result<(), PagingError> {
+        // SAFETY: the audit lease is held for this object's lifetime and the
+        // count is bounded by the fixed table-path buffer.
+        let table_frames = core::ptr::addr_of!(WX_AUDIT_VISITED_TABLES).cast::<u64>();
+        // SAFETY: only initialized entries below visited_table_count are exposed.
+        let visited = unsafe {
+            core::slice::from_raw_parts(table_frames, self.visited_table_count)
+        };
+        if !frame_wx_audit_table_path_is_unique(visited, table_physical)
+            || self.visited_table_count == MAX_WX_AUDIT_RECURSIVE_FRAMES
+        {
+            return Err(PagingError::WxAuditFailed);
+        }
+        // SAFETY: the exclusive audit lease is held and capacity was checked above.
+        unsafe {
+            ptr::write(
+                core::ptr::addr_of_mut!(WX_AUDIT_VISITED_TABLES)
+                    .cast::<u64>()
+                    .add(self.visited_table_count),
+                table_physical,
+            );
+        }
+        self.visited_table_count += 1;
+        Ok(())
     }
 
     fn observe(
@@ -407,6 +444,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     {
         return Err(PagingError::WxAuditFailed);
     }
+    recursive_aliases.visit_table(table_physical)?;
     table_budget
         .visit()
         .map_err(|_| PagingError::WxAuditFailed)?;
