@@ -19,18 +19,19 @@ use oneos_core::{
     is_safe_recursive_mapping_index, map_supervisor_4k, map_user_data_page,
     parse_elf64_load_segments, physical_page_is_in_allowed_region,
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
-    recursive_table_page_virtual_address, reserve_bootstrap_backing_frame, translate_4level,
-    unmap_4k, unmap_all_user_data_pages, validate_cr0_write_protect, validate_efer_nx_enable,
-    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
-    AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
+    recursive_table_page_virtual_address, reserve_bootstrap_backing_frame,
+    shared_recursive_slots_are_valid, translate_4level, unmap_4k, unmap_all_user_data_pages,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot,
+    BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
     FrameRegistryError, FrameWxAudit, FrameWxAuditScope, FrameWxAuditScopeSummary,
     FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
     FrameWxPermissions, FrameWxRegistry, LargePageDemotionEditor, LargePageDemotionReceipt,
     PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
-    ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
+    SharedRecursiveSlotEntries, UserAddressSpaceEditor, UserFrameInitializationError,
+    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
+    ZeroedFrame, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
     FRAME_WX_AUDIT_MAX_TABLES, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -561,6 +562,8 @@ pub(super) fn audit_registered_wx_roots(
         validate_shared_kernel_half(
             active_root_pointer,
             target_root_pointer,
+            root_table_physical,
+            registered_root,
             recursive_index,
             target_recursive_index,
         )?;
@@ -641,16 +644,45 @@ fn find_root_recursive_index(
 fn validate_shared_kernel_half(
     active_root_pointer: *const u64,
     target_root_pointer: *const u64,
+    active_root_physical: u64,
+    target_root_physical: u64,
     active_recursive_index: u16,
     target_recursive_index: u16,
 ) -> Result<(), PagingError> {
-    if active_recursive_index == target_recursive_index {
+    let active_index = usize::from(active_recursive_index);
+    let target_index = usize::from(target_recursive_index);
+    if !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT).contains(&active_index)
+        || !(LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT).contains(&target_index)
+        || active_index == target_index
+    {
         return Err(PagingError::WxAuditFailed);
     }
+
+    // Validate special slots before omitting them from the ordinary shared-entry
+    // comparison. Each root must self-reference at its own slot, and the other
+    // root's reserved recursive slot must be exactly empty.
+    let slots = SharedRecursiveSlotEntries {
+        // SAFETY: both roots have been validated as complete PML4 frames.
+        active_self_entry: unsafe { ptr::read_volatile(active_root_pointer.add(active_index)) },
+        // SAFETY: both indices have been range-checked above.
+        active_target_slot: unsafe { ptr::read_volatile(active_root_pointer.add(target_index)) },
+        // SAFETY: both indices have been range-checked above.
+        target_active_slot: unsafe { ptr::read_volatile(target_root_pointer.add(active_index)) },
+        // SAFETY: both indices have been range-checked above.
+        target_self_entry: unsafe { ptr::read_volatile(target_root_pointer.add(target_index)) },
+    };
+    if !shared_recursive_slots_are_valid(
+        active_root_physical,
+        target_root_physical,
+        active_recursive_index,
+        target_recursive_index,
+        slots,
+    ) {
+        return Err(PagingError::WxAuditFailed);
+    }
+
     for index in LOWER_HALF_PML4_ENTRIES..PML4_ENTRY_COUNT {
-        if index == usize::from(active_recursive_index)
-            || index == usize::from(target_recursive_index)
-        {
+        if index == active_index || index == target_index {
             continue;
         }
         // SAFETY: both root pointers refer to complete validated PML4 frames.
@@ -1044,7 +1076,12 @@ fn reserve_kernel_load_frame(
         Some(MemoryRegionKind::Usable) => {
             let reserved = crate::memory::reserve_frame(physical_page)
                 .map_err(|_| PagingError::KernelFrameReservationFailed)?;
-            if reserved {
+            if reserved
+                && matches!(
+                    crate::memory::is_permanently_reserved(physical_page),
+                    Ok(true)
+                )
+            {
                 Ok(())
             } else {
                 Err(PagingError::KernelFrameReservationFailed)
@@ -1108,7 +1145,19 @@ fn reserve_bootstrap_frame(
         _ => BootstrapBackingKind::ReservedOrUnknown,
     };
     match reserve_bootstrap_backing_frame(kind, || crate::memory::reserve_frame(physical_page)) {
-        Ok(()) => Ok(()),
+        Ok(()) if kind == BootstrapBackingKind::Bootloader => Ok(()),
+        Ok(()) => {
+            // Prove that a successful Usable-frame reservation was also recorded
+            // in the side metadata used by ordinary mapping-target validation.
+            if matches!(
+                crate::memory::is_permanently_reserved(physical_page),
+                Ok(true)
+            ) {
+                Ok(())
+            } else {
+                Err(PagingError::BootstrapFrameReservationFailed)
+            }
+        }
         Err(BootstrapFrameReservationError::DisallowedRegion) => Err(mapping_error),
         Err(
             BootstrapFrameReservationError::FrameNotManaged
@@ -2380,12 +2429,14 @@ impl PageTableEditor for KernelPageTableEditor<'_> {
     }
 
     fn is_page_table_or_reserved_frame(&self, physical_address: u64) -> bool {
-        // Only allocator-eligible Usable frames may be mapped as ordinary data.
-        // Bootloader-owned, unknown/reserved, registered page-table frames, and
-        // every live address-space root must never be accepted as leaf targets.
+        // Only ordinary allocator-owned frames may be mapped as data. Permanent
+        // bootstrap reservations are marked allocated in the allocator bitmap,
+        // but intentionally have no releasable Frame token; reject them separately.
+        // If the reservation side metadata cannot be queried, fail closed.
         !self.is_usable_frame(physical_address)
             || self.is_table_frame(physical_address)
             || is_address_space_root_frame(physical_address)
+            || super::memory::is_permanently_reserved(physical_address).unwrap_or(true)
     }
 
     fn is_frame_allocated(&self, physical_address: u64) -> bool {

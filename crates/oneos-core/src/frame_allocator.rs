@@ -360,6 +360,16 @@ impl<'a> FrameAllocator<'a> {
             .is_some_and(|index| self.is_allocated(index))
     }
 
+    /// Returns the stable bitmap index for a frame in the managed Usable regions.
+    ///
+    /// This exposes the allocator's compact frame ordering for kernel-owned side
+    /// metadata such as permanent-reservation tracking. It does not imply that
+    /// the frame is allocated or owned by the caller; use is_frame_allocated
+    /// for that separate query.
+    pub fn managed_frame_index(&self, physical_address: u64) -> Option<usize> {
+        self.frame_index_for_address(physical_address)
+    }
+
     fn frame_index_for_address(&self, physical_address: u64) -> Option<usize> {
         if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
             return None;
@@ -601,6 +611,22 @@ mod tests {
         assert!(allocator.is_frame_allocated(address));
         allocator.free_frame(frame).unwrap();
         assert!(!allocator.is_frame_allocated(address));
+    }
+
+    #[test]
+    fn managed_frame_index_tracks_only_aligned_frames_in_usable_regions() {
+        let regions = [(0x1000, 0x3000, true), (0x8000, 0xa000, true)];
+        let mut slots = [SLOT; 2];
+        let mut bitmap = [0u64; 1];
+        let allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
+
+        assert_eq!(allocator.managed_frame_index(0x1000), Some(0));
+        assert_eq!(allocator.managed_frame_index(0x2000), Some(1));
+        assert_eq!(allocator.managed_frame_index(0x8000), Some(2));
+        assert_eq!(allocator.managed_frame_index(0x9000), Some(3));
+        assert_eq!(allocator.managed_frame_index(0), None);
+        assert_eq!(allocator.managed_frame_index(0x1001), None);
+        assert_eq!(allocator.managed_frame_index(0x4000), None);
     }
 
     #[test]
