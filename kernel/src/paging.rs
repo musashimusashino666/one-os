@@ -21,18 +21,17 @@ use oneos_core::{
     recursive_entry_is_valid_kernel_root, recursive_entry_matches_root,
     recursive_table_page_virtual_address, reserve_bootstrap_backing_frame,
     shared_recursive_slots_are_valid, translate_4level, unmap_4k, unmap_all_user_data_pages,
-    validate_cr0_write_protect, validate_efer_nx_enable,
-    validate_extended_cpuid_leaf, validate_paging_cpu_capabilities, ActiveAddressSpaceRoot,
-    AddressSpaceRoot, BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
+    validate_cr0_write_protect, validate_efer_nx_enable, validate_extended_cpuid_leaf,
+    validate_paging_cpu_capabilities, ActiveAddressSpaceRoot, AddressSpaceRoot,
+    BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
     FrameRegistryError, FrameWxAudit, FrameWxAuditScope, FrameWxAuditScopeSummary,
     FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget, FrameWxError,
     FrameWxPermissions, FrameWxRegistry, LargePageDemotionEditor, LargePageDemotionReceipt,
     PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
-    SharedRecursiveSlotEntries,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
-    UserAddressSpaceEditor, UserFrameInitializationError, UserFrameInitializer,
-    UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure, ZeroedFrame,
-    ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
+    SharedRecursiveSlotEntries, UserAddressSpaceEditor, UserFrameInitializationError,
+    UserFrameInitializer, UserPageMappingError, UserPageMappingRegistry, UserPageTeardownFailure,
+    ZeroedFrame, ATOMIC_ENTRY_CAS_MAX_ATTEMPTS, ELF64_HEADER_SIZE, ELF64_PROGRAM_HEADER_SIZE,
     FRAME_WX_AUDIT_MAX_TABLES, MAX_ELF64_PROGRAM_HEADERS, PAGE_SIZE, USER_VIRTUAL_ADDRESS_LIMIT,
 };
 
@@ -1080,7 +1079,10 @@ fn reserve_kernel_load_frame(
             let reserved = crate::memory::reserve_frame(physical_page)
                 .map_err(|_| PagingError::KernelFrameReservationFailed)?;
             if reserved
-                && matches!(crate::memory::is_permanently_reserved(physical_page), Ok(true))
+                && matches!(
+                    crate::memory::is_permanently_reserved(physical_page),
+                    Ok(true)
+                )
             {
                 Ok(())
             } else {
@@ -1149,7 +1151,10 @@ fn reserve_bootstrap_frame(
         Ok(()) => {
             // Prove that a successful Usable-frame reservation was also recorded
             // in the side metadata used by ordinary mapping-target validation.
-            if matches!(crate::memory::is_permanently_reserved(physical_page), Ok(true)) {
+            if matches!(
+                crate::memory::is_permanently_reserved(physical_page),
+                Ok(true)
+            ) {
                 Ok(())
             } else {
                 Err(PagingError::BootstrapFrameReservationFailed)
