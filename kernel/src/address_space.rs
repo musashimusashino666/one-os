@@ -674,7 +674,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     // must walk their actual child tables, not only inspect empty PML4 roots.
     let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
     #[cfg(feature = "test-wx-runtime-audit")]
-    let (audit, scope) = super::paging::audit_registered_wx_roots(
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
@@ -682,7 +682,7 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
     #[cfg(not(feature = "test-wx-runtime-audit"))]
-    let (audit, scope) = super::paging::audit_registered_wx_roots(
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
         boot_info,
         original_physical,
         original_recursive_index,
@@ -698,6 +698,22 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     super::interrupts::write_hex(
         b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
         audit.conflicting_overlap_events,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP OFFSET: ",
+        direct_map_coverage.virtual_offset,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP PHYSICAL END: ",
+        direct_map_coverage.physical_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP COVERED VIRTUAL END: ",
+        direct_map_coverage.covered_virtual_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP LEAF MAPPINGS: ",
+        direct_map_coverage.covered_leaf_mappings,
     );
     super::interrupts::write_hex(
         b"ONE OS W^X POST-ACTIVATION ACCOUNTED SOURCE MASK: ",
