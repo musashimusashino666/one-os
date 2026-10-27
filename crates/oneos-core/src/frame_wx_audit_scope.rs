@@ -243,7 +243,6 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 }
 
-
 /// Returns whether a registered-root table still represents the exact root set
 /// captured before a W^X audit.
 ///
@@ -294,8 +293,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameWxAuditScope, FrameWxAuditScopeError, FrameWxAuditSource,
-        FRAME_WX_AUDIT_REQUIRED_SOURCES,
+        frame_wx_root_registry_matches, FrameWxAuditScope, FrameWxAuditScopeError,
+        FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
     };
 
     const ROOT_A: u64 = 0x1000;
@@ -467,8 +466,6 @@ mod tests {
     }
     #[test]
     fn root_registry_snapshot_requires_exact_unique_membership() {
-        use super::frame_wx_root_registry_matches;
-
         const ROOT_C: u64 = 0x3000;
         let expected = [ROOT_A, ROOT_B];
         let unchanged = [ROOT_A, 0, ROOT_B, 0];
