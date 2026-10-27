@@ -69,7 +69,7 @@ The following gates are non-compensating. They block production/security-readine
 3. **Integrity and recovery:** authenticated boot, signed updates, downgrade resistance, key policy, interruption recovery, and persistent-data protection are implemented and tested.
 4. **Untrusted-boundary robustness:** fuzzing and failure injection cover declared critical input/resource boundaries. All Critical security findings are fixed, and the relevant regression plus acceptance suite passes on the exact release candidate. Findings that could violate a hard security gate block release regardless of their current triage state.
 5. **Product scope:** supported hardware, software, execution paths, known limitations, and recovery procedures are published.
-6. **Owner control:** protected access, auditability, and revocation work end-to-end through trusted enforcement; representative users can complete core control tasks.
+6. **Owner control:** protected access, auditability, and revocation work end-to-end through the kernel-enforced reference monitor. A service may broker or recommend an action, but its own allow decision cannot grant rights or override a kernel denial; representative users can complete core control tasks.
 7. **Usability and performance evidence:** claims are supported by published, repeatable task studies and benchmarks using thresholds set in advance.
 8. **Candidate integrity:** the exact release candidate passes its required validation suite, all exceptions are documented, and an independent review appropriate to the risk is complete.
 
