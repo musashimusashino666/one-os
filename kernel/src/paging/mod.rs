@@ -74,7 +74,7 @@ pub struct PageTableInspection {
     /// Read-only inventory of writable/executable aliases observed across the declared roots.
     pub wx_audit: FrameWxAuditSummary,
     /// Coverage of the active root plus registered roots, with shared upper halves verified.
-    pub wx_audit_scope: FrameWxAuditScopeSummary,
+    pub wx_audit_scope: FrameWxAuditScopeSummary<MAX_WX_AUDIT_ROOTS>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
