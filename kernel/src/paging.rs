@@ -4421,6 +4421,17 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
             return Err(PagingError::PhysicalMemoryOffsetUnavailable);
         }
     };
+    // Restrict this test frame's physical-offset alias before publishing any
+    // executable alias. This avoids a transient W+X alias even with interrupts off.
+    // The real PT_LOAD transition may already have split the shared 2 MiB leaf, in
+    // which case this frame remains a writable 4 KiB sibling until this call.
+    restrict_physical_offset_alias_read_only_nx(
+        boot_info,
+        root_table_physical,
+        executable_direct_alias,
+        test.executable_physical_page,
+    )?;
+
     let highest_physical_end = boot_info
         .memory_regions
         .iter()
@@ -5037,16 +5048,6 @@ pub fn apply_wx_sibling_test_transition(
     let executable_virtual_address =
         mapped_virtual_address.ok_or(PagingError::NoUnusedVirtualAddress)?;
     test.executable_virtual_address = Some(executable_virtual_address);
-
-    // Always restrict this test frame's own direct-map leaf. The real PT_LOAD
-    // transition may already have split the shared 2 MiB leaf, in which case this
-    // frame correctly remains a writable 4 KiB sibling until this call.
-    restrict_physical_offset_alias_read_only_nx(
-        boot_info,
-        root_table_physical,
-        executable_direct_alias,
-        test.executable_physical_page,
-    )?;
 
     // Verify the actual effective permissions on both aliases after the change.
     let mut executable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
