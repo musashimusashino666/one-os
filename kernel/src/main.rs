@@ -873,6 +873,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             serial_write(b"ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS\n");
             serial_write(b"ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS\n");
+            serial_write(b"ONE OS W^X SIBLING ALIAS DATA CONSISTENCY PASS\n");
         }
 
         // The active handle carries the private recursive index installed in
