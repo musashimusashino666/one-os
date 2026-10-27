@@ -31,6 +31,7 @@ Dedicated QEMU test images (or an equivalently deterministic harness exercising 
 9. Invalid pointers, malformed page tables, allocation failures, and teardown failures do not publish dangling mappings, free foreign frames, or permit use-after-free through stale translations.
 10. A data frame is fully initialized before it becomes user-accessible and is re-zeroed before allocator reuse.
 11. Existing VM and bootstrap acceptance tests continue to pass.
+12. **Compromised broker/service containment.** In a dedicated real-kernel test, a malicious service attempts a cross-process read/write and a protected operation with no capability; it then repeats with forged, foreign, widened, stale, and revoked capabilities, and with a caller identity different from the kernel-authenticated principal. Each attempt must be denied with no protected-state mutation. A valid delegated capability may succeed only within its granted scope. A copied handle or cached allow result must not survive kernel-recorded revocation. The service must not be able to bypass a denial through another service. Each case has an exact expected denial result, unique marker, and validator; a host-only capability-model test is insufficient.
 
 ## Exact expected-fault recovery
 
@@ -52,7 +53,7 @@ The supervisor-only instruction-fetch case must distinguish exactly `0x15`; the 
 
 ## Capability, IPC, and milestone boundary
 
-The kernel must resolve a capability against kernel-owned authority state and check the calling principal and requested right at each protected operation. A user-provided object ID, authority ID, generation, pointer, or serialized token is not proof of identity or authorization. The process-local counter in the current host model cannot serve as globally unique identity.
+The kernel must resolve a capability against kernel-owned authority state and check the calling principal and requested right at each protected operation. A user-provided object ID, authority ID, generation, pointer, or serialized token is not proof of identity or authorization. The process-local counter in the current host model cannot serve as globally unique identity. The kernel is the mandatory reference monitor: a non-kernel broker's “allow” response is not authority. Services may use explicitly delegated rights and attenuate them, but must not mint or widen rights, impersonate a principal, or bypass kernel denial. A compromised service may misuse its own delegated scope; it must not escape that scope.
 
 Before IPC is trusted, define framing, length limits, sender/receiver identity, memory ownership, resource transfer, cancellation, timeout, process death, and revocation of in-flight requests. Missing, stale, forged, foreign, or insufficient-rights capabilities must fail closed.
 
