@@ -1,5 +1,7 @@
 use super::*;
 
+const AUDIT_UPPER_CANONICAL_START: u64 = 0xffff_8000_0000_0000;
+
 pub fn audit_registered_wx_roots(
     boot_info: &BootInfo,
     root_table_physical: u64,
@@ -86,8 +88,7 @@ pub fn audit_registered_wx_roots(
         root_table_physical,
         4,
         0,
-        true,
-        true,
+        FrameWxAuditEffectivePermissions::unrestricted(),
         AuditRootRange::All,
         true,
         Some(recursive_index),
@@ -142,8 +143,7 @@ pub fn audit_registered_wx_roots(
             registered_root,
             4,
             0,
-            true,
-            true,
+            FrameWxAuditEffectivePermissions::unrestricted(),
             AuditRootRange::LowerHalf,
             true,
             Some(target_recursive_index),
@@ -429,8 +429,7 @@ fn audit_wx_table<const CAPACITY: usize>(
     table_physical: u64,
     level: u8,
     virtual_prefix: u64,
-    ancestors_writable: bool,
-    ancestors_executable: bool,
+    effective_ancestors: FrameWxAuditEffectivePermissions,
     root_range: AuditRootRange,
     record_leaf_mappings: bool,
     recursive_view_index: Option<u16>,
@@ -463,7 +462,7 @@ fn audit_wx_table<const CAPACITY: usize>(
             level,
         )
         .ok_or(PagingError::WxAuditFailed)?;
-        recursive_aliases.observe(table_physical, view_virtual, ancestors_writable)?;
+        recursive_aliases.observe(table_physical, view_virtual, effective_ancestors.writable)?;
     }
 
     // The active root is read through its checked recursive alias. For an
@@ -514,8 +513,13 @@ fn audit_wx_table<const CAPACITY: usize>(
         if raw_physical >= (1u64 << physical_address_bits) {
             return Err(PagingError::WxAuditFailed);
         }
-        let writable = ancestors_writable && entry & WRITABLE != 0;
-        let executable = ancestors_executable && entry & NO_EXECUTE == 0;
+        let effective_permissions = effective_ancestors.through_entry(
+            entry & WRITABLE != 0,
+            entry & USER_ACCESSIBLE != 0,
+            entry & NO_EXECUTE != 0,
+        );
+        let writable = effective_permissions.writable;
+        let executable = effective_permissions.executable;
         let shift = 12 + (9 * (level - 1));
         let virtual_start = if level == 4 {
             let prefix = (index as u64) << 39;
@@ -527,6 +531,13 @@ fn audit_wx_table<const CAPACITY: usize>(
         } else {
             virtual_prefix | ((index as u64) << shift)
         };
+
+        // A present high-half mapping must remain effectively supervisor-only.
+        // User bits may be set on an individual descendant only when an ancestor
+        // already blocks U/S; effective access is the intersection through the path.
+        if virtual_start >= AUDIT_UPPER_CANONICAL_START && effective_permissions.user_accessible {
+            return Err(PagingError::WxAuditFailed);
+        }
 
         if level == 1 || large_page {
             let page_size = if large_page { 1u64 << shift } else { PAGE_SIZE };
@@ -560,8 +571,7 @@ fn audit_wx_table<const CAPACITY: usize>(
             child_physical,
             level - 1,
             virtual_start,
-            writable,
-            executable,
+            effective_permissions,
             AuditRootRange::All,
             record_leaf_mappings,
             recursive_view_index,
