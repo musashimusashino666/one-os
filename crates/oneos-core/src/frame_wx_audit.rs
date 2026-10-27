@@ -831,8 +831,6 @@ mod tests {
             beyond_width.finish(),
             Err(FrameWxDirectMapCoverageError::IncompleteCoverage)
         );
-
-
     }
 
     #[test]
