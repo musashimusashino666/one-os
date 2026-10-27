@@ -4877,9 +4877,11 @@ pub fn verify_wx_sibling_large_page_precondition(
         .checked_add(1)
         .ok_or(PagingError::FrameAllocationFailed)?;
     let mut previous_frame: Option<Frame> = None;
-    // Once a 2 MiB physical region is checked, every candidate pair within that
-    // region shares the same large-page eligibility (a 2 MiB/1 GiB leaf covers
-    // the full aligned region). Cache misses too, avoiding repeated page walks.
+    // Cache eligibility by aligned virtual 2 MiB region, not physical region:
+    // the physical-memory offset need not be 2 MiB aligned, and one physical
+    // region can straddle two independently mapped virtual large-page leaves.
+    // Within one aligned virtual 2 MiB region, a 2 MiB/1 GiB leaf covers every
+    // candidate; a 4 KiB page-table subtree cannot contain a large leaf.
     let mut checked_region: Option<(u64, Option<u64>)> = None;
 
     for _ in 0..scan_attempts {
@@ -4929,9 +4931,10 @@ pub fn verify_wx_sibling_large_page_precondition(
                     return Err(error);
                 }
             };
+            let virtual_region_start = executable_direct_alias & !((1u64 << 21) - 1);
 
             let large_page_size = match checked_region {
-                Some((checked_start, page_size)) if checked_start == region_start => page_size,
+                Some((checked_start, page_size)) if checked_start == virtual_region_start => page_size,
                 _ => {
                     let candidate = (|| -> Result<Option<u64>, PagingError> {
                         let mut editor = KernelPageTableEditor::new_with_recursive_index(
@@ -4961,7 +4964,7 @@ pub fn verify_wx_sibling_large_page_precondition(
 
                     match candidate {
                         Ok(page_size) => {
-                            checked_region = Some((region_start, page_size));
+                            checked_region = Some((virtual_region_start, page_size));
                             page_size
                         }
                         Err(error) => {
