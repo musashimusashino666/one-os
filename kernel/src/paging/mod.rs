@@ -763,6 +763,7 @@ pub(super) use editor::{
     teardown_inactive_user_address_space_with_table_release, unregister_address_space_root,
     validate_inactive_user_address_space, verify_large_page_demotion_smoke_test,
     verify_mapping_smoke_test, verify_teardown_corruption_preflight_for_smoke,
+    verify_user_frame_initialization_failure_releases_frame_for_smoke,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
 };
 pub(super) use inspection::inspect_boot_mappings;
