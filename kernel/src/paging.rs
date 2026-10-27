@@ -4802,9 +4802,6 @@ pub fn kernel_executable_direct_alias_for_test(
     Ok(direct_alias)
 }
 
-/// Keeps two allocator-owned Usable frames that share one original large direct-map
-/// leaf and the same 2 MiB physical subregion. This provides a controlled test layout
-/// even when the bootloader has reserved every unused page beside the loaded kernel.
 #[cfg(feature = "test-wx-runtime-audit")]
 const WX_SIBLING_PRE_TRANSITION_SENTINEL: u64 = 0x4f4e_455f_5758_5052;
 #[cfg(feature = "test-wx-runtime-audit")]
@@ -4812,6 +4809,9 @@ const WX_SIBLING_ALIAS_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_414c;
 #[cfg(feature = "test-wx-runtime-audit")]
 const WX_SIBLING_DIRECT_WRITE_SENTINEL: u64 = 0x4f4e_455f_5758_444d;
 
+/// Keeps two allocator-owned Usable frames that share one original large direct-map
+/// leaf and the same 2 MiB physical subregion. This provides a controlled test layout
+/// even when the bootloader has reserved every unused page beside the loaded kernel.
 #[cfg(feature = "test-wx-runtime-audit")]
 pub struct WxSiblingRegressionTest {
     executable_frame: Option<Frame>,
