@@ -27,7 +27,7 @@ use oneos_core::{
     BootstrapBackingKind, BootstrapFrameReservationError, Elf64LoadImage, Frame,
     FrameRegistryError, FrameWxAudit, FrameWxAuditEffectivePermissions, FrameWxAuditScope,
     FrameWxAuditScopeSummary, FrameWxAuditSource, FrameWxAuditSummary, FrameWxAuditTableBudget,
-    FrameWxError,
+    FrameWxDirectMapCoverage, FrameWxError,
     FrameWxPermissions, FrameWxRegistry, LargePageDemotionEditor, LargePageDemotionReceipt,
     PagePermissions, PageTableEditor, PageTableError, PageTableFrameRegistry,
     PageTableMutationError, PageTranslation, PagingPreconditionError, PublishedFrameReleaseError,
