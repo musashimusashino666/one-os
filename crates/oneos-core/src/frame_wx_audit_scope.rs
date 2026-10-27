@@ -65,12 +65,30 @@ pub enum FrameWxAuditScopeError {
 /// every declared root was completely walked, all required mapping sources were
 /// accounted for, and no audit failure was recorded. A zero conflict count is
 /// not a substitute for this coverage proof.
+/// Status of one root in the captured W^X audit inventory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FrameWxAuditScopeSummary {
+pub struct FrameWxAuditRootStatus {
+    /// Physical address of the root's PML4 frame.
+    pub physical_address: u64,
+    /// True only after the complete supported tree for this root was walked.
+    pub audited: bool,
+}
+
+impl FrameWxAuditRootStatus {
+    const EMPTY: Self = Self {
+        physical_address: 0,
+        audited: false,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameWxAuditScopeSummary<const MAX_ROOTS: usize> {
     /// Number of roots in the declared inventory.
     pub declared_roots: usize,
     /// Number of declared roots whose complete tree walk succeeded.
     pub audited_roots: usize,
+    /// Per-root results in declaration order. Only entries below declared_roots are valid.
+    pub roots: [FrameWxAuditRootStatus; MAX_ROOTS],
     /// True only after the caller certifies that every activatable root was declared.
     pub root_inventory_sealed: bool,
     /// Mapping-source coverage flags recorded by the caller.
@@ -210,11 +228,18 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 
     /// Returns coverage state without converting a partial audit into success.
-    pub fn summary(&self) -> FrameWxAuditScopeSummary {
+    pub fn summary(&self) -> FrameWxAuditScopeSummary<MAX_ROOTS> {
         let audited_roots = self.roots[..self.root_count]
             .iter()
             .filter(|root| root.occupied && root.audited)
             .count();
+        let mut roots = [FrameWxAuditRootStatus::EMPTY; MAX_ROOTS];
+        for (index, root) in self.roots[..self.root_count].iter().enumerate() {
+            roots[index] = FrameWxAuditRootStatus {
+                physical_address: root.physical_address,
+                audited: root.audited,
+            };
+        }
         let missing_sources = FRAME_WX_AUDIT_REQUIRED_SOURCES & !self.accounted_sources;
         let complete = self.root_inventory_sealed
             && self.root_count > 0
@@ -224,6 +249,7 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
         FrameWxAuditScopeSummary {
             declared_roots: self.root_count,
             audited_roots,
+            roots,
             root_inventory_sealed: self.root_inventory_sealed,
             accounted_sources: self.accounted_sources,
             missing_sources,
