@@ -4824,10 +4824,7 @@ pub struct WxSiblingRegressionTest {
 
 /// Forms overlapping adjacent-frame candidates without skipping allocation positions.
 #[cfg(feature = "test-wx-runtime-audit")]
-fn take_adjacent_wx_frame_pair<T>(
-    previous: &mut Option<T>,
-    current: T,
-) -> Option<(T, T)> {
+fn take_adjacent_wx_frame_pair<T>(previous: &mut Option<T>, current: T) -> Option<(T, T)> {
     match previous.take() {
         Some(previous) => Some((previous, current)),
         None => {
@@ -4868,15 +4865,24 @@ pub fn verify_wx_sibling_large_page_precondition(
     // arbitrary physical range. Keep a one-frame sliding window so an eligible
     // pair is found regardless of whether its two frames fall on odd/even
     // allocation positions. Rejected frames are freed without rewinding next_hint.
-    let scan_budget = super::memory::free_frame_count()
-        .map_err(|_| PagingError::FrameAllocationFailed)?;
+    let scan_budget =
+        super::memory::free_frame_count().map_err(|_| PagingError::FrameAllocationFailed)?;
+    if scan_budget < 2 {
+        super::serial_write(b"ONE OS W^X PRECONDITION NO USABLE LARGE-PAGE SIBLING PAIR FOUND\n");
+        return Err(PagingError::WxSiblingFrameUnavailable);
+    }
+    // Include one extra allocation to test the wraparound pair between the final
+    // free frame and the first one in the allocator's cyclic search order.
+    let scan_attempts = scan_budget
+        .checked_add(1)
+        .ok_or(PagingError::FrameAllocationFailed)?;
     let mut previous_frame: Option<Frame> = None;
     // Once a 2 MiB physical region is checked, every candidate pair within that
     // region shares the same large-page eligibility (a 2 MiB/1 GiB leaf covers
     // the full aligned region). Cache misses too, avoiding repeated page walks.
     let mut checked_region: Option<(u64, Option<u64>)> = None;
 
-    for _ in 0..scan_budget {
+    for _ in 0..scan_attempts {
         let current_frame = match super::memory::allocate_frame() {
             Ok(frame) => frame,
             Err(_) => {
@@ -4940,8 +4946,7 @@ pub fn verify_wx_sibling_large_page_precondition(
                         )
                         .map_err(PagingError::Translation)?;
 
-                        if (alias.page_size != (1u64 << 21)
-                            && alias.page_size != (1u64 << 30))
+                        if (alias.page_size != (1u64 << 21) && alias.page_size != (1u64 << 30))
                             || alias.physical_address != executable_physical_page
                             || !alias.writable
                             || alias.user_accessible
