@@ -4961,12 +4961,12 @@ pub fn apply_wx_sibling_test_transition(
         && direct_before.writable
         && !direct_before.user_accessible
         && !direct_before.executable;
-    let already_demoted_ro = direct_before.physical_address == test.executable_physical_page
+    let already_demoted_writable = direct_before.physical_address == test.executable_physical_page
         && direct_before.page_size == PAGE_SIZE
-        && !direct_before.writable
+        && direct_before.writable
         && !direct_before.user_accessible
         && !direct_before.executable;
-    if !still_large_and_writable && !already_demoted_ro {
+    if !still_large_and_writable && !already_demoted_writable {
         return Err(PagingError::LargePageDemotionFailed);
     }
 
@@ -5038,14 +5038,15 @@ pub fn apply_wx_sibling_test_transition(
         mapped_virtual_address.ok_or(PagingError::NoUnusedVirtualAddress)?;
     test.executable_virtual_address = Some(executable_virtual_address);
 
-    if still_large_and_writable {
-        restrict_physical_offset_alias_read_only_nx(
-            boot_info,
-            root_table_physical,
-            executable_direct_alias,
-            test.executable_physical_page,
-        )?;
-    }
+    // Always restrict this test frame's own direct-map leaf. The real PT_LOAD
+    // transition may already have split the shared 2 MiB leaf, in which case this
+    // frame correctly remains a writable 4 KiB sibling until this call.
+    restrict_physical_offset_alias_read_only_nx(
+        boot_info,
+        root_table_physical,
+        executable_direct_alias,
+        test.executable_physical_page,
+    )?;
 
     // Verify the actual effective permissions on both aliases after the change.
     let mut executable_alias_editor = KernelPageTableEditor::new_with_recursive_index(
