@@ -148,6 +148,7 @@ jobs:
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE FAULT MATCHED" "$log"
           grep -Fq "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS" "$log"
           grep -Fq "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS" "$log"
+          grep -Fq "ONE OS W^X SIBLING ALIAS DATA CONSISTENCY PASS" "$log"
           python3 - "$log" <<'PY'
           import re
           import sys
@@ -175,6 +176,7 @@ jobs:
               "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS",
               "ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS",
               "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS",
+              "ONE OS W^X SIBLING ALIAS DATA CONSISTENCY PASS",
           ]
           positions = [log.find(marker) for marker in markers]
           if any(position < 0 for position in positions) or positions != sorted(positions):
