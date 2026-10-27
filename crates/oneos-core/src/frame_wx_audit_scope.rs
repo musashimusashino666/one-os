@@ -59,12 +59,6 @@ pub enum FrameWxAuditScopeError {
     RootAlreadyAudited,
 }
 
-/// Summary of audit coverage, independent of the observed alias-conflict count.
-///
-/// `complete` is true only when the root inventory was explicitly sealed,
-/// every declared root was completely walked, all required mapping sources were
-/// accounted for, and no audit failure was recorded. A zero conflict count is
-/// not a substitute for this coverage proof.
 /// Status of one root in the captured W^X audit inventory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameWxAuditRootStatus {
@@ -81,6 +75,12 @@ impl FrameWxAuditRootStatus {
     };
 }
 
+/// Summary of audit coverage, independent of the observed alias-conflict count.
+///
+/// `complete` is true only when the root inventory was explicitly sealed,
+/// every declared root was completely walked, all required mapping sources were
+/// accounted for, and no audit failure was recorded. A zero conflict count is
+/// not a substitute for this coverage proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameWxAuditScopeSummary<const MAX_ROOTS: usize> {
     /// Number of roots in the declared inventory.
