@@ -332,10 +332,63 @@ const PML4_ENTRIES: usize = 512;
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
 const USER_ACCESSIBLE: u64 = 1 << 2;
+const ACCESSED: u64 = 1 << 5;
 const LARGE_PAGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_FIELD_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
+
+/// The four entries involved when two roots reserve distinct recursive PML4 slots.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SharedRecursiveSlotEntries {
+    /// The active root's entry at its own recursive index.
+    pub active_self_entry: u64,
+    /// The active root's entry at the target root's recursive index.
+    pub active_target_slot: u64,
+    /// The target root's entry at the active root's recursive index.
+    pub target_active_slot: u64,
+    /// The target root's entry at its own recursive index.
+    pub target_self_entry: u64,
+}
+
+/// Validates the recursive-slot invariants required before roots share kernel mappings.
+///
+/// Both physical roots must already have been validated as accessible PML4 frames.
+/// Their recursive indices must be distinct upper-half slots. Each root's own
+/// entry must be a supervisor-writable, NX self-reference; the other root's slot
+/// must be exactly empty. Hardware may set Accessed on either self-reference.
+/// This function validates entry values only; it does not read page tables or
+/// establish that the roots are a complete inventory of all activatable roots.
+pub fn shared_recursive_slots_are_valid(
+    active_root_physical: u64,
+    target_root_physical: u64,
+    active_recursive_index: u16,
+    target_recursive_index: u16,
+    entries: SharedRecursiveSlotEntries,
+) -> bool {
+    let active_index = usize::from(active_recursive_index);
+    let target_index = usize::from(target_recursive_index);
+    if active_root_physical == 0
+        || target_root_physical == 0
+        || active_root_physical == target_root_physical
+        || active_root_physical & (PAGE_SIZE - 1) != 0
+        || target_root_physical & (PAGE_SIZE - 1) != 0
+        || active_index < LOWER_HALF_PML4_ENTRIES
+        || active_index >= PML4_ENTRIES
+        || target_index < LOWER_HALF_PML4_ENTRIES
+        || target_index >= PML4_ENTRIES
+        || active_index == target_index
+    {
+        return false;
+    }
+
+    let expected_active_self = active_root_physical | PRESENT | WRITABLE | NO_EXECUTE;
+    let expected_target_self = target_root_physical | PRESENT | WRITABLE | NO_EXECUTE;
+    entries.active_self_entry & !ACCESSED == expected_active_self
+        && entries.target_self_entry & !ACCESSED == expected_target_self
+        && entries.active_target_slot == 0
+        && entries.target_active_slot == 0
+}
 
 /// Errors encountered while preparing an inactive address-space root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -619,11 +672,12 @@ fn validate_root_frame_address(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_deactivation_root, validate_root_frame_address, validate_user_virtual_range,
-        ActiveAddressSpaceRoot, AddressSpaceRoot, AddressSpaceRootDeactivationError,
-        AddressSpaceRootEditor, AddressSpaceRootError, AddressSpaceRootInitializationError,
+        shared_recursive_slots_are_valid, validate_deactivation_root,
+        validate_root_frame_address, validate_user_virtual_range, ActiveAddressSpaceRoot,
+        AddressSpaceRoot, AddressSpaceRootDeactivationError, AddressSpaceRootEditor,
+        AddressSpaceRootError, AddressSpaceRootInitializationError, SharedRecursiveSlotEntries,
         UserVirtualRangeError, LOWER_HALF_PML4_ENTRIES, NO_EXECUTE, PRESENT, USER_ACCESSIBLE,
-        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE,
+        USER_VIRTUAL_ADDRESS_LIMIT, WRITABLE, ACCESSED,
     };
     use crate::{Frame, FrameAllocator, FrameAllocatorError, FrameSegment, PAGE_SIZE};
 
@@ -643,6 +697,50 @@ mod tests {
         // SAFETY: unit tests use only the in-memory TestEditor model and never
         // activate these roots on hardware.
         unsafe { root.into_frame() }
+    }
+
+    fn valid_shared_recursive_entries() -> SharedRecursiveSlotEntries {
+        SharedRecursiveSlotEntries {
+            active_self_entry: 0x1000 | PRESENT | WRITABLE | NO_EXECUTE | ACCESSED,
+            active_target_slot: 0,
+            target_active_slot: 0,
+            target_self_entry: 0x2000 | PRESENT | WRITABLE | NO_EXECUTE,
+        }
+    }
+
+    #[test]
+    fn accepts_distinct_private_recursive_slots_with_hardware_accessed_bit() {
+        assert!(shared_recursive_slots_are_valid(
+            0x1000,
+            0x2000,
+            510,
+            511,
+            valid_shared_recursive_entries(),
+        ));
+    }
+
+    #[test]
+    fn rejects_mappings_in_either_roots_reserved_recursive_slot() {
+        let mut entries = valid_shared_recursive_entries();
+        entries.active_target_slot = 0x3000 | PRESENT | WRITABLE | NO_EXECUTE;
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+
+        let mut entries = valid_shared_recursive_entries();
+        entries.target_active_slot = 0x4000 | PRESENT | WRITABLE | NO_EXECUTE;
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+    }
+
+    #[test]
+    fn rejects_malformed_self_references_and_invalid_recursive_indices() {
+        let mut entries = valid_shared_recursive_entries();
+        entries.target_self_entry |= USER_ACCESSIBLE;
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 511, entries));
+
+        let entries = valid_shared_recursive_entries();
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 510, entries));
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 255, 511, entries));
+        assert!(!shared_recursive_slots_are_valid(0x1000, 0x2000, 510, 512, entries));
+        assert!(!shared_recursive_slots_are_valid(0, 0x2000, 510, 511, entries));
     }
 
     #[test]
