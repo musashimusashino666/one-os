@@ -224,6 +224,7 @@ pub fn free_frame(frame: Frame) -> Result<(), (MemoryError, Frame)> {
 
 /// Returns a rejected scan candidate without rewinding the allocator's forward
 /// search hint. Ordinary frame releases should continue to use free_frame.
+#[cfg(feature = "test-wx-runtime-audit")]
 pub fn free_frame_preserving_hint(frame: Frame) -> Result<(), (MemoryError, Frame)> {
     let _guard = match GLOBAL.acquire() {
         Ok(guard) => guard,
