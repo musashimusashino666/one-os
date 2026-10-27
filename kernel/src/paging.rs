@@ -4852,7 +4852,7 @@ pub fn verify_wx_sibling_large_page_precondition(
         let sibling_frame = match super::memory::allocate_frame() {
             Ok(frame) => frame,
             Err(_) => {
-                let _ = release_data_frame(executable_frame);
+                let _ = release_data_frame_preserving_hint(executable_frame);
                 return Err(PagingError::FrameAllocationFailed);
             }
         };
@@ -4942,12 +4942,12 @@ pub fn verify_wx_sibling_large_page_precondition(
                 });
             }
             Ok(None) => {
-                let _ = release_data_frame(executable_frame);
-                let _ = release_data_frame(sibling_frame);
+                let _ = release_data_frame_preserving_hint(executable_frame);
+                let _ = release_data_frame_preserving_hint(sibling_frame);
             }
             Err(error) => {
-                let _ = release_data_frame(executable_frame);
-                let _ = release_data_frame(sibling_frame);
+                let _ = release_data_frame_preserving_hint(executable_frame);
+                let _ = release_data_frame_preserving_hint(sibling_frame);
                 return Err(error);
             }
         }
@@ -6149,6 +6149,14 @@ fn invalidate_local_tlb(virtual_address: u64) {
 
 fn release_data_frame(frame: Frame) -> Result<(), PagingError> {
     match super::memory::free_frame(frame) {
+        Ok(()) => Ok(()),
+        Err((_error, _frame)) => Err(PagingError::FrameReleaseFailed),
+    }
+}
+
+/// Releases a rejected W^X scan candidate without rewinding the allocator hint.
+fn release_data_frame_preserving_hint(frame: Frame) -> Result<(), PagingError> {
+    match super::memory::free_frame_preserving_hint(frame) {
         Ok(()) => Ok(()),
         Err((_error, _frame)) => Err(PagingError::FrameReleaseFailed),
     }
