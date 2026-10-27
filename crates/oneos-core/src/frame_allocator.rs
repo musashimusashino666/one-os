@@ -635,21 +635,26 @@ mod tests {
     }
 
     #[test]
-    fn releasing_candidate_preserving_hint_advances_search() {
+    fn releasing_candidate_pair_preserving_hint_advances_search() {
         let regions = [(0x1000, 0x9000, true)];
         let mut slots = [SLOT; 1];
         let mut bitmap = [0u64; 1];
         let mut allocator = make_allocator(&regions, &mut slots, &mut bitmap).unwrap();
 
-        let rejected = allocator.allocate_frame().unwrap();
-        let retained = allocator.allocate_frame().unwrap();
-        let retained_address = retained.physical_address();
+        let rejected_first = allocator.allocate_frame().unwrap();
+        let rejected_second = allocator.allocate_frame().unwrap();
+        allocator
+            .free_frame_preserving_hint(rejected_first)
+            .unwrap();
+        allocator
+            .free_frame_preserving_hint(rejected_second)
+            .unwrap();
 
-        allocator.free_frame_preserving_hint(rejected).unwrap();
-        let next = allocator.allocate_frame().unwrap();
+        let next_first = allocator.allocate_frame().unwrap();
+        let next_second = allocator.allocate_frame().unwrap();
 
-        assert_eq!(retained_address, 0x2000);
-        assert_eq!(next.physical_address(), 0x3000);
+        assert_eq!(next_first.physical_address(), 0x3000);
+        assert_eq!(next_second.physical_address(), 0x4000);
         assert_eq!(allocator.stats().allocated_frames, 2);
     }
 
