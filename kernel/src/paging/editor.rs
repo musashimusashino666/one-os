@@ -310,7 +310,7 @@ static ADDRESS_SPACE_ROOT_FRAMES: [AtomicU64; ADDRESS_SPACE_ROOT_CAPACITY] =
 ///
 /// Returns false when the registry is full. Duplicate registration is
 /// idempotent so a caller that already owns a root can safely revalidate it.
-pub(super) fn register_address_space_root(physical_address: u64) -> bool {
+pub fn register_address_space_root(physical_address: u64) -> bool {
     if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
         return false;
     }
@@ -334,7 +334,7 @@ pub(super) fn register_address_space_root(physical_address: u64) -> bool {
 ///
 /// A missing entry is intentionally ignored: cleanup paths may run after a
 /// failed registration or after a conservative leak decision.
-pub(super) fn unregister_address_space_root(physical_address: u64) {
+pub fn unregister_address_space_root(physical_address: u64) {
     for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
         let _ = slot.compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire);
     }
@@ -380,7 +380,7 @@ fn registered_table_frame(physical_address: u64) -> bool {
 ///
 /// Active-root walkers may encounter these frames after a large-page demotion,
 /// even though the firmware memory map still classifies the backing pages as Usable.
-pub(super) fn registered_published_page_table_frame(physical_address: u64) -> bool {
+pub fn registered_published_page_table_frame(physical_address: u64) -> bool {
     TABLE_FRAMES
         .lock()
         .contains_published_unowned(physical_address)
@@ -2405,7 +2405,7 @@ fn initialize_user_frame_or_release_on_error<E>(
 
 /// Exercises the initializer-failure path and verifies that the exact returned
 /// frame token reaches the allocator-release callback instead of being dropped.
-pub(super) fn verify_user_frame_initialization_failure_releases_frame_for_smoke(
+pub fn verify_user_frame_initialization_failure_releases_frame_for_smoke(
 ) -> Result<(), PagingError> {
     let frame = crate::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
     let expected_physical = frame.physical_address();
@@ -2479,7 +2479,7 @@ pub fn validate_inactive_user_address_space<const CAPACITY: usize>(
 
 /// Exercises preflight rejection of representative corrupted page-table states
 /// on the real kernel alias, restoring every entry before returning.
-pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usize>(
+pub fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usize>(
     boot_info: &BootInfo,
     root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
@@ -2668,14 +2668,14 @@ pub(super) fn verify_teardown_corruption_preflight_for_smoke<const CAPACITY: usi
 }
 
 
-pub(super) use acceptance::{
+pub use acceptance::{
     enforce_kernel_executable_alias_wx, has_pending_detached_private_table,
     teardown_inactive_user_address_space, teardown_inactive_user_address_space_with_table_release,
     verify_large_page_demotion_smoke_test, verify_mapping_smoke_test,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
     KernelUserFrameInitializer,
 };
-pub(super) use wx_audit::audit_registered_wx_roots;
+pub use wx_audit::audit_registered_wx_roots;
 
 #[cfg(any(
     feature = "test-exception",
@@ -2687,10 +2687,10 @@ pub(super) use wx_audit::audit_registered_wx_roots;
     feature = "test-nx-protection",
     feature = "test-vm-transitions"
 ))]
-pub(super) use acceptance::verify_user_frame_zeroing_test;
+pub use acceptance::verify_user_frame_zeroing_test;
 
 #[cfg(feature = "test-wx-runtime-audit")]
-pub(super) use acceptance::{
+pub use acceptance::{
     apply_wx_sibling_test_transition, kernel_executable_direct_alias_for_test,
     verify_wx_sibling_large_page_precondition, verify_wx_sibling_test_after_transition,
     WxSiblingRegressionTest,
@@ -2700,13 +2700,13 @@ pub(super) use acceptance::{
     feature = "test-supervisor-write-protection",
     feature = "test-nx-protection"
 ))]
-pub(super) use acceptance::ProtectionTestMapping;
+pub use acceptance::ProtectionTestMapping;
 
 #[cfg(feature = "test-supervisor-write-protection")]
-pub(super) use acceptance::install_supervisor_write_protection_test;
+pub use acceptance::install_supervisor_write_protection_test;
 
 #[cfg(feature = "test-nx-protection")]
-pub(super) use acceptance::install_nx_execution_protection_test;
+pub use acceptance::install_nx_execution_protection_test;
 
 #[cfg(feature = "test-vm-transitions")]
-pub(super) use acceptance::{prepare_mapping_transition_test, MappingTransitionTest};
+pub use acceptance::{prepare_mapping_transition_test, MappingTransitionTest};

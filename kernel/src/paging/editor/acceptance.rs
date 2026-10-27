@@ -40,7 +40,7 @@ pub fn teardown_inactive_user_address_space<const CAPACITY: usize>(
     )
 }
 
-pub(super) fn teardown_inactive_user_address_space_with_table_release<const CAPACITY: usize, E>(
+pub fn teardown_inactive_user_address_space_with_table_release<const CAPACITY: usize, E>(
     boot_info: &BootInfo,
     root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
@@ -104,7 +104,7 @@ pub(super) fn teardown_inactive_user_address_space_with_table_release<const CAPA
 ///
 /// Used by the normal-boot failure-injection smoke test to prove that a failed
 /// allocator release leaves the frame pending and non-reusable.
-pub(super) fn has_pending_detached_private_table(root_physical: u64) -> bool {
+pub fn has_pending_detached_private_table(root_physical: u64) -> bool {
     TABLE_FRAMES
         .lock()
         .detached_table_for_root(root_physical, 0)

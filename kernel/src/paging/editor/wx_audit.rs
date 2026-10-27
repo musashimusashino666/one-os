@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn audit_registered_wx_roots(
+pub fn audit_registered_wx_roots(
     boot_info: &BootInfo,
     root_table_physical: u64,
     recursive_index: u16,
