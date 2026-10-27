@@ -4794,7 +4794,7 @@ pub fn verify_wx_sibling_large_page_precondition(
     // A pair is normally found in the first usable large-page region. The bound
     // prevents a malformed or unusually fragmented memory map from making boot
     // unbounded; failed candidates are immediately returned to the allocator.
-    const MAX_PAIR_ATTEMPTS: usize = 1024;
+    const MAX_PAIR_ATTEMPTS: usize = 4096;
     for _ in 0..MAX_PAIR_ATTEMPTS {
         let executable_frame =
             super::memory::allocate_frame().map_err(|_| PagingError::FrameAllocationFailed)?;
