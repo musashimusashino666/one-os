@@ -161,7 +161,7 @@ jobs:
               return int(matches[0], 16)
 
           original_page_size = parse_unique_hex("ONE OS W^X SIBLING ORIGINAL DIRECT-MAP LARGE PAGE: ")
-          executable_physical_page = parse_unique_hex("ONE OS W^X EXECUTABLE PHYSICAL PAGE: ")
+          executable_physical_page = parse_unique_hex("ONE OS W^X TEST EXECUTABLE PHYSICAL PAGE: ")
           sibling_physical_page = parse_unique_hex("ONE OS W^X SIBLING DATA FRAME PHYSICAL: ")
           if original_page_size not in (1 << 21, 1 << 30):
               raise SystemExit("expected original 2 MiB or 1 GiB direct-map leaf")
