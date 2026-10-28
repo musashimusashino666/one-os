@@ -101,6 +101,12 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
     // The root has never been activated, so this temporary leaf cannot have a
     // cached translation. Restore it before any result path or subsequent test.
     editor.write_entry(pt_physical, pt_index, 1, original_pte);
+    let restored_pte = editor
+        .read_entry(pt_physical, pt_index, 1)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    if restored_pte != original_pte {
+        return Err(PagingError::WxAuditFailed);
+    }
     drop(editor);
 
     let (conflict_audit, conflict_scope, _) = conflict_result?;
