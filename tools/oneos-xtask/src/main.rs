@@ -34,7 +34,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-cr3-activation-guard" => build_bios_image(Some("test-cr3-activation-guard")),
         "image-test-cr3-reserved-root-guard" => {
             build_bios_image(Some("test-cr3-reserved-root-guard"))
-        }
+        },
         "image-test-nmi-wx-transition" => build_bios_image(Some("test-nmi-wx-transition")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
