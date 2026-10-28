@@ -31,7 +31,7 @@ Exit evidence: pinned toolchain builds the BIOS image; required host checks pass
 
 **Status: partially complete.**
 
-Implemented slices include a fixed-capacity physical-frame allocator, selected boot mapping inspection, a new kernel root, guarded 4 KiB mapping operations, selected supervisor/NX protections, local TLB transition tests, large-page demotion integration, and direct-map permission transitions for validated executable kernel pages.
+Implemented slices include a fixed-capacity physical-frame allocator, selected boot mapping inspection, a new kernel root, guarded 4 KiB mapping operations, selected supervisor/NX protections, local TLB transition tests, large-page demotion integration, and direct-map permission transitions for validated executable kernel pages. The coverage tracker also rejects source-accounting attempts until the root inventory is sealed and every declared root walk completes; source flags remain contingent on their source-specific validation stages.
 
 Blocking work:
 - Complete and independently validate the authoritative inventory of every root the kernel can activate and every mapping source that can create a physical alias.

@@ -4,7 +4,7 @@ The authoritative milestone sequence is maintained in [Project Roadmap](project/
 
 ## Current memory-security gate
 
-The bounded W^X inventory slice in [Issue #46](https://github.com/musashimusashino666/one-os/issues/46) is being implemented as read-only audit logic: declared roots are reported individually, supported leaf extents and effective permissions are checked, the direct-map interval is verified, and malformed/incomplete scope fails closed. Arbitrary executable mapping publication remains denied.
+The bounded W^X inventory slice in [Issue #46](https://github.com/musashimusashino666/one-os/issues/46) uses read-only audit logic: declared roots are reported individually, supported leaf extents and effective permissions are checked, the direct-map interval is verified, and malformed/incomplete scope fails closed. Source-coverage flags are accepted only after every declared root walk completes; premature accounting latches a failure. This ordering guard supplements, but does not replace, source-specific validation. Arbitrary executable mapping publication remains denied.
 
 [Issue #26](https://github.com/musashimusashino666/one-os/issues/26) remains a blocking parent gate. It requires complete verification of the required boot mapping set (including ELF PT_LOAD correspondence and rejection of unexpected/missing mappings) and transactional frame-wide W^X enforcement across all aliases and mapping sources. A clean declared-scope inventory, a successful build, or QEMU acceptance alone does not demonstrate that parent issue complete.
 
