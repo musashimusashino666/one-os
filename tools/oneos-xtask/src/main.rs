@@ -202,6 +202,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-wx-runtime-audit") => "one-os-wx-runtime-audit-test-bios.img",
         Some("test-cr3-switch-guard") => "one-os-cr3-switch-guard-test-bios.img",
         Some("test-cr3-activation-guard") => "one-os-cr3-activation-guard-test-bios.img",
+        Some("test-cr3-reserved-root-guard") => "one-os-cr3-reserved-root-guard-test-bios.img",
         Some("test-nmi-wx-transition") => "one-os-nmi-wx-transition-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
