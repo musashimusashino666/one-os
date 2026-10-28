@@ -32,9 +32,13 @@ fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -
 }
 
 #[cfg(feature = "test-wx-runtime-audit")]
+const MAX_RESERVED_ROOT_PROBE_PAGES: usize = 4096;
+
+#[cfg(feature = "test-wx-runtime-audit")]
 fn find_permanently_reserved_frame_for_root_registry_probe(
     boot_info: &BootInfo,
 ) -> Result<u64, PagingError> {
+    let mut pages_examined = 0usize;
     for region in boot_info.memory_regions.iter() {
         if region.kind != bootloader_api::info::MemoryRegionKind::Usable {
             continue;
@@ -50,6 +54,11 @@ fn find_permanently_reserved_frame_for_root_registry_probe(
             if page_end > region.end {
                 break;
             }
+            if pages_examined >= MAX_RESERVED_ROOT_PROBE_PAGES {
+                return Err(PagingError::WxAuditFailed);
+            }
+            pages_examined += 1;
+
             let permanently_reserved = crate::memory::is_permanently_reserved(candidate)
                 .map_err(|_| PagingError::WxAuditFailed)?;
             if permanently_reserved
