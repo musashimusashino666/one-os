@@ -48,12 +48,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     }
     let index = matching_slot.ok_or(PagingError::WxAuditFailed)?;
     if ADDRESS_SPACE_ROOT_FRAMES[index]
-        .compare_exchange(
-            inactive_physical,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
+        .compare_exchange(inactive_physical, 0, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return Err(PagingError::WxAuditFailed);
@@ -64,7 +59,10 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
         || !registration_restored
         || active_root_table_physical() != active_physical
         || !is_uniquely_registered_address_space_root(inactive_physical)
-        || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
+        || !matches!(
+            crate::memory::is_frame_allocated(inactive_physical),
+            Ok(true)
+        )
     {
         return Err(PagingError::WxAuditFailed);
     }
