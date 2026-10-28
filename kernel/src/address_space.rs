@@ -338,7 +338,7 @@ fn create_inactive_address_space_root(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
@@ -1418,7 +1418,7 @@ pub fn activate_supervisor_kernel_root(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
