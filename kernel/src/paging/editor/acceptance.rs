@@ -32,6 +32,42 @@ fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -
 }
 
 #[cfg(feature = "test-wx-runtime-audit")]
+fn find_permanently_reserved_frame_for_root_registry_probe(
+    boot_info: &BootInfo,
+) -> Result<u64, PagingError> {
+    for region in boot_info.memory_regions.iter() {
+        if region.kind != bootloader_api::info::MemoryRegionKind::Usable {
+            continue;
+        }
+        let Some(mut candidate) = region
+            .start
+            .checked_add(PAGE_SIZE - 1)
+            .map(|address| address & !(PAGE_SIZE - 1))
+        else {
+            return Err(PagingError::WxAuditFailed);
+        };
+        while let Some(page_end) = candidate.checked_add(PAGE_SIZE) {
+            if page_end > region.end {
+                break;
+            }
+            let permanently_reserved = crate::memory::is_permanently_reserved(candidate)
+                .map_err(|_| PagingError::WxAuditFailed)?;
+            if permanently_reserved
+                && matches!(crate::memory::is_frame_allocated(candidate), Ok(true))
+                && !is_address_space_root_frame(candidate)
+            {
+                return Ok(candidate);
+            }
+            let Some(next) = candidate.checked_add(PAGE_SIZE) else {
+                break;
+            };
+            candidate = next;
+        }
+    }
+    Err(PagingError::WxAuditFailed)
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
@@ -55,6 +91,23 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
         return Err(PagingError::WxAuditFailed);
     }
     crate::serial_write(b"ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS\n");
+
+    // Permanent reservations are allocator-unavailable but have no ordinary
+    // releasable Frame token. They must not be admitted as address-space roots.
+    let permanently_reserved_candidate =
+        find_permanently_reserved_frame_for_root_registry_probe(boot_info)?;
+    if !matches!(
+        crate::memory::is_permanently_reserved(permanently_reserved_candidate),
+        Ok(true)
+    ) || !matches!(
+        crate::memory::is_frame_allocated(permanently_reserved_candidate),
+        Ok(true)
+    ) || register_address_space_root(permanently_reserved_candidate)
+        || is_address_space_root_frame(permanently_reserved_candidate)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X PERMANENTLY RESERVED ROOT REGISTRATION REJECT PASS\n");
     if inactive_physical == active_physical
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
