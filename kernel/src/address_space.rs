@@ -56,6 +56,8 @@ pub enum AddressSpaceError {
     RootFrameRegistryFull,
     RootRegistryCleanupFailed,
     RootNotRegistered,
+    #[cfg(feature = "test-wx-runtime-audit")]
+    RootRegistryGuardFailed,
     NoUnusedRecursiveIndex,
     RootVerificationFailed {
         index: usize,
@@ -159,6 +161,10 @@ impl AddressSpaceError {
             }
             Self::RootNotRegistered => {
                 b"Address-space activation rejected a root missing from the live-root registry\n"
+            }
+            #[cfg(feature = "test-wx-runtime-audit")]
+            Self::RootRegistryGuardFailed => {
+                b"W^X smoke test failed to reject missing live-root registration\n"
             }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
@@ -502,6 +508,17 @@ pub(super) fn switch_address_space_flush_local_tlb(
     Ok(())
 }
 
+/// Rejects target roots that are not uniquely registered and allocator-owned.
+/// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
+fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
+    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
+        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+    {
+        return Err(AddressSpaceError::RootNotRegistered);
+    }
+    Ok(())
+}
+
 /// Performs the validated hardware CR3 transition.
 ///
 /// When `allow_user_mappings` is true, the caller must have just completed
@@ -530,11 +547,7 @@ fn switch_address_space(
     // Every kernel-created root that may become active must remain in the
     // authoritative live-root registry and retain allocator ownership. The
     // bootloader root is the sole exception: it is the source root, not next.
-    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
-        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
-    {
-        return Err(AddressSpaceError::RootNotRegistered);
-    }
+    validate_registered_root_for_activation(root_physical)?;
 
     if !next.is_initialized()
         || root_physical == current_physical
@@ -718,8 +731,12 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         boot_info,
         &second_root,
         &active_root,
+        |root_physical| {
+            validate_registered_root_for_activation(root_physical)
+                == Err(AddressSpaceError::RootNotRegistered)
+        },
     )
-    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    .map_err(|_| AddressSpaceError::RootRegistryGuardFailed)?;
 
     // The dedicated W^X audit profile injects a writable alias for the active
     // root's test RX frame into a real inactive root, requires the complete
@@ -1485,11 +1502,9 @@ pub fn activate_supervisor_kernel_root(
 
     // This initial activation path writes CR3 directly rather than using
     // switch_address_space; enforce the same live-root invariant at its boundary.
-    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
-        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
-    {
+    if let Err(error) = validate_registered_root_for_activation(root_physical) {
         clear_and_release_root(root, &mut editor, root_physical)?;
-        return Err(AddressSpaceError::RootNotRegistered);
+        return Err(error);
     }
 
     // Always make the PGE-disabled state explicit before writing CR3.
