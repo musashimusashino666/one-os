@@ -165,6 +165,28 @@ jobs:
           fi
           test "$status" -eq 33
 
+      - name: Verify permanently reserved target rejection in the real CR3 switch path
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-cr3-reserved-root-guard
+          log="$CARGO_TARGET_DIR/qemu-cr3-reserved-root-guard.log"
+          set +e
+          timeout 60s qemu-system-x86_64 \
+            -machine "$QEMU_MACHINE" -cpu "$QEMU_CPU" -smp "$QEMU_SMP" -m "$QEMU_MEMORY" \
+            -drive format=raw,file="$CARGO_TARGET_DIR/one-os-cr3-reserved-root-guard-test-bios.img" \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -serial stdio -display none -no-reboot -no-shutdown \
+            > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          grep -Fq "ONE OS CR3 SWITCH PERMANENTLY RESERVED ROOT REJECT PASS" "$log"
+          if grep -Fq "ONE OS CR3 SWITCH PERMANENTLY RESERVED ROOT REJECT FAIL" "$log"; then
+            echo "permanently reserved target rejection test reported failure" >&2
+            exit 1
+          fi
+          test "$status" -eq 33
+
       - name: Verify post-activation W^X audit diagnostics in QEMU
         shell: bash
         run: |
@@ -196,6 +218,7 @@ jobs:
           grep -Fq "ONE OS W^X LIVE ROOT UNREGISTER REJECT PASS" "$log"
           grep -Fq "ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS" "$log"
           grep -Fq "ONE OS W^X PERMANENTLY RESERVED ROOT REGISTRATION REJECT PASS" "$log"
+          grep -Fq "ONE OS W^X PERMANENTLY RESERVED ROOT AUDIT REJECT PASS" "$log"
           grep -Fq "ONE OS W^X DUPLICATE ROOT REGISTRATION REJECT PASS" "$log"
           grep -Fq "ONE OS W^X MISSING ROOT REGISTRATION GUARD REJECT PASS" "$log"
           grep -Fq "ONE OS W^X CROSS-ROOT ALIAS CONFLICT DETECTION PASS" "$log"
