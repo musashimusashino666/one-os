@@ -764,11 +764,12 @@ mod inspection;
 pub(super) use editor::{
     audit_registered_wx_roots, enforce_kernel_executable_alias_wx,
     has_pending_detached_private_table, initialize_paging_controls,
-    map_test_user_page_for_teardown, register_address_space_root,
-    registered_published_page_table_frame, teardown_inactive_user_address_space,
-    teardown_inactive_user_address_space_with_table_release, unregister_address_space_root,
-    validate_inactive_user_address_space, verify_large_page_demotion_smoke_test,
-    verify_mapping_smoke_test, verify_teardown_corruption_preflight_for_smoke,
+    is_uniquely_registered_address_space_root, map_test_user_page_for_teardown,
+    register_address_space_root, registered_published_page_table_frame,
+    teardown_inactive_user_address_space, teardown_inactive_user_address_space_with_table_release,
+    unregister_address_space_root, validate_inactive_user_address_space,
+    verify_large_page_demotion_smoke_test, verify_mapping_smoke_test,
+    verify_teardown_corruption_preflight_for_smoke,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
 };
 pub(super) use inspection::inspect_boot_mappings;
@@ -788,6 +789,7 @@ pub(super) use editor::verify_user_frame_zeroing_test;
 #[cfg(feature = "test-wx-runtime-audit")]
 pub(super) use editor::{
     apply_wx_sibling_test_transition, kernel_executable_direct_alias_for_test,
+    verify_live_root_registry_unregistration_rejected_for_smoke,
     verify_wx_audit_cross_root_alias_for_smoke, verify_wx_sibling_large_page_precondition,
     verify_wx_sibling_test_after_transition, WxSiblingRegressionTest,
 };

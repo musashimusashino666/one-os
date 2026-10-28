@@ -304,14 +304,40 @@ pub fn register_address_space_root(physical_address: u64) -> bool {
     false
 }
 
-/// Removes one released address-space root frame from the registry.
+/// Ensures a released root frame is absent from the registry.
 ///
-/// A missing entry is intentionally ignored: cleanup paths may run after a
-/// failed registration or after a conservative leak decision.
-pub fn unregister_address_space_root(physical_address: u64) {
-    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
-        let _ = slot.compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire);
+/// A root may be removed only after its frame is no longer allocator-owned and
+/// is not the current CR3. This prevents a live, still-activatable root from
+/// being silently removed from the W^X audit's authoritative lifecycle set.
+/// Missing or duplicate entries, an active root, and allocator/query uncertainty
+/// fail closed so cleanup cannot silently shrink the audit's declared root set.
+pub fn unregister_address_space_root(physical_address: u64) -> bool {
+    if physical_address == 0
+        || physical_address & (PAGE_SIZE - 1) != 0
+        || physical_address == active_root_table_physical()
+        || !matches!(
+            crate::memory::is_frame_allocated(physical_address),
+            Ok(false)
+        )
+    {
+        return false;
     }
+
+    let mut matching_slot = None;
+    for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
+        if slot.load(Ordering::Acquire) == physical_address
+            && matching_slot.replace(index).is_some()
+        {
+            return false;
+        }
+    }
+
+    let Some(index) = matching_slot else {
+        return false;
+    };
+    ADDRESS_SPACE_ROOT_FRAMES[index]
+        .compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Returns whether this frame is a live kernel-created address-space root.
@@ -320,6 +346,27 @@ fn is_address_space_root_frame(physical_address: u64) -> bool {
         && ADDRESS_SPACE_ROOT_FRAMES
             .iter()
             .any(|slot| slot.load(Ordering::Acquire) == physical_address)
+}
+
+/// Returns true only when exactly one registry slot names this root frame.
+///
+/// Activation must reject duplicate entries even though ordinary ownership
+/// checks treat any matching entry as a root, so a duplicated root is never
+/// accidentally treated as reclaimable data.
+pub fn is_uniquely_registered_address_space_root(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+
+    let mut found = false;
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        let matches = slot.load(Ordering::Acquire) == physical_address;
+        if matches && found {
+            return false;
+        }
+        found |= matches;
+    }
+    found
 }
 
 fn reserve_table_frame_slot() -> Option<usize> {
@@ -2751,6 +2798,7 @@ pub use acceptance::verify_user_frame_zeroing_test;
 #[cfg(feature = "test-wx-runtime-audit")]
 pub use acceptance::{
     apply_wx_sibling_test_transition, kernel_executable_direct_alias_for_test,
+    verify_live_root_registry_unregistration_rejected_for_smoke,
     verify_wx_audit_cross_root_alias_for_smoke, verify_wx_sibling_large_page_precondition,
     verify_wx_sibling_test_after_transition, WxSiblingRegressionTest,
 };

@@ -54,6 +54,8 @@ pub enum AddressSpaceError {
     RootInitialization(AddressSpaceRootInitializationError),
     RootTableUnavailable,
     RootFrameRegistryFull,
+    RootRegistryCleanupFailed,
+    RootNotRegistered,
     NoUnusedRecursiveIndex,
     RootVerificationFailed {
         index: usize,
@@ -152,6 +154,12 @@ impl AddressSpaceError {
             Self::RootFrameRegistryFull => {
                 b"Address-space root frame registry is full\n"
             }
+            Self::RootRegistryCleanupFailed => {
+                b"Released address-space root could not be safely removed from its registry\n"
+            }
+            Self::RootNotRegistered => {
+                b"Address-space activation rejected a root missing from the live-root registry\n"
+            }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
             }
@@ -243,7 +251,7 @@ pub fn verify_root_initialization_smoke_test(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
@@ -334,7 +342,7 @@ fn create_inactive_address_space_root(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
@@ -519,6 +527,15 @@ fn switch_address_space(
         .filter(|index| (LOWER_HALF_PML4_ENTRIES as u16..PML4_ENTRY_COUNT as u16).contains(index))
         .ok_or(AddressSpaceError::RootActivationFailed)?;
 
+    // Every kernel-created root that may become active must remain in the
+    // authoritative live-root registry and retain allocator ownership. The
+    // bootloader root is the sole exception: it is the source root, not next.
+    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
+        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+    {
+        return Err(AddressSpaceError::RootNotRegistered);
+    }
+
     if !next.is_initialized()
         || root_physical == current_physical
         || next.physical_address_bits() != physical_address_bits
@@ -691,6 +708,16 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         &user_registry,
         third_physical,
         peer_frame_physical,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
+    // Prove a live inactive root cannot be removed from the inventory merely
+    // by calling the registry cleanup API; it must remain in a complete audit.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    super::paging::verify_live_root_registry_unregistration_rejected_for_smoke(
+        boot_info,
+        &second_root,
+        &active_root,
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
@@ -1404,7 +1431,7 @@ pub fn activate_supervisor_kernel_root(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
@@ -1454,6 +1481,15 @@ pub fn activate_supervisor_kernel_root(
     ) {
         clear_and_release_root(root, &mut editor, root_physical)?;
         return Err(error);
+    }
+
+    // This initial activation path writes CR3 directly rather than using
+    // switch_address_space; enforce the same live-root invariant at its boundary.
+    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
+        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+    {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootNotRegistered);
     }
 
     // Always make the PGE-disabled state explicit before writing CR3.
@@ -1559,11 +1595,37 @@ fn verify_initialized_entries(
 
 /// Clears and verifies the entire PML4 frame before releasing its ownership token.
 /// If zeroization fails, the frame is deliberately leaked rather than recycled.
+/// Clears and releases a newly allocated root whose registry insertion failed.
+///
+/// This is used only before the root has been initialized or published. It must
+/// not remove any registry entry because registration did not succeed.
+fn clear_and_release_unregistered_root(
+    root: AddressSpaceRoot,
+    editor: &mut KernelAddressSpaceRootEditor<'_>,
+    root_physical: u64,
+) -> Result<(), AddressSpaceError> {
+    if let Err(error) = clear_root_entries(editor, root_physical) {
+        root.leak_frame();
+        return Err(error);
+    }
+    release_frame(unsafe { root.into_frame() })
+}
+
 fn clear_and_release_root(
     root: AddressSpaceRoot,
     editor: &mut KernelAddressSpaceRootEditor<'_>,
     root_physical: u64,
 ) -> Result<(), AddressSpaceError> {
+    // Validate the exact registry relationship before making the frame
+    // allocator-reusable. If it is absent/duplicated, preserve ownership so a
+    // stale registry reference can never alias an unrelated future allocation.
+    if root_physical == active_root_table_physical()
+        || !super::paging::is_uniquely_registered_address_space_root(root_physical)
+    {
+        root.leak_frame();
+        return Err(AddressSpaceError::RootRegistryCleanupFailed);
+    }
+
     if let Err(error) = clear_root_entries(editor, root_physical) {
         // Cleanup or access is uncertain. Preserve the allocator reservation and
         // keep the root registered so it cannot be mapped as ordinary data.
@@ -1574,11 +1636,8 @@ fn clear_and_release_root(
     // release a never-activated construction root with no private child tables,
     // or call only after switching away and completing inactive-root teardown.
     let result = release_frame(unsafe { root.into_frame() });
-    if result.is_ok() {
-        // A released frame can be reused as data. Remove it from the root-frame
-        // registry only after the allocator accepted it; a failed release keeps
-        // the conservative reservation in place.
-        super::paging::unregister_address_space_root(root_physical);
+    if result.is_ok() && !super::paging::unregister_address_space_root(root_physical) {
+        return Err(AddressSpaceError::RootRegistryCleanupFailed);
     }
     result
 }
