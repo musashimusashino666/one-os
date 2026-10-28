@@ -175,6 +175,56 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     }
 
     crate::serial_write(b"ONE OS W^X LIVE ROOT UNREGISTER REJECT PASS\n");
+
+    // A correctly registered root must never become permanently reserved. Inject
+    // that inconsistent side-bitmap state after registration and prove the actual
+    // read-only audit rejects it before walking the root's page tables.
+    let injection_set = crate::memory::inject_permanent_reservation_for_test(inactive_physical);
+    let reservation_observed = matches!(
+        crate::memory::is_permanently_reserved(inactive_physical),
+        Ok(true)
+    );
+    let audit_rejected_reserved_root = injection_set
+        && audit_registered_wx_roots(
+            boot_info,
+            active_physical,
+            active_root.recursive_index(),
+            active_root.physical_address_bits(),
+        )
+        .is_err();
+    let injection_cleared =
+        crate::memory::clear_permanent_reservation_injection_for_test(inactive_physical);
+    let reservation_state_restored = matches!(
+        crate::memory::is_permanently_reserved(inactive_physical),
+        Ok(false)
+    );
+    if !injection_set
+        || !reservation_observed
+        || !audit_rejected_reserved_root
+        || !injection_cleared
+        || !reservation_state_restored
+        || active_root_table_physical() != active_physical
+        || !is_uniquely_registered_address_space_root(inactive_physical)
+        || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    // Clearing the injected reservation must restore a successful, complete audit.
+    let (_, restored_scope, _) = audit_registered_wx_roots(
+        boot_info,
+        active_physical,
+        active_root.recursive_index(),
+        active_root.physical_address_bits(),
+    )?;
+    if !restored_scope.complete
+        || !restored_scope.roots[..restored_scope.declared_roots]
+            .iter()
+            .any(|root| root.physical_address == inactive_physical && root.audited)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X PERMANENTLY RESERVED ROOT AUDIT REJECT PASS\n");
     Ok(())
 }
 
