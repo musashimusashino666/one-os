@@ -46,11 +46,7 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
     // run the read-only inventory, and restore the original entry before
     // interpreting the result. This injection is compiled only into the
     // dedicated QEMU acceptance image; normal mapping APIs remain fail-closed.
-    let mut editor = KernelInactiveAddressSpaceEditor::new(
-        boot_info,
-        inactive_root,
-        active_root,
-    )?;
+    let mut editor = KernelInactiveAddressSpaceEditor::new(boot_info, inactive_root, active_root)?;
     let root_physical = inactive_root.physical_address();
     let pml4_index = ((USER_TEST_VIRTUAL_ADDRESS >> 39) & 0x1ff) as usize;
     let pdpt_index = ((USER_TEST_VIRTUAL_ADDRESS >> 30) & 0x1ff) as usize;
@@ -60,9 +56,7 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
     let pml4_entry = editor
         .read_entry(root_physical, pml4_index, 4)
         .ok_or(PagingError::InactivePageTableUnavailable)?;
-    if pml4_entry & PRESENT == 0
-        || pml4_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
-    {
+    if pml4_entry & PRESENT == 0 || pml4_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0 {
         return Err(PagingError::InactivePageTableMalformed);
     }
     let pdpt_physical = pml4_entry & PHYSICAL_ADDRESS_MASK;
@@ -70,9 +64,7 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
     let pdpt_entry = editor
         .read_entry(pdpt_physical, pdpt_index, 3)
         .ok_or(PagingError::InactivePageTableUnavailable)?;
-    if pdpt_entry & PRESENT == 0
-        || pdpt_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
-    {
+    if pdpt_entry & PRESENT == 0 || pdpt_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0 {
         return Err(PagingError::InactivePageTableMalformed);
     }
     let pd_physical = pdpt_entry & PHYSICAL_ADDRESS_MASK;
@@ -80,9 +72,7 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
     let pd_entry = editor
         .read_entry(pd_physical, pd_index, 2)
         .ok_or(PagingError::InactivePageTableUnavailable)?;
-    if pd_entry & PRESENT == 0
-        || pd_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
-    {
+    if pd_entry & PRESENT == 0 || pd_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0 {
         return Err(PagingError::InactivePageTableMalformed);
     }
     let pt_physical = pd_entry & PHYSICAL_ADDRESS_MASK;
@@ -98,11 +88,7 @@ pub fn verify_wx_audit_cross_root_alias_for_smoke(
         return Err(PagingError::InactivePageTableMalformed);
     }
 
-    let injected_pte = executable_physical_page
-        | PRESENT
-        | WRITABLE
-        | USER_ACCESSIBLE
-        | NO_EXECUTE;
+    let injected_pte = executable_physical_page | PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE;
     editor.write_entry(pt_physical, pt_index, 1, injected_pte);
 
     let conflict_result = audit_registered_wx_roots(
