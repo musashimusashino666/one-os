@@ -309,8 +309,8 @@ pub fn register_address_space_root(physical_address: u64) -> bool {
 /// A root may be removed only after its frame is no longer allocator-owned and
 /// is not the current CR3. This prevents a live, still-activatable root from
 /// being silently removed from the W^X audit's authoritative lifecycle set.
-/// The operation is idempotent for an already-absent, released frame. Duplicate
-/// registry entries or allocator/query uncertainty fail closed.
+/// Missing or duplicate entries, an active root, and allocator/query uncertainty
+/// fail closed so cleanup cannot silently shrink the audit's declared root set.
 pub fn unregister_address_space_root(physical_address: u64) -> bool {
     if physical_address == 0
         || physical_address & (PAGE_SIZE - 1) != 0
