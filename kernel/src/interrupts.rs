@@ -207,9 +207,7 @@ extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackF
             );
         }
     } else {
-        super::serial_write(
-            b"ONE OS WX NMI TEST FAILED: unexpected vector state or IST2 stack\n",
-        );
+        super::serial_write(b"ONE OS WX NMI TEST FAILED: unexpected vector state or IST2 stack\n");
         unsafe {
             asm!(
                 "out dx, eax",
@@ -1200,9 +1198,7 @@ pub fn hold_for_wx_nmi_transition() -> ! {
     // The caller invokes this only after confirming the selected PTE is
     // non-present following the full local TLB invalidation.
     WX_NMI_TRANSITION_TEST_ARMED.store(true, Ordering::Release);
-    super::serial_write(
-        b"ONE OS WX NMI TEST READY: target direct-map PTE confirmed non-present\n",
-    );
+    super::serial_write(b"ONE OS WX NMI TEST READY: target direct-map PTE confirmed non-present\n");
     // The CI controller must inject a genuine NMI through QMP. A missing
     // injection is a host-side timeout/failure, never a normal-boot wait.
     loop {

@@ -58,7 +58,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("  cargo run -p oneos-xtask -- image-test-wx-runtime-audit");
             println!("      Build a dedicated post-activation W^X audit diagnostic image");
             println!("  cargo run -p oneos-xtask -- image-test-nmi-wx-transition");
-            println!("      Build a test-only image for QMP-injected NMI during W^X break-before-make");
+            println!(
+                "      Build a test-only image for QMP-injected NMI during W^X break-before-make"
+            );
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
