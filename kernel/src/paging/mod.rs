@@ -772,6 +772,11 @@ pub(super) use editor::{
     verify_teardown_corruption_preflight_for_smoke,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
 };
+#[cfg(any(
+    feature = "test-cr3-switch-guard",
+    feature = "test-cr3-activation-guard"
+))]
+pub(super) use editor::remove_address_space_root_registration_for_cr3_test;
 pub(super) use inspection::inspect_boot_mappings;
 
 #[cfg(any(
