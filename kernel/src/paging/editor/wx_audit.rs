@@ -46,8 +46,8 @@ pub fn audit_registered_wx_roots(
         .map_err(|_| PagingError::WxAuditFailed)?;
 
     // Snapshot registered roots into bounded local storage before sealing the
-    // inventory. Reject malformed, duplicate, stale, or unowned entries rather
-    // than silently shrinking the declared root set.
+    // inventory. Reject malformed, duplicate, stale, unowned, or permanently
+    // reserved entries rather than silently shrinking the declared root set.
     let mut registered_roots = [0u64; ADDRESS_SPACE_ROOT_CAPACITY];
     let mut registered_root_count = 0usize;
     for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
@@ -57,7 +57,10 @@ pub fn audit_registered_wx_roots(
         }
         if !valid_physical_page(registered_root, physical_address_bits)
             || !is_address_space_root_frame(registered_root)
-            || !matches!(crate::memory::is_frame_allocated(registered_root), Ok(true))
+            || !oneos_core::frame_wx_root_frame_state_is_admissible(
+                crate::memory::is_frame_allocated(registered_root),
+                crate::memory::is_permanently_reserved(registered_root),
+            )
             || registered_roots[..registered_root_count].contains(&registered_root)
         {
             return Err(PagingError::WxAuditFailed);
