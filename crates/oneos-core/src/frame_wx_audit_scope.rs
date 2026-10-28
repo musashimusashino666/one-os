@@ -53,6 +53,8 @@ pub enum FrameWxAuditScopeError {
     EmptyRootInventory,
     /// The authoritative root inventory was already sealed.
     RootInventoryAlreadySealed,
+    /// A root cannot be marked audited before the inventory is sealed.
+    RootInventoryNotSealed,
     /// A source cannot be accounted while the audit scope is incomplete or failed.
     AuditScopeIncomplete,
     /// An audited root was not part of the declared inventory.
@@ -204,6 +206,11 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
         &mut self,
         physical_address: u64,
     ) -> Result<(), FrameWxAuditScopeError> {
+        if !self.root_inventory_sealed {
+            self.audit_failed = true;
+            return Err(FrameWxAuditScopeError::RootInventoryNotSealed);
+        }
+
         let Some(index) = self.roots[..self.root_count]
             .iter()
             .position(|root| root.physical_address == physical_address)
@@ -389,23 +396,45 @@ mod tests {
     }
 
     #[test]
-    fn partial_active_root_walk_is_not_system_wide_coverage() {
-        let mut scope = FrameWxAuditScope::<2>::new(48).unwrap();
+    fn root_audit_cannot_be_marked_complete_before_inventory_is_sealed() {
+        let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
         scope.declare_root(ROOT_A).unwrap();
-        scope.mark_root_audited(ROOT_A).unwrap();
+
         assert_eq!(
-            scope.account_source(FrameWxAuditSource::LargePageLeaves),
-            Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+            scope.mark_root_audited(ROOT_A),
+            Err(FrameWxAuditScopeError::RootInventoryNotSealed)
         );
+        let rejected = scope.summary();
+        assert!(!rejected.root_inventory_sealed);
+        assert_eq!(rejected.audited_roots, 0);
+        assert!(!rejected.roots[0].audited);
+        assert!(rejected.audit_failed);
+        assert!(!rejected.complete);
+
+        // Later sealing and a successful walk cannot erase the ordering failure.
+        scope.seal_root_inventory().unwrap();
+        scope.mark_root_audited(ROOT_A).unwrap();
+        for source in [
+            FrameWxAuditSource::PhysicalMemoryOffsetAlias,
+            FrameWxAuditSource::RecursivePageTableView,
+            FrameWxAuditSource::SharedKernelMappings,
+            FrameWxAuditSource::LargePageLeaves,
+        ] {
+            assert_eq!(
+                scope.account_source(source),
+                Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+            );
+        }
 
         let summary = scope.summary();
+        assert!(summary.root_inventory_sealed);
         assert_eq!(summary.declared_roots, 1);
         assert_eq!(summary.audited_roots, 1);
-        assert!(!summary.root_inventory_sealed);
-        assert!(!summary.complete);
-        assert_eq!(summary.missing_sources, FRAME_WX_AUDIT_REQUIRED_SOURCES);
+        assert!(summary.roots[0].audited);
         assert_eq!(summary.accounted_sources, 0);
+        assert_eq!(summary.missing_sources, FRAME_WX_AUDIT_REQUIRED_SOURCES);
         assert!(summary.audit_failed);
+        assert!(!summary.complete);
     }
 
     #[test]
