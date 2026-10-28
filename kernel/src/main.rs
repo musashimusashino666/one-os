@@ -102,29 +102,50 @@ use oneos_core::{validate_memory_map, FrameWxAuditSource, MemoryMapError};
 compile_error!("enable only one exception fault-injection feature at a time");
 
 #[cfg(any(
-    all(feature = "test-cr3-switch-guard", feature = "test-cr3-activation-guard"),
+    all(
+        feature = "test-cr3-switch-guard",
+        feature = "test-cr3-activation-guard"
+    ),
     all(feature = "test-cr3-switch-guard", feature = "test-exception"),
     all(feature = "test-cr3-switch-guard", feature = "test-general-protection"),
     all(feature = "test-cr3-switch-guard", feature = "test-page-fault"),
     all(feature = "test-cr3-switch-guard", feature = "test-double-fault"),
     all(feature = "test-cr3-switch-guard", feature = "test-ist"),
-    all(feature = "test-cr3-switch-guard", feature = "test-supervisor-write-protection"),
+    all(
+        feature = "test-cr3-switch-guard",
+        feature = "test-supervisor-write-protection"
+    ),
     all(feature = "test-cr3-switch-guard", feature = "test-nx-protection"),
     all(feature = "test-cr3-switch-guard", feature = "test-vm-transitions"),
     all(feature = "test-cr3-switch-guard", feature = "test-root-leak-safety"),
     all(feature = "test-cr3-switch-guard", feature = "test-wx-runtime-audit"),
     all(feature = "test-cr3-switch-guard", feature = "test-nmi-wx-transition"),
     all(feature = "test-cr3-activation-guard", feature = "test-exception"),
-    all(feature = "test-cr3-activation-guard", feature = "test-general-protection"),
+    all(
+        feature = "test-cr3-activation-guard",
+        feature = "test-general-protection"
+    ),
     all(feature = "test-cr3-activation-guard", feature = "test-page-fault"),
     all(feature = "test-cr3-activation-guard", feature = "test-double-fault"),
     all(feature = "test-cr3-activation-guard", feature = "test-ist"),
-    all(feature = "test-cr3-activation-guard", feature = "test-supervisor-write-protection"),
+    all(
+        feature = "test-cr3-activation-guard",
+        feature = "test-supervisor-write-protection"
+    ),
     all(feature = "test-cr3-activation-guard", feature = "test-nx-protection"),
     all(feature = "test-cr3-activation-guard", feature = "test-vm-transitions"),
-    all(feature = "test-cr3-activation-guard", feature = "test-root-leak-safety"),
-    all(feature = "test-cr3-activation-guard", feature = "test-wx-runtime-audit"),
-    all(feature = "test-cr3-activation-guard", feature = "test-nmi-wx-transition")
+    all(
+        feature = "test-cr3-activation-guard",
+        feature = "test-root-leak-safety"
+    ),
+    all(
+        feature = "test-cr3-activation-guard",
+        feature = "test-wx-runtime-audit"
+    ),
+    all(
+        feature = "test-cr3-activation-guard",
+        feature = "test-nmi-wx-transition"
+    )
 ))]
 compile_error!("CR3 guard acceptance features must be built individually");
 
