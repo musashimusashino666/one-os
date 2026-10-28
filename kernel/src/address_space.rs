@@ -1619,7 +1619,9 @@ fn clear_and_release_root(
     // Validate the exact registry relationship before making the frame
     // allocator-reusable. If it is absent/duplicated, preserve ownership so a
     // stale registry reference can never alias an unrelated future allocation.
-    if !super::paging::is_uniquely_registered_address_space_root(root_physical) {
+    if root_physical == active_root_table_physical()
+        || !super::paging::is_uniquely_registered_address_space_root(root_physical)
+    {
         root.leak_frame();
         return Err(AddressSpaceError::RootRegistryCleanupFailed);
     }
