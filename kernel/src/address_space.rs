@@ -627,6 +627,31 @@ pub fn verify_runtime_address_space_switch_smoke_test(
     boot_info: &BootInfo,
     active_root: ActiveAddressSpaceRoot,
 ) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
+    verify_runtime_address_space_switch_smoke_test_impl(boot_info, active_root, None)
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_runtime_address_space_switch_smoke_test_with_wx_probe(
+    boot_info: &BootInfo,
+    active_root: ActiveAddressSpaceRoot,
+    executable_physical_page: u64,
+    executable_virtual_address: u64,
+) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
+    verify_runtime_address_space_switch_smoke_test_impl(
+        boot_info,
+        active_root,
+        Some((executable_physical_page, executable_virtual_address)),
+    )
+}
+
+fn verify_runtime_address_space_switch_smoke_test_impl(
+    boot_info: &BootInfo,
+    active_root: ActiveAddressSpaceRoot,
+    wx_probe: Option<(u64, u64)>,
+) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
+    #[cfg(not(feature = "test-wx-runtime-audit"))]
+    let _ = wx_probe;
+
     let original_physical = active_root.physical_address();
     let original_recursive_index = active_root.recursive_index();
     let second_root = create_inactive_address_space_root(boot_info, &active_root)?;
@@ -668,6 +693,22 @@ pub fn verify_runtime_address_space_switch_smoke_test(
         peer_frame_physical,
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
+    // The dedicated W^X audit profile injects a writable alias for the active
+    // root's test RX frame into a real inactive root, requires the complete
+    // all-root audit to find that cross-root conflict, then verifies cleanup
+    // restores a conflict-free audit before the ordinary smoke check proceeds.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    if let Some((executable_physical_page, executable_virtual_address)) = wx_probe {
+        super::paging::verify_wx_audit_cross_root_alias_for_smoke(
+            boot_info,
+            &second_root,
+            &active_root,
+            executable_physical_page,
+            executable_virtual_address,
+        )
+        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    }
 
     // The two inactive roots now contain real private lower-half page-table
     // trees. Audit them before activation so the physical-offset/ownership path
