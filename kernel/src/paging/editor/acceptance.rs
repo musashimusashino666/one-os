@@ -75,9 +75,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     let duplicate_slot_index = ADDRESS_SPACE_ROOT_FRAMES
         .iter()
         .enumerate()
-        .find_map(|(index, slot)| {
-            (slot.load(Ordering::Acquire) == 0).then_some(index)
-        })
+        .find_map(|(index, slot)| (slot.load(Ordering::Acquire) == 0).then_some(index))
         .ok_or(PagingError::WxAuditFailed)?;
     let duplicate_slot = &ADDRESS_SPACE_ROOT_FRAMES[duplicate_slot_index];
     if duplicate_slot
