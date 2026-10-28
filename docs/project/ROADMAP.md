@@ -38,8 +38,9 @@ Blocking work:
 - Keep duplicate/cyclic page-table paths, unknown roots, malformed structures, root-snapshot changes, and range/table/recursive/path budget exhaustion fail-closed; the bounded audit must never treat partial coverage as clean.
 - Verify every physical overlap across supported page sizes, recursive aliases, direct-map aliases, and inherited mappings in scope; report both coverage completeness and conflict status separately.
 - Complete the broader Issue #26 boot-mapping inventory and unexpected/missing mapping rejection; the current PT_LOAD/stack/BootInfo checks are bounded and do not independently prove every bootloader mapping is expected.
-- Reconcile open [Issue #49](https://github.com/musashimusashino666/one-os/issues/49) against merged implementation PRs #50 and #52; update or close it only after its acceptance criteria are rechecked against current main.
 - Close [Issue #26](https://github.com/musashimusashino666/one-os/issues/26) and [Issue #46](https://github.com/musashimusashino666/one-os/issues/46) only when their stated criteria pass on the exact candidate.
+
+The bounded x86 direct-map W^X transition risk review in [closed Issue #49](https://github.com/musashimusashino666/one-os/issues/49) was recorded against the reviewed main revision and closed with explicit residual-risk acceptance. That decision does not complete this milestone: independent human sign-off and physical-hardware validation were not performed, and the broader inventory work in Issues #26 and #46 remains open.
 
 Exit gate: all supported mapping sources and roots are explicitly accounted for, all relevant W/X physical overlaps are detected and prevented, transitions and failure paths are tested, and the documented audit scope is complete. Executable publication remains restricted until that gate passes.
 
