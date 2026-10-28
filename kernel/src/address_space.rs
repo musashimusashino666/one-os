@@ -549,8 +549,7 @@ fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), Add
         || !oneos_core::frame_wx_root_frame_state_is_admissible(
             super::memory::is_frame_allocated(root_physical),
             super::memory::is_permanently_reserved(root_physical),
-        )
-    {
+        ) {
         Err(AddressSpaceError::RootNotRegistered)
     } else {
         Ok(())
