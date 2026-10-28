@@ -530,7 +530,7 @@ fn switch_address_space(
     // Every kernel-created root that may become active must remain in the
     // authoritative live-root registry and retain allocator ownership. The
     // bootloader root is the sole exception: it is the source root, not next.
-    if !is_address_space_root_frame(root_physical)
+    if !super::paging::is_address_space_root_frame(root_physical)
         || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
     {
         return Err(AddressSpaceError::RootNotRegistered);
