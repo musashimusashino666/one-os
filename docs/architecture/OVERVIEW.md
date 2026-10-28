@@ -30,12 +30,12 @@ ONE OS starts with a small x86_64 Rust kernel and grows incrementally toward a s
 
 ## Current implementation boundary
 
-As of the main-branch snapshot reviewed on 2026-10-27:
+As of the main-branch snapshot reviewed on 2026-10-28 (`d9b130e84da910da5057f71d924d277573b81bde`):
 
 - The workspace contains a no_std core crate, x86_64 bare-metal kernel, and BIOS image build tool.
 - The kernel validates the boot memory map, initializes a fixed-capacity frame allocator, inspects selected boot mappings, and performs guarded page-table operations.
-- Selected supervisor-write, NX, mapping-transition, and large-page-demotion cases have QEMU acceptance paths in CI.
-- Kernel-created address-space roots and some CPL 0 switching/teardown lifecycle scenarios are exercised; this is not Ring 3 execution.
+- Selected supervisor-write, NX, mapping-transition, large-page-demotion, direct-map W^X, and asynchronous NMI-transition cases have scoped QEMU acceptance paths in CI. Root admission checks allocator ownership and permanent-reservation state; dedicated QEMU fault injection verifies rejection before a CR3 switch and rejection by the declared-root W^X audit when reservation metadata becomes inconsistent.
+- Kernel-created roots, registry lifecycle, CPL 0 switching, and selected teardown/re-zero/reclaim scenarios are exercised. These tests do not constitute Ring 3 execution or independent process isolation.
 - The capability crate is a host-testable authorization model, not kernel enforcement.
 - Storage, networking, drivers, service management, a general scheduler, user-facing shell, and AI action-control UX are not implemented as a usable system.
 - Complete frame-wide W^X, independent Ring 3 isolation, kernel-enforced capabilities, SMP coordination, secure boot, and signed update/recovery mechanisms remain incomplete.
