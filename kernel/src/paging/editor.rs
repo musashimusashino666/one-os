@@ -341,7 +341,7 @@ pub fn unregister_address_space_root(physical_address: u64) -> bool {
 }
 
 /// Returns whether this frame is a live kernel-created address-space root.
-pub(super) fn is_address_space_root_frame(physical_address: u64) -> bool {
+pub fn is_address_space_root_frame(physical_address: u64) -> bool {
     physical_address != 0
         && ADDRESS_SPACE_ROOT_FRAMES
             .iter()
