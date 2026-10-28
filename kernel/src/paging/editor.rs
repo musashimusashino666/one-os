@@ -2751,8 +2751,8 @@ pub use acceptance::verify_user_frame_zeroing_test;
 #[cfg(feature = "test-wx-runtime-audit")]
 pub use acceptance::{
     apply_wx_sibling_test_transition, kernel_executable_direct_alias_for_test,
-    verify_wx_sibling_large_page_precondition, verify_wx_sibling_test_after_transition,
-    WxSiblingRegressionTest,
+    verify_wx_audit_cross_root_alias_for_smoke, verify_wx_sibling_large_page_precondition,
+    verify_wx_sibling_test_after_transition, WxSiblingRegressionTest,
 };
 
 #[cfg(any(
