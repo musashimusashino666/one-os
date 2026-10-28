@@ -944,7 +944,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         const PASS: &[u8] = b"ONE OS CR3 INITIAL ACTIVATION UNREGISTERED ROOT REJECT PASS\n";
         const FAIL: &[u8] = b"ONE OS CR3 INITIAL ACTIVATION UNREGISTERED ROOT REJECT FAIL\n";
         match address_space::activate_supervisor_kernel_root(boot_info) {
-            Err(address_space::AddressSpaceError::RootNotRegistered) => {
+            Err(address_space::AddressSpaceError::RootNotRegistered)
+                if address_space::cr3_activation_guard_test_passed() =>
+            {
                 address_space::cr3_guard_test_exit(true, PASS, FAIL)
             }
             _ => address_space::cr3_guard_test_exit(false, PASS, FAIL),
