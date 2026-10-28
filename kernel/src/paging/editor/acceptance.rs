@@ -1,6 +1,37 @@
 use super::*;
 
 #[cfg(feature = "test-wx-runtime-audit")]
+fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -> Option<u64> {
+    for region in boot_info.memory_regions.iter().rev() {
+        if region.kind != bootloader_api::info::MemoryRegionKind::Usable {
+            continue;
+        }
+        let Some(mut candidate) = region
+            .end
+            .checked_sub(PAGE_SIZE)
+            .map(|address| address & !(PAGE_SIZE - 1))
+        else {
+            continue;
+        };
+        for _ in 0..64 {
+            if candidate < region.start {
+                break;
+            }
+            if !is_address_space_root_frame(candidate)
+                && matches!(crate::memory::is_frame_allocated(candidate), Ok(false))
+            {
+                return Some(candidate);
+            }
+            let Some(previous) = candidate.checked_sub(PAGE_SIZE) else {
+                break;
+            };
+            candidate = previous;
+        }
+    }
+    None
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
@@ -9,6 +40,39 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
 ) -> Result<(), PagingError> {
     let active_physical = active_root.physical_address();
     let inactive_physical = inactive_root.physical_address();
+
+    // A page from a Usable region that is not allocator-owned must never be
+    // admitted into the authoritative address-space root inventory.
+    let unallocated_candidate = find_unallocated_usable_frame_for_root_registry_probe(boot_info)
+        .ok_or(PagingError::WxAuditFailed)?;
+    if register_address_space_root(unallocated_candidate)
+        || is_address_space_root_frame(unallocated_candidate)
+        || !matches!(
+            crate::memory::is_frame_allocated(unallocated_candidate),
+            Ok(false)
+        )
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS\n");
+
+    // Permanent reservations are allocator-unavailable but have no ordinary
+    // releasable Frame token. They must not be admitted as address-space roots.
+    let permanently_reserved_candidate =
+        crate::memory::permanently_reserved_root_registry_probe_frame()
+            .map_err(|_| PagingError::WxAuditFailed)?;
+    if !matches!(
+        crate::memory::is_permanently_reserved(permanently_reserved_candidate),
+        Ok(true)
+    ) || !matches!(
+        crate::memory::is_frame_allocated(permanently_reserved_candidate),
+        Ok(true)
+    ) || register_address_space_root(permanently_reserved_candidate)
+        || is_address_space_root_frame(permanently_reserved_candidate)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X PERMANENTLY RESERVED ROOT REGISTRATION REJECT PASS\n");
     if inactive_physical == active_physical
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
@@ -22,6 +86,33 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
+
+    // Inject a duplicate slot, then ensure a registration attempt refuses to
+    // bless the malformed inventory. Remove the injected slot before checking
+    // results so no successful-path return can leave the test root duplicated.
+    let duplicate_slot_index = ADDRESS_SPACE_ROOT_FRAMES
+        .iter()
+        .enumerate()
+        .find_map(|(index, slot)| (slot.load(Ordering::Acquire) == 0).then_some(index))
+        .ok_or(PagingError::WxAuditFailed)?;
+    let duplicate_slot = &ADDRESS_SPACE_ROOT_FRAMES[duplicate_slot_index];
+    if duplicate_slot
+        .compare_exchange(0, inactive_physical, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let duplicate_registration_rejected = !register_address_space_root(inactive_physical);
+    let duplicate_slot_removed = duplicate_slot
+        .compare_exchange(inactive_physical, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok();
+    if !duplicate_registration_rejected
+        || !duplicate_slot_removed
+        || !is_uniquely_registered_address_space_root(inactive_physical)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X DUPLICATE ROOT REGISTRATION REJECT PASS\n");
 
     // Neither the current CR3 nor a still-allocated inactive root may be
     // removed. This verifies both rejection branches before auditing the set.

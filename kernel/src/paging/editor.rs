@@ -282,26 +282,51 @@ static ADDRESS_SPACE_ROOT_FRAMES: [AtomicU64; ADDRESS_SPACE_ROOT_CAPACITY] =
 
 /// Records one live kernel-created address-space root frame.
 ///
-/// Returns false when the registry is full. Duplicate registration is
-/// idempotent so a caller that already owns a root can safely revalidate it.
+/// Returns false when the frame is not allocator-owned, the registry is full,
+/// or an existing duplicate slot makes the inventory inconsistent. A single existing
+/// registration is idempotent so the owning handle can safely revalidate membership.
 pub fn register_address_space_root(physical_address: u64) -> bool {
-    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+    if physical_address == 0
+        || physical_address & (PAGE_SIZE - 1) != 0
+        || !matches!(
+            crate::memory::is_frame_allocated(physical_address),
+            Ok(true)
+        )
+        || !matches!(
+            crate::memory::is_permanently_reserved(physical_address),
+            Ok(false)
+        )
+    {
         return false;
     }
-    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
-        if slot.load(Ordering::Acquire) == physical_address {
-            return true;
+
+    // Search the entire registry before accepting an existing registration.
+    // A duplicate slot means the inventory is already inconsistent; do not
+    // silently bless it or add another copy. The kernel currently serializes
+    // these operations on one CPU with maskable interrupts disabled.
+    let mut matching_slot = None;
+    let mut empty_slot = None;
+    for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
+        let observed = slot.load(Ordering::Acquire);
+        if observed == physical_address {
+            if matching_slot.replace(index).is_some() {
+                return false;
+            }
+        } else if observed == 0 && empty_slot.is_none() {
+            empty_slot = Some(index);
         }
     }
-    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
-        if slot
-            .compare_exchange(0, physical_address, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            return true;
-        }
+
+    if let Some(index) = matching_slot {
+        return ADDRESS_SPACE_ROOT_FRAMES[index].load(Ordering::Acquire) == physical_address;
     }
-    false
+
+    let Some(index) = empty_slot else {
+        return false;
+    };
+    ADDRESS_SPACE_ROOT_FRAMES[index]
+        .compare_exchange(0, physical_address, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Removes exactly one live-root registry entry for dedicated CR3 guard fault-injection tests.
