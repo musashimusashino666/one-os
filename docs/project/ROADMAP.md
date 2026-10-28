@@ -31,12 +31,11 @@ Exit evidence: pinned toolchain builds the BIOS image; required host checks pass
 
 **Status: partially complete.**
 
-Implemented slices include a fixed-capacity physical-frame allocator, selected boot mapping inspection, a new kernel root, guarded 4 KiB mapping operations, selected supervisor/NX protections, local TLB transition tests, large-page demotion integration, and direct-map permission transitions for validated executable kernel pages.
+Implemented slices include a fixed-capacity physical-frame allocator, selected boot mapping inspection, a new kernel root, guarded 4 KiB mapping operations, selected supervisor/NX protections, local TLB transition tests, large-page demotion integration, and direct-map permission transitions for validated executable kernel pages. The coverage tracker also rejects source-accounting attempts until the root inventory is sealed and every declared root walk completes; source flags remain contingent on their source-specific validation stages.
 
 Blocking work:
 - Complete and independently validate the authoritative inventory of every root the kernel can activate and every mapping source that can create a physical alias.
 - Keep duplicate/cyclic page-table paths, unknown roots, malformed structures, root-snapshot changes, and range/table/recursive/path budget exhaustion fail-closed; the bounded audit must never treat partial coverage as clean.
-- Reject source-accounting attempts until the root inventory is sealed and every declared root walk completes; keep source flags tied to the specific validation stages that actually completed.
 - Verify every physical overlap across supported page sizes, recursive aliases, direct-map aliases, and inherited mappings in scope; report both coverage completeness and conflict status separately.
 - Complete the broader Issue #26 boot-mapping inventory and unexpected/missing mapping rejection; the current PT_LOAD/stack/BootInfo checks are bounded and do not independently prove every bootloader mapping is expected.
 - Close [Issue #26](https://github.com/musashimusashino666/one-os/issues/26) and [Issue #46](https://github.com/musashimusashino666/one-os/issues/46) only when their stated criteria pass on the exact candidate.
