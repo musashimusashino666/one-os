@@ -373,10 +373,18 @@ mod tests {
         scope.seal_root_inventory().unwrap();
         scope.mark_root_audited(ROOT_A).unwrap();
         scope.mark_root_audited(ROOT_B).unwrap();
-        scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias).unwrap();
-        scope.account_source(FrameWxAuditSource::RecursivePageTableView).unwrap();
-        scope.account_source(FrameWxAuditSource::SharedKernelMappings).unwrap();
-        scope.account_source(FrameWxAuditSource::LargePageLeaves).unwrap();
+        scope
+            .account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias)
+            .unwrap();
+        scope
+            .account_source(FrameWxAuditSource::RecursivePageTableView)
+            .unwrap();
+        scope
+            .account_source(FrameWxAuditSource::SharedKernelMappings)
+            .unwrap();
+        scope
+            .account_source(FrameWxAuditSource::LargePageLeaves)
+            .unwrap();
         scope
     }
 
@@ -395,10 +403,7 @@ mod tests {
         assert_eq!(summary.audited_roots, 1);
         assert!(!summary.root_inventory_sealed);
         assert!(!summary.complete);
-        assert_eq!(
-            summary.missing_sources,
-            FRAME_WX_AUDIT_REQUIRED_SOURCES
-        );
+        assert_eq!(summary.missing_sources, FRAME_WX_AUDIT_REQUIRED_SOURCES);
         assert_eq!(summary.accounted_sources, 0);
         assert!(summary.audit_failed);
     }
