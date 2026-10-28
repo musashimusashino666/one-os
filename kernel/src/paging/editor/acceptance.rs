@@ -214,13 +214,15 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     }
 
     // Clearing the injected reservation must restore a successful, complete audit.
-    let (_, restored_scope, _) = audit_registered_wx_roots(
+    let (restored_audit, restored_scope, _) = audit_registered_wx_roots(
         boot_info,
         active_physical,
         active_root.recursive_index(),
         active_root.physical_address_bits(),
     )?;
-    if !restored_scope.complete
+    if restored_audit.conflicting_overlap_events != 0
+        || restored_audit.first_conflict.is_some()
+        || !restored_scope.complete
         || !restored_scope.roots[..restored_scope.declared_roots]
             .iter()
             .any(|root| root.physical_address == inactive_physical && root.audited)
