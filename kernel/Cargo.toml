@@ -24,6 +24,9 @@ test-vm-transitions = []
 test-root-leak-safety = []
 # Dedicated QEMU image for full post-activation W^X audit diagnostics.
 test-wx-runtime-audit = []
+# Dedicated QEMU rejection tests for the real CR3 switch and initial activation paths.
+test-cr3-switch-guard = []
+test-cr3-activation-guard = []
 # Dedicated QMP-injected asynchronous NMI test during the W^X non-present window.
 test-nmi-wx-transition = []
 

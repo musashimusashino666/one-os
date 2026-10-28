@@ -1,7 +1,7 @@
 # Implementation Status
 
 **Snapshot date:** 2026-10-28  
-**Reviewed main commit:** `beff9ec194666d1cf581a13ff74c56eb904f3169`  
+**Reviewed main commit:** `2d3d30087f99ae1fac47011cbbdb99e25ec60d50`  
 **Purpose:** describe observed implementation status, not guarantee a current CI result.
 
 Update this document when main changes in a material way. “Implemented” means code exists; “verified” means the stated test path demonstrated the behavior; neither word implies a broader security guarantee.
