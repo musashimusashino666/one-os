@@ -5,7 +5,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
-    activation_guard_rejects: impl FnOnce(u64) -> bool,
+    shared_guard_rejects: impl FnOnce(u64) -> bool,
 ) -> Result<(), PagingError> {
     let active_physical = active_root.physical_address();
     let inactive_physical = inactive_root.physical_address();
@@ -53,9 +53,11 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
-    let activation_rejected = activation_guard_rejects(inactive_physical);
+    // This probe calls the shared admission guard directly; it deliberately does not
+    // call either CR3-switch function and makes no claim about their wiring.
+    let guard_rejected = shared_guard_rejects(inactive_physical);
     let registration_restored = register_address_space_root(inactive_physical);
-    if !activation_rejected
+    if !guard_rejected
         || !registration_restored
         || active_root_table_physical() != active_physical
         || !is_uniquely_registered_address_space_root(inactive_physical)
@@ -66,7 +68,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
-    crate::serial_write(b"ONE OS W^X UNREGISTERED ROOT ACTIVATION REJECT PASS\n");
+    crate::serial_write(b"ONE OS W^X MISSING ROOT REGISTRATION GUARD REJECT PASS\n");
 
     let (_, scope, _) = audit_registered_wx_roots(
         boot_info,
