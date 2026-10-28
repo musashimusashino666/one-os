@@ -531,18 +531,17 @@ pub(super) fn switch_address_space_flush_local_tlb(
 /// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
 fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
     #[cfg(feature = "test-cr3-activation-guard")]
-    let fault_injected_missing_registration =
-        if CR3_ACTIVATION_GUARD_TEST_TARGET
-            .compare_exchange(root_physical, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            if !super::paging::remove_address_space_root_registration_for_cr3_test(root_physical) {
-                return Err(AddressSpaceError::Cr3GuardTestFailed);
-            }
-            true
-        } else {
-            false
-        };
+    let fault_injected_missing_registration = if CR3_ACTIVATION_GUARD_TEST_TARGET
+        .compare_exchange(root_physical, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        if !super::paging::remove_address_space_root_registration_for_cr3_test(root_physical) {
+            return Err(AddressSpaceError::Cr3GuardTestFailed);
+        }
+        true
+    } else {
+        false
+    };
 
     // Run the same registry and allocator predicate that production activation
     // relies on, while the dedicated test has actually removed the registry entry.
@@ -1630,14 +1629,10 @@ pub fn activate_supervisor_kernel_root(
         clear_and_release_root(root, &mut editor, root_physical)?;
         #[cfg(feature = "test-cr3-activation-guard")]
         if error == AddressSpaceError::RootNotRegistered {
-            let rejection_invariants_hold =
-                active_root_table_physical() == cr3_before_guard_test
-                    && matches!(super::memory::is_frame_allocated(root_physical), Ok(false))
-                    && !super::paging::is_uniquely_registered_address_space_root(root_physical);
-            CR3_ACTIVATION_GUARD_TEST_PASSED.store(
-                rejection_invariants_hold,
-                Ordering::Release,
-            );
+            let rejection_invariants_hold = active_root_table_physical() == cr3_before_guard_test
+                && matches!(super::memory::is_frame_allocated(root_physical), Ok(false))
+                && !super::paging::is_uniquely_registered_address_space_root(root_physical);
+            CR3_ACTIVATION_GUARD_TEST_PASSED.store(rejection_invariants_hold, Ordering::Release);
         }
         return Err(error);
     }
