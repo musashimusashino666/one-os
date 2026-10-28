@@ -304,6 +304,34 @@ pub fn register_address_space_root(physical_address: u64) -> bool {
     false
 }
 
+/// Removes exactly one live-root registry entry for dedicated CR3 guard fault-injection tests.
+/// This deliberately bypasses the production unregister policy and must never be compiled
+/// into normal kernel images.
+#[cfg(any(
+    feature = "test-cr3-switch-guard",
+    feature = "test-cr3-activation-guard"
+))]
+pub fn remove_address_space_root_registration_for_cr3_test(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+
+    let mut matching_slot = None;
+    for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
+        if slot.load(Ordering::Acquire) == physical_address
+            && matching_slot.replace(index).is_some()
+        {
+            return false;
+        }
+    }
+    let Some(index) = matching_slot else {
+        return false;
+    };
+    ADDRESS_SPACE_ROOT_FRAMES[index]
+        .compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
 /// Ensures a released root frame is absent from the registry.
 ///
 /// A root may be removed only after its frame is no longer allocator-owned and
