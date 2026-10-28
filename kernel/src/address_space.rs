@@ -527,7 +527,7 @@ pub(super) fn switch_address_space_flush_local_tlb(
     Ok(())
 }
 
-/// Rejects target roots that are not uniquely registered and allocator-owned.
+/// Rejects target roots that are not uniquely registered, allocator-owned, and non-reserved.
 /// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
 fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
     #[cfg(feature = "test-cr3-activation-guard")]
@@ -543,10 +543,13 @@ fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), Add
         false
     };
 
-    // Run the same registry and allocator predicate that production activation
-    // relies on, while the dedicated test has actually removed the registry entry.
+    // Recheck registration, ordinary allocator ownership, and permanent-reservation
+    // metadata immediately before the CR3 write. Every uncertain query fails closed.
     let admission = if !super::paging::is_uniquely_registered_address_space_root(root_physical)
-        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+        || !oneos_core::frame_wx_root_frame_state_is_admissible(
+            super::memory::is_frame_allocated(root_physical),
+            super::memory::is_permanently_reserved(root_physical),
+        )
     {
         Err(AddressSpaceError::RootNotRegistered)
     } else {
