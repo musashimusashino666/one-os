@@ -54,7 +54,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
-    crate::serial_write(b"ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS\\n");
+    crate::serial_write(b"ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS\n");
     if inactive_physical == active_physical
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
@@ -68,6 +68,35 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
+
+    // Inject a duplicate slot, then ensure a registration attempt refuses to
+    // bless the malformed inventory. Remove the injected slot before checking
+    // results so no successful-path return can leave the test root duplicated.
+    let duplicate_slot_index = ADDRESS_SPACE_ROOT_FRAMES
+        .iter()
+        .enumerate()
+        .find_map(|(index, slot)| {
+            (slot.load(Ordering::Acquire) == 0).then_some(index)
+        })
+        .ok_or(PagingError::WxAuditFailed)?;
+    let duplicate_slot = &ADDRESS_SPACE_ROOT_FRAMES[duplicate_slot_index];
+    if duplicate_slot
+        .compare_exchange(0, inactive_physical, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let duplicate_registration_rejected = !register_address_space_root(inactive_physical);
+    let duplicate_slot_removed = duplicate_slot
+        .compare_exchange(inactive_physical, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok();
+    if !duplicate_registration_rejected
+        || !duplicate_slot_removed
+        || !is_uniquely_registered_address_space_root(inactive_physical)
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X DUPLICATE ROOT REGISTRATION REJECT PASS\n");
 
     // Neither the current CR3 nor a still-allocated inactive root may be
     // removed. This verifies both rejection branches before auditing the set.
