@@ -1483,6 +1483,15 @@ pub fn activate_supervisor_kernel_root(
         return Err(error);
     }
 
+    // This initial activation path writes CR3 directly rather than using
+    // switch_address_space; enforce the same live-root invariant at its boundary.
+    if !super::paging::is_address_space_root_frame(root_physical)
+        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+    {
+        clear_and_release_root(root, &mut editor, root_physical)?;
+        return Err(AddressSpaceError::RootNotRegistered);
+    }
+
     // Always make the PGE-disabled state explicit before writing CR3.
     // This keeps the switch contract uniform even when PGE was already clear:
     // CR4.PGE is cleared, CR3 is written, and the original CR4 is restored on
