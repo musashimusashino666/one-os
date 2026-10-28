@@ -749,6 +749,7 @@ pub fn verify_runtime_address_space_switch_smoke_test_with_wx_probe(
     )
 }
 
+#[cfg(not(feature = "test-cr3-switch-guard"))]
 fn verify_runtime_address_space_switch_smoke_test_impl(
     boot_info: &BootInfo,
     active_root: ActiveAddressSpaceRoot,
@@ -768,220 +769,273 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    #[cfg(feature = "test-cr3-switch-guard")]
-    {
-        const PASS: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT PASS\n";
-        const FAIL: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT FAIL\n";
-        if !super::paging::is_uniquely_registered_address_space_root(original_physical)
-            || !super::paging::is_uniquely_registered_address_space_root(second_physical)
-            || !matches!(
-                super::memory::is_frame_allocated(original_physical),
-                Ok(true)
-            )
-            || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
-        {
-            cr3_guard_test_exit(false, PASS, FAIL);
-        }
-        if !super::paging::remove_address_space_root_registration_for_cr3_test(second_physical) {
-            cr3_guard_test_exit(false, PASS, FAIL);
-        }
-
-        // Invoke the real function, not only its admission predicate. The function
-        // consumes both handles on failure, so this dedicated image exits immediately.
-        let result = switch_address_space(active_root, second_root, boot_info, false);
-        match result {
-            Err(AddressSpaceError::RootNotRegistered) => {
-                let target_restored = super::paging::register_address_space_root(second_physical);
-                let invariants_hold = target_restored
-                    && active_root_table_physical() == original_physical
-                    && super::paging::is_uniquely_registered_address_space_root(original_physical)
-                    && super::paging::is_uniquely_registered_address_space_root(second_physical)
-                    && matches!(
-                        super::memory::is_frame_allocated(original_physical),
-                        Ok(true)
-                    )
-                    && matches!(super::memory::is_frame_allocated(second_physical), Ok(true));
-                cr3_guard_test_exit(invariants_hold, PASS, FAIL);
-            }
-            _ => cr3_guard_test_exit(false, PASS, FAIL),
-        }
+    // Both roots deliberately map the same VA to different, simultaneously
+    // allocated physical frames.
+    let third_root = create_inactive_address_space_root(boot_info, &active_root)?;
+    let third_physical = third_root.physical_address();
+    if third_physical == original_physical || third_physical == second_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
     }
 
-    #[cfg(not(feature = "test-cr3-switch-guard"))]
-    {
-    // Build a second independent user root before either root is activated.
-        // Both roots deliberately map the same VA to different, simultaneously
-        // allocated physical frames.
-        let third_root = create_inactive_address_space_root(boot_info, &active_root)?;
-        let third_physical = third_root.physical_address();
-        if third_physical == original_physical || third_physical == second_physical {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
+    let (mut user_registry, user_frame_physical) =
+        super::paging::map_test_user_page_for_teardown(boot_info, &second_root, &active_root)
+            .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    let (mut peer_registry, peer_frame_physical) =
+        super::paging::map_test_user_page_for_teardown(boot_info, &third_root, &active_root)
+            .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    if user_frame_physical == peer_frame_physical {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
 
-        let (mut user_registry, user_frame_physical) =
-            super::paging::map_test_user_page_for_teardown(boot_info, &second_root, &active_root)
-                .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-        let (mut peer_registry, peer_frame_physical) =
-            super::paging::map_test_user_page_for_teardown(boot_info, &third_root, &active_root)
-                .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-        if user_frame_physical == peer_frame_physical {
+    // Exercise real page-table corruption rejection before activating the root.
+    // The helper restores every injected entry and verifies the valid tree again.
+    super::paging::verify_teardown_corruption_preflight_for_smoke(
+        boot_info,
+        &second_root,
+        &active_root,
+        &user_registry,
+        third_physical,
+        peer_frame_physical,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
+    // Prove a live inactive root cannot be removed from the inventory merely
+    // by calling the registry cleanup API; it must remain in a complete audit.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    super::paging::verify_live_root_registry_unregistration_rejected_for_smoke(
+        boot_info,
+        &second_root,
+        &active_root,
+        |root_physical| {
+            validate_registered_root_for_activation(root_physical)
+                == Err(AddressSpaceError::RootNotRegistered)
+        },
+    )
+    .map_err(|_| AddressSpaceError::RootRegistryGuardFailed)?;
+
+    // The dedicated W^X audit profile injects a writable alias for the active
+    // root's test RX frame into a real inactive root, requires the complete
+    // all-root audit to find that cross-root conflict, then verifies cleanup
+    // restores a conflict-free audit before the ordinary smoke check proceeds.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    if let Some((executable_physical_page, executable_virtual_address)) = wx_probe {
+        super::paging::verify_wx_audit_cross_root_alias_for_smoke(
+            boot_info,
+            &second_root,
+            &active_root,
+            executable_physical_page,
+            executable_virtual_address,
+        )
+        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    }
+
+    // The two inactive roots now contain real private lower-half page-table
+    // trees. Audit them before activation so the physical-offset/ownership path
+    // must walk their actual child tables, not only inspect empty PML4 roots.
+    let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
+        boot_info,
+        original_physical,
+        original_recursive_index,
+        physical_address_bits,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    #[cfg(not(feature = "test-wx-runtime-audit"))]
+    let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
+        boot_info,
+        original_physical,
+        original_recursive_index,
+        physical_address_bits,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+    // This walk is read-only, but the normal-boot policy fails closed on a
+    // conflict in its declared scope. Emit the first concrete conflict before
+    // any gate can return a generic integration error, preserving diagnostics.
+    super::serial_write(
+        b"ONE OS W^X POST-ACTIVATION AUDIT: READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT\n",
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
+        audit.conflicting_overlap_events,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP OFFSET: ",
+        direct_map_coverage.virtual_offset,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP PHYSICAL END: ",
+        direct_map_coverage.physical_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP COVERED VIRTUAL END: ",
+        direct_map_coverage.covered_virtual_end,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP LEAF MAPPINGS: ",
+        direct_map_coverage.covered_leaf_mappings,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION ACCOUNTED SOURCE MASK: ",
+        scope.accounted_sources as u64,
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION DIRECT MAP SOURCE ACCOUNTED: ",
+        if scope.accounted_sources
+            & oneos_core::FrameWxAuditSource::PhysicalMemoryOffsetAlias.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION RECURSIVE VIEW SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION SHARED KERNEL SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::SharedKernelMappings.mask()
+            != 0
+        {
+            1
+        } else {
+            0
+        },
+    );
+    super::interrupts::write_hex(
+        b"ONE OS W^X POST-ACTIVATION LARGE PAGE SOURCE ACCOUNTED: ",
+        if scope.accounted_sources & oneos_core::FrameWxAuditSource::LargePageLeaves.mask() != 0 {
+            1
+        } else {
+            0
+        },
+    );
+    for root in scope.roots[..scope.declared_roots].iter() {
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT PHYSICAL: ",
+            root.physical_address,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X POST-ACTIVATION ROOT COMPLETE: ",
+            if root.audited { 1 } else { 0 },
+        );
+    }
+    if let Some(conflict) = audit.first_conflict {
+        super::serial_write(b"ONE OS W^X POST-ACTIVATION FIRST CONFLICT\n");
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT PHYSICAL START: ",
+            conflict.physical_start,
+        );
+        super::interrupts::write_hex(b"ONE OS W^X CONFLICT LENGTH: ", conflict.length);
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT FIRST VIRTUAL START: ",
+            conflict.first_virtual_start,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT SECOND VIRTUAL START: ",
+            conflict.second_virtual_start,
+        );
+        let first_flags = (conflict.first_permissions.writable as u64)
+            | ((conflict.first_permissions.executable as u64) << 1);
+        let second_flags = (conflict.second_permissions.writable as u64)
+            | ((conflict.second_permissions.executable as u64) << 1);
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT FIRST RIGHTS (W=BIT0,X=BIT1): ",
+            first_flags,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X CONFLICT SECOND RIGHTS (W=BIT0,X=BIT1): ",
+            second_flags,
+        );
+    }
+
+    if scope.declared_roots < 3
+        || scope.audited_roots != scope.declared_roots
+        || scope.missing_sources != 0
+        || scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
+            == 0
+        || !scope.complete
+    {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
+    // The dedicated root-token leak test intentionally skips the direct-map
+    // W^X transition so it can exercise ownership/teardown against the legacy
+    // boot mapping. Its audit must complete, but may still report that known
+    // conflict. Normal boot requires a conflict-free result.
+    #[cfg(all(
+        not(feature = "test-root-leak-safety"),
+        not(feature = "test-wx-runtime-audit")
+    ))]
+    if audit.conflicting_overlap_events != 0 || audit.first_conflict.is_some() {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
+    #[cfg(feature = "test-wx-runtime-audit")]
+    {
+        if audit.conflicting_overlap_events != 0
+            || audit.first_conflict.is_some()
+            || (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none()
+        {
             return Err(AddressSpaceError::PagingIntegrationFailed);
         }
 
-        // Exercise real page-table corruption rejection before activating the root.
-        // The helper restores every injected entry and verifies the valid tree again.
-        super::paging::verify_teardown_corruption_preflight_for_smoke(
-            boot_info,
-            &second_root,
-            &active_root,
-            &user_registry,
-            third_physical,
-            peer_frame_physical,
-        )
-        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-
-        // Prove a live inactive root cannot be removed from the inventory merely
-        // by calling the registry cleanup API; it must remain in a complete audit.
-        #[cfg(feature = "test-wx-runtime-audit")]
-        super::paging::verify_live_root_registry_unregistration_rejected_for_smoke(
-            boot_info,
-            &second_root,
-            &active_root,
-            |root_physical| {
-                validate_registered_root_for_activation(root_physical)
-                    == Err(AddressSpaceError::RootNotRegistered)
-            },
-        )
-        .map_err(|_| AddressSpaceError::RootRegistryGuardFailed)?;
-
-        // The dedicated W^X audit profile injects a writable alias for the active
-        // root's test RX frame into a real inactive root, requires the complete
-        // all-root audit to find that cross-root conflict, then verifies cleanup
-        // restores a conflict-free audit before the ordinary smoke check proceeds.
-        #[cfg(feature = "test-wx-runtime-audit")]
-        if let Some((executable_physical_page, executable_virtual_address)) = wx_probe {
-            super::paging::verify_wx_audit_cross_root_alias_for_smoke(
-                boot_info,
-                &second_root,
-                &active_root,
-                executable_physical_page,
-                executable_virtual_address,
-            )
-            .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-        }
-
-        // The two inactive roots now contain real private lower-half page-table
-        // trees. Audit them before activation so the physical-offset/ownership path
-        // must walk their actual child tables, not only inspect empty PML4 roots.
-        let (physical_address_bits, _) = validate_runtime_root_context(boot_info, &active_root)?;
-        #[cfg(feature = "test-wx-runtime-audit")]
-        let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
-            boot_info,
-            original_physical,
-            original_recursive_index,
-            physical_address_bits,
-        )
-        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-        #[cfg(not(feature = "test-wx-runtime-audit"))]
-        let (audit, scope, direct_map_coverage) = super::paging::audit_registered_wx_roots(
-            boot_info,
-            original_physical,
-            original_recursive_index,
-            physical_address_bits,
-        )
-        .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
-        // This walk is read-only, but the normal-boot policy fails closed on a
-        // conflict in its declared scope. Emit the first concrete conflict before
-        // any gate can return a generic integration error, preserving diagnostics.
+        // Emit the audit captured after the owned kernel root is active. Keep this
+        // distinct from the earlier bootloader-root inspection in main.rs: the
+        // latter's identity mappings may not survive CR3 activation.
+        // The walk is read-only. Normal boot treats conflicts as fatal, but the
+        // bounded declared-root inventory is not a global W^X guarantee.
         super::serial_write(
-            b"ONE OS W^X POST-ACTIVATION AUDIT: READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT\n",
+            b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT)\n",
+        );
+        super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME DECLARED ROOTS: ",
+            scope.declared_roots as u64,
         );
         super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION CONFLICT EVENTS: ",
+            b"ONE OS W^X RUNTIME AUDITED ROOTS: ",
+            scope.audited_roots as u64,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME MISSING SOURCES: ",
+            scope.missing_sources as u64,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME ALIAS MAPPINGS: ",
+            audit.tracked_alias_mappings,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME TRACKED RANGES: ",
+            audit.tracked_ranges as u64,
+        );
+        super::interrupts::write_hex(
+            b"ONE OS W^X RUNTIME CONFLICT EVENTS: ",
             audit.conflicting_overlap_events,
         );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION DIRECT MAP OFFSET: ",
-            direct_map_coverage.virtual_offset,
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION DIRECT MAP PHYSICAL END: ",
-            direct_map_coverage.physical_end,
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION DIRECT MAP COVERED VIRTUAL END: ",
-            direct_map_coverage.covered_virtual_end,
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION DIRECT MAP LEAF MAPPINGS: ",
-            direct_map_coverage.covered_leaf_mappings,
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION ACCOUNTED SOURCE MASK: ",
-            scope.accounted_sources as u64,
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION DIRECT MAP SOURCE ACCOUNTED: ",
-            if scope.accounted_sources
-                & oneos_core::FrameWxAuditSource::PhysicalMemoryOffsetAlias.mask()
-                != 0
-            {
-                1
-            } else {
-                0
-            },
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION RECURSIVE VIEW SOURCE ACCOUNTED: ",
-            if scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
-                != 0
-            {
-                1
-            } else {
-                0
-            },
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION SHARED KERNEL SOURCE ACCOUNTED: ",
-            if scope.accounted_sources & oneos_core::FrameWxAuditSource::SharedKernelMappings.mask()
-                != 0
-            {
-                1
-            } else {
-                0
-            },
-        );
-        super::interrupts::write_hex(
-            b"ONE OS W^X POST-ACTIVATION LARGE PAGE SOURCE ACCOUNTED: ",
-            if scope.accounted_sources & oneos_core::FrameWxAuditSource::LargePageLeaves.mask() != 0 {
-                1
-            } else {
-                0
-            },
-        );
-        for root in scope.roots[..scope.declared_roots].iter() {
-            super::interrupts::write_hex(
-                b"ONE OS W^X POST-ACTIVATION ROOT PHYSICAL: ",
-                root.physical_address,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X POST-ACTIVATION ROOT COMPLETE: ",
-                if root.audited { 1 } else { 0 },
-            );
-        }
         if let Some(conflict) = audit.first_conflict {
-            super::serial_write(b"ONE OS W^X POST-ACTIVATION FIRST CONFLICT\n");
+            super::serial_write(
+                b"ONE OS W^X RUNTIME FIRST CONFLICT (FIRST SAMPLE ONLY; NOT AN EXHAUSTIVE LIST)\n",
+            );
             super::interrupts::write_hex(
-                b"ONE OS W^X CONFLICT PHYSICAL START: ",
+                b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
                 conflict.physical_start,
             );
-            super::interrupts::write_hex(b"ONE OS W^X CONFLICT LENGTH: ", conflict.length);
+            super::interrupts::write_hex(b"ONE OS W^X RUNTIME CONFLICT LENGTH: ", conflict.length);
             super::interrupts::write_hex(
-                b"ONE OS W^X CONFLICT FIRST VIRTUAL START: ",
+                b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
                 conflict.first_virtual_start,
             );
             super::interrupts::write_hex(
-                b"ONE OS W^X CONFLICT SECOND VIRTUAL START: ",
+                b"ONE OS W^X RUNTIME CONFLICT SECOND VIRTUAL START: ",
                 conflict.second_virtual_start,
             );
             let first_flags = (conflict.first_permissions.writable as u64)
@@ -989,276 +1043,228 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
             let second_flags = (conflict.second_permissions.writable as u64)
                 | ((conflict.second_permissions.executable as u64) << 1);
             super::interrupts::write_hex(
-                b"ONE OS W^X CONFLICT FIRST RIGHTS (W=BIT0,X=BIT1): ",
+                b"ONE OS W^X RUNTIME FIRST RIGHTS FLAGS (W=BIT0,X=BIT1): ",
                 first_flags,
             );
             super::interrupts::write_hex(
-                b"ONE OS W^X CONFLICT SECOND RIGHTS (W=BIT0,X=BIT1): ",
+                b"ONE OS W^X RUNTIME SECOND RIGHTS FLAGS (W=BIT0,X=BIT1): ",
                 second_flags,
             );
-        }
-
-        if scope.declared_roots < 3
-            || scope.audited_roots != scope.declared_roots
-            || scope.missing_sources != 0
-            || scope.accounted_sources & oneos_core::FrameWxAuditSource::RecursivePageTableView.mask()
-                == 0
-            || !scope.complete
-        {
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-
-        // The dedicated root-token leak test intentionally skips the direct-map
-        // W^X transition so it can exercise ownership/teardown against the legacy
-        // boot mapping. Its audit must complete, but may still report that known
-        // conflict. Normal boot requires a conflict-free result.
-        #[cfg(all(
-            not(feature = "test-root-leak-safety"),
-            not(feature = "test-wx-runtime-audit")
-        ))]
-        if audit.conflicting_overlap_events != 0 || audit.first_conflict.is_some() {
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-
-        #[cfg(feature = "test-wx-runtime-audit")]
-        {
-            if audit.conflicting_overlap_events != 0
-                || audit.first_conflict.is_some()
-                || (audit.conflicting_overlap_events == 0) != audit.first_conflict.is_none()
-            {
-                return Err(AddressSpaceError::PagingIntegrationFailed);
-            }
-
-            // Emit the audit captured after the owned kernel root is active. Keep this
-            // distinct from the earlier bootloader-root inspection in main.rs: the
-            // latter's identity mappings may not survive CR3 activation.
-            // The walk is read-only. Normal boot treats conflicts as fatal, but the
-            // bounded declared-root inventory is not a global W^X guarantee.
+        } else {
             super::serial_write(
-                b"ONE OS W^X RUNTIME AUDIT COMPLETE FOR DECLARED SCOPE (READ-ONLY; NORMAL BOOT FAILS CLOSED ON CONFLICT)\n",
+                b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n",
             );
-            super::interrupts::write_hex(b"ONE OS W^X RUNTIME ACTIVE ROOT: ", original_physical);
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME DECLARED ROOTS: ",
-                scope.declared_roots as u64,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME AUDITED ROOTS: ",
-                scope.audited_roots as u64,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME MISSING SOURCES: ",
-                scope.missing_sources as u64,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME ALIAS MAPPINGS: ",
-                audit.tracked_alias_mappings,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME TRACKED RANGES: ",
-                audit.tracked_ranges as u64,
-            );
-            super::interrupts::write_hex(
-                b"ONE OS W^X RUNTIME CONFLICT EVENTS: ",
-                audit.conflicting_overlap_events,
-            );
-            if let Some(conflict) = audit.first_conflict {
-                super::serial_write(
-                    b"ONE OS W^X RUNTIME FIRST CONFLICT (FIRST SAMPLE ONLY; NOT AN EXHAUSTIVE LIST)\n",
-                );
-                super::interrupts::write_hex(
-                    b"ONE OS W^X RUNTIME CONFLICT PHYSICAL START: ",
-                    conflict.physical_start,
-                );
-                super::interrupts::write_hex(b"ONE OS W^X RUNTIME CONFLICT LENGTH: ", conflict.length);
-                super::interrupts::write_hex(
-                    b"ONE OS W^X RUNTIME CONFLICT FIRST VIRTUAL START: ",
-                    conflict.first_virtual_start,
-                );
-                super::interrupts::write_hex(
-                    b"ONE OS W^X RUNTIME CONFLICT SECOND VIRTUAL START: ",
-                    conflict.second_virtual_start,
-                );
-                let first_flags = (conflict.first_permissions.writable as u64)
-                    | ((conflict.first_permissions.executable as u64) << 1);
-                let second_flags = (conflict.second_permissions.writable as u64)
-                    | ((conflict.second_permissions.executable as u64) << 1);
-                super::interrupts::write_hex(
-                    b"ONE OS W^X RUNTIME FIRST RIGHTS FLAGS (W=BIT0,X=BIT1): ",
-                    first_flags,
-                );
-                super::interrupts::write_hex(
-                    b"ONE OS W^X RUNTIME SECOND RIGHTS FLAGS (W=BIT0,X=BIT1): ",
-                    second_flags,
-                );
+        }
+    }
+
+    let (original_inactive, second_active) =
+        activate_preflighted_user_root(active_root, second_root, boot_info, &user_registry)?;
+    if second_active.physical_address() != second_physical
+        || second_active.recursive_index() != second_recursive_index
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    const USER_PAGE_SENTINEL: u64 = 0x4f4e_455f_5553_4552;
+    const PEER_PAGE_SENTINEL: u64 = 0x5045_4552_5f44_4154;
+    let user_page = 0x4000usize as *mut u64;
+    // SAFETY: page 0x4000 is an owned writable user-data mapping in second_active.
+    // Maskable interrupts and preemption are disabled, and the registry retains
+    // the exact frame token until teardown completes.
+    unsafe { ptr::write_volatile(user_page, USER_PAGE_SENTINEL) };
+    // SAFETY: same validated mapping and lifetime conditions as the preceding write.
+    if unsafe { ptr::read_volatile(user_page) } != USER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
+    let (second_inactive, restored_active) =
+        switch_address_space(second_active, original_inactive, boot_info, false)?;
+    if restored_active.physical_address() != original_physical
+        || restored_active.recursive_index() != original_recursive_index
+        || second_inactive.physical_address() != second_physical
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    // Confirm that the peer root independently supports the same VA before
+    // tearing down the first root. The physical frames must be distinct.
+    let (original_inactive_for_peer, peer_active) =
+        activate_preflighted_user_root(restored_active, third_root, boot_info, &peer_registry)?;
+    if peer_active.physical_address() != third_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+    let peer_page = 0x4000usize as *mut u64;
+    // SAFETY: page 0x4000 is the peer root's separately owned writable user page.
+    unsafe { ptr::write_volatile(peer_page, PEER_PAGE_SENTINEL) };
+    // SAFETY: the peer root remains active and the page is still registered.
+    if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+    let (peer_inactive, restored_active) =
+        switch_address_space(peer_active, original_inactive_for_peer, boot_info, false)?;
+    if restored_active.physical_address() != original_physical
+        || peer_inactive.physical_address() != third_physical
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    // Inject a one-shot allocator failure after the child table has been
+    // detached. The first attempt must retain the token as a pending frame;
+    // a normal second attempt must drain it and finish teardown safely.
+    let first_teardown_attempt = {
+        let mut fail_next_table_release = true;
+        let mut release_table_frame = |frame| {
+            if fail_next_table_release {
+                fail_next_table_release = false;
+                Err((super::memory::MemoryError::Busy, frame))
             } else {
-                super::serial_write(
-                    b"ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE\n",
-                );
+                super::memory::free_frame(frame)
             }
-        }
-
-        let (original_inactive, second_active) =
-            activate_preflighted_user_root(active_root, second_root, boot_info, &user_registry)?;
-        if second_active.physical_address() != second_physical
-            || second_active.recursive_index() != second_recursive_index
-        {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
-
-        const USER_PAGE_SENTINEL: u64 = 0x4f4e_455f_5553_4552;
-        const PEER_PAGE_SENTINEL: u64 = 0x5045_4552_5f44_4154;
-        let user_page = 0x4000usize as *mut u64;
-        // SAFETY: page 0x4000 is an owned writable user-data mapping in second_active.
-        // Maskable interrupts and preemption are disabled, and the registry retains
-        // the exact frame token until teardown completes.
-        unsafe { ptr::write_volatile(user_page, USER_PAGE_SENTINEL) };
-        // SAFETY: same validated mapping and lifetime conditions as the preceding write.
-        if unsafe { ptr::read_volatile(user_page) } != USER_PAGE_SENTINEL {
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-
-        let (second_inactive, restored_active) =
-            switch_address_space(second_active, original_inactive, boot_info, false)?;
-        if restored_active.physical_address() != original_physical
-            || restored_active.recursive_index() != original_recursive_index
-            || second_inactive.physical_address() != second_physical
-        {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
-
-        // Confirm that the peer root independently supports the same VA before
-        // tearing down the first root. The physical frames must be distinct.
-        let (original_inactive_for_peer, peer_active) =
-            activate_preflighted_user_root(restored_active, third_root, boot_info, &peer_registry)?;
-        if peer_active.physical_address() != third_physical {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
-        let peer_page = 0x4000usize as *mut u64;
-        // SAFETY: page 0x4000 is the peer root's separately owned writable user page.
-        unsafe { ptr::write_volatile(peer_page, PEER_PAGE_SENTINEL) };
-        // SAFETY: the peer root remains active and the page is still registered.
-        if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-        let (peer_inactive, restored_active) =
-            switch_address_space(peer_active, original_inactive_for_peer, boot_info, false)?;
-        if restored_active.physical_address() != original_physical
-            || peer_inactive.physical_address() != third_physical
-        {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
-
-        // Inject a one-shot allocator failure after the child table has been
-        // detached. The first attempt must retain the token as a pending frame;
-        // a normal second attempt must drain it and finish teardown safely.
-        let first_teardown_attempt = {
-            let mut fail_next_table_release = true;
-            let mut release_table_frame = |frame| {
-                if fail_next_table_release {
-                    fail_next_table_release = false;
-                    Err((super::memory::MemoryError::Busy, frame))
-                } else {
-                    super::memory::free_frame(frame)
-                }
-            };
-            super::paging::teardown_inactive_user_address_space_with_table_release(
-                boot_info,
-                &second_inactive,
-                &restored_active,
-                &mut user_registry,
-                &mut release_table_frame,
-            )
         };
-        if !matches!(
-            first_teardown_attempt,
-            Err(super::paging::InactiveAddressSpaceTeardownError::Kernel(
-                super::paging::PagingError::PageTableFrameReleaseFailed
-            ))
-        ) || !super::paging::has_pending_detached_private_table(second_physical)
-        {
-            super::serial_write(b"ONE OS DETACHED TABLE RELEASE RETRY FAILED\n");
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-
-        super::paging::teardown_inactive_user_address_space(
+        super::paging::teardown_inactive_user_address_space_with_table_release(
             boot_info,
             &second_inactive,
             &restored_active,
             &mut user_registry,
+            &mut release_table_frame,
         )
-        .map_err(|error| {
-            match error {
-                super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
-                    super::serial_write(kernel_error.message());
-                }
-                super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
-                    let _cause = failure.error();
-                    if failure.completed_pages() == 0 {
-                        super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
-                    } else {
-                        super::serial_write(
-                            b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
-                        );
-                    }
+    };
+    if !matches!(
+        first_teardown_attempt,
+        Err(super::paging::InactiveAddressSpaceTeardownError::Kernel(
+            super::paging::PagingError::PageTableFrameReleaseFailed
+        ))
+    ) || !super::paging::has_pending_detached_private_table(second_physical)
+    {
+        super::serial_write(b"ONE OS DETACHED TABLE RELEASE RETRY FAILED\n");
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+
+    super::paging::teardown_inactive_user_address_space(
+        boot_info,
+        &second_inactive,
+        &restored_active,
+        &mut user_registry,
+    )
+    .map_err(|error| {
+        match error {
+            super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
+                super::serial_write(kernel_error.message());
+            }
+            super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
+                let _cause = failure.error();
+                if failure.completed_pages() == 0 {
+                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
+                } else {
+                    super::serial_write(
+                        b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
+                    );
                 }
             }
-            AddressSpaceError::PagingIntegrationFailed
-        })?;
-        release_inactive_address_space_root(boot_info, &restored_active, second_inactive)?;
+        }
+        AddressSpaceError::PagingIntegrationFailed
+    })?;
+    release_inactive_address_space_root(boot_info, &restored_active, second_inactive)?;
 
-        // Re-enter the peer after the first root has been fully torn down and its
-        // private tables reclaimed. Its same-VA mapping and data must be unchanged.
-        let (original_inactive_for_peer_check, peer_active_check) =
-            activate_preflighted_user_root(restored_active, peer_inactive, boot_info, &peer_registry)?;
-        if peer_active_check.physical_address() != third_physical {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
-        // SAFETY: this is the peer root's still-registered mapping at VA 0x4000.
-        if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
-            return Err(AddressSpaceError::PagingIntegrationFailed);
-        }
-        let (peer_inactive, final_active) = switch_address_space(
-            peer_active_check,
-            original_inactive_for_peer_check,
-            boot_info,
-            false,
-        )?;
-        if final_active.physical_address() != original_physical
-            || final_active.recursive_index() != original_recursive_index
-            || peer_inactive.physical_address() != third_physical
-        {
-            return Err(AddressSpaceError::RootActivationFailed);
-        }
+    // Re-enter the peer after the first root has been fully torn down and its
+    // private tables reclaimed. Its same-VA mapping and data must be unchanged.
+    let (original_inactive_for_peer_check, peer_active_check) =
+        activate_preflighted_user_root(restored_active, peer_inactive, boot_info, &peer_registry)?;
+    if peer_active_check.physical_address() != third_physical {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
+    // SAFETY: this is the peer root's still-registered mapping at VA 0x4000.
+    if unsafe { ptr::read_volatile(peer_page) } != PEER_PAGE_SENTINEL {
+        return Err(AddressSpaceError::PagingIntegrationFailed);
+    }
+    let (peer_inactive, final_active) = switch_address_space(
+        peer_active_check,
+        original_inactive_for_peer_check,
+        boot_info,
+        false,
+    )?;
+    if final_active.physical_address() != original_physical
+        || final_active.recursive_index() != original_recursive_index
+        || peer_inactive.physical_address() != third_physical
+    {
+        return Err(AddressSpaceError::RootActivationFailed);
+    }
 
-        super::paging::teardown_inactive_user_address_space(
-            boot_info,
-            &peer_inactive,
-            &final_active,
-            &mut peer_registry,
-        )
-        .map_err(|error| {
-            match error {
-                super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
-                    super::serial_write(kernel_error.message());
-                }
-                super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
-                    let _cause = failure.error();
-                    if failure.completed_pages() == 0 {
-                        super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
-                    } else {
-                        super::serial_write(
-                            b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
-                        );
-                    }
+    super::paging::teardown_inactive_user_address_space(
+        boot_info,
+        &peer_inactive,
+        &final_active,
+        &mut peer_registry,
+    )
+    .map_err(|error| {
+        match error {
+            super::paging::InactiveAddressSpaceTeardownError::Kernel(kernel_error) => {
+                super::serial_write(kernel_error.message());
+            }
+            super::paging::InactiveAddressSpaceTeardownError::UserPages(failure) => {
+                let _cause = failure.error();
+                if failure.completed_pages() == 0 {
+                    super::serial_write(b"ONE OS USER PAGE TEARDOWN FAILED BEFORE COMPLETION\n");
+                } else {
+                    super::serial_write(
+                        b"ONE OS USER PAGE TEARDOWN FAILED AFTER PARTIAL COMPLETION\n",
+                    );
                 }
             }
-            AddressSpaceError::PagingIntegrationFailed
-        })?;
-        release_inactive_address_space_root(boot_info, &final_active, peer_inactive)?;
-        #[cfg(feature = "test-root-leak-safety")]
-        verify_root_leak_allocator_smoke_test(boot_info, &final_active)?;
+        }
+        AddressSpaceError::PagingIntegrationFailed
+    })?;
+    release_inactive_address_space_root(boot_info, &final_active, peer_inactive)?;
+    #[cfg(feature = "test-root-leak-safety")]
+    verify_root_leak_allocator_smoke_test(boot_info, &final_active)?;
     Ok(final_active)
+}
+
+#[cfg(feature = "test-cr3-switch-guard")]
+fn verify_runtime_address_space_switch_smoke_test_impl(
+    boot_info: &BootInfo,
+    active_root: ActiveAddressSpaceRoot,
+    _wx_probe: Option<(u64, u64)>,
+) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
+    const PASS: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT PASS\n";
+    const FAIL: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT FAIL\n";
+
+    let original_physical = active_root.physical_address();
+    let second_root = match create_inactive_address_space_root(boot_info, &active_root) {
+        Ok(root) => root,
+        Err(_) => cr3_guard_test_exit(false, PASS, FAIL),
+    };
+    let second_physical = second_root.physical_address();
+    if second_root.recursive_index().is_none()
+        || second_physical == original_physical
+        || !super::paging::is_uniquely_registered_address_space_root(original_physical)
+        || !super::paging::is_uniquely_registered_address_space_root(second_physical)
+        || !matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+        || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
+    {
+        cr3_guard_test_exit(false, PASS, FAIL);
+    }
+    if !super::paging::remove_address_space_root_registration_for_cr3_test(second_physical) {
+        cr3_guard_test_exit(false, PASS, FAIL);
+    }
+
+    // Exercise the actual switching function. It consumes both ownership handles
+    // even on an early error, so this image exits immediately after checking state.
+    match switch_address_space(active_root, second_root, boot_info, false) {
+        Err(AddressSpaceError::RootNotRegistered) => {
+            let target_restored = super::paging::register_address_space_root(second_physical);
+            let invariants_hold = target_restored
+                && active_root_table_physical() == original_physical
+                && super::paging::is_uniquely_registered_address_space_root(original_physical)
+                && super::paging::is_uniquely_registered_address_space_root(second_physical)
+                && matches!(
+                    super::memory::is_frame_allocated(original_physical),
+                    Ok(true)
+                )
+                && matches!(super::memory::is_frame_allocated(second_physical), Ok(true));
+            cr3_guard_test_exit(invariants_hold, PASS, FAIL);
+        }
+        _ => cr3_guard_test_exit(false, PASS, FAIL),
     }
 }
 
