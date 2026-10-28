@@ -864,7 +864,7 @@ pub struct WxSiblingRegressionTest {
     pub executable_physical_page: u64,
     pub sibling_physical_page: u64,
     pub original_large_page_size: u64,
-    executable_virtual_address: Option<u64>,
+    pub executable_virtual_address: Option<u64>,
 }
 
 /// Forms overlapping adjacent-frame candidates without skipping allocation positions.
