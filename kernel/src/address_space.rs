@@ -164,7 +164,7 @@ impl AddressSpaceError {
             }
             #[cfg(feature = "test-wx-runtime-audit")]
             Self::RootRegistryGuardFailed => {
-                b"W^X smoke test failed to reject an unregistered activation target\n"
+                b"W^X smoke test failed to reject missing live-root registration\n"
             }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
