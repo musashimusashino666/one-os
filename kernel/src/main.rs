@@ -908,10 +908,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         };
         serial_write(b"ONE OS KERNEL ADDRESS SPACE ACTIVATED\n");
 
-        let _active_root = match address_space::verify_runtime_address_space_switch_smoke_test(
-            boot_info,
-            active_root,
-        ) {
+        #[cfg(feature = "test-wx-runtime-audit")]
+        let address_space_test_result = {
+            let executable_virtual_address = match wx_sibling_test.executable_virtual_address {
+                Some(address) => address,
+                None => {
+                    serial_write(b"ONE OS W^X CROSS-ROOT TEST FAILED: RX alias missing\n");
+                    halt_forever()
+                }
+            };
+            address_space::verify_runtime_address_space_switch_smoke_test_with_wx_probe(
+                boot_info,
+                active_root,
+                wx_sibling_test.executable_physical_page,
+                executable_virtual_address,
+            )
+        };
+        #[cfg(not(feature = "test-wx-runtime-audit"))]
+        let address_space_test_result =
+            address_space::verify_runtime_address_space_switch_smoke_test(boot_info, active_root);
+
+        let _active_root = match address_space_test_result {
             Ok(root) => root,
             Err(error) => {
                 serial_write(b"ONE OS ADDRESS SPACE SWITCH FAILED\n");
