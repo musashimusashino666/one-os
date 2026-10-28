@@ -315,7 +315,10 @@ pub fn unregister_address_space_root(physical_address: u64) -> bool {
     if physical_address == 0
         || physical_address & (PAGE_SIZE - 1) != 0
         || physical_address == active_root_table_physical()
-        || !matches!(crate::memory::is_frame_allocated(physical_address), Ok(false))
+        || !matches!(
+            crate::memory::is_frame_allocated(physical_address),
+            Ok(false)
+        )
     {
         return false;
     }

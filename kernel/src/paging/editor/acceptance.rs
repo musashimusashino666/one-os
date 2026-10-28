@@ -12,7 +12,10 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
         || !matches!(crate::memory::is_frame_allocated(active_physical), Ok(true))
-        || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
+        || !matches!(
+            crate::memory::is_frame_allocated(inactive_physical),
+            Ok(true)
+        )
     {
         return Err(PagingError::WxAuditFailed);
     }
