@@ -297,6 +297,18 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
     }
 }
 
+/// Returns whether a root frame has valid allocator state for activation and W^X auditing.
+///
+/// A permanent reservation is not equivalent to ordinary allocator ownership:
+/// allocator queries may report a permanently reserved frame as unavailable/allocated.
+/// Unknown query state must fail closed rather than admit a root.
+pub fn frame_wx_root_frame_state_is_admissible<AllocationError, ReservationError>(
+    allocator_owned: Result<bool, AllocationError>,
+    permanently_reserved: Result<bool, ReservationError>,
+) -> bool {
+    matches!(allocator_owned, Ok(true)) && matches!(permanently_reserved, Ok(false))
+}
+
 /// Returns whether a registered-root table still represents the exact root set
 /// captured before a W^X audit.
 ///
@@ -366,8 +378,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        frame_wx_audit_snapshot_matches, frame_wx_root_registry_matches, FrameWxAuditScope,
-        FrameWxAuditScopeError, FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
+        frame_wx_audit_snapshot_matches, frame_wx_root_frame_state_is_admissible,
+        frame_wx_root_registry_matches, FrameWxAuditScope, FrameWxAuditScopeError,
+        FrameWxAuditSource, FRAME_WX_AUDIT_REQUIRED_SOURCES,
     };
 
     const ROOT_A: u64 = 0x1000;
@@ -676,6 +689,15 @@ mod tests {
             unchanged.len(),
             |index| unchanged[index],
         ));
+    }
+
+    #[test]
+    fn root_frame_admission_requires_owned_and_non_reserved_state() {
+        assert!(frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Ok::<_, ()>(false)));
+        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(false), Ok::<_, ()>(false)));
+        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Ok::<_, ()>(true)));
+        assert!(!frame_wx_root_frame_state_is_admissible(Err(()), Ok::<_, ()>(false)));
+        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Err(())));
     }
 
     #[test]
