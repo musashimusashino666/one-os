@@ -149,6 +149,28 @@ compile_error!("enable only one exception fault-injection feature at a time");
 ))]
 compile_error!("CR3 guard acceptance features must be built individually");
 
+// The reserved-root acceptance profile mutates allocator reservation metadata and
+// must run alone so that no test image mixes independent fault-injection modes.
+#[cfg(all(
+    feature = "test-cr3-reserved-root-guard",
+    any(
+        feature = "test-cr3-switch-guard",
+        feature = "test-cr3-activation-guard",
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault",
+        feature = "test-double-fault",
+        feature = "test-ist",
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection",
+        feature = "test-vm-transitions",
+        feature = "test-root-leak-safety",
+        feature = "test-wx-runtime-audit",
+        feature = "test-nmi-wx-transition"
+    )
+))]
+compile_error!("test-cr3-reserved-root-guard must be built individually");
+
 #[cfg(all(
     feature = "test-nmi-wx-transition",
     any(

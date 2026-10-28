@@ -282,19 +282,15 @@ static ADDRESS_SPACE_ROOT_FRAMES: [AtomicU64; ADDRESS_SPACE_ROOT_CAPACITY] =
 
 /// Records one live kernel-created address-space root frame.
 ///
-/// Returns false when the frame is not allocator-owned, the registry is full,
-/// or an existing duplicate slot makes the inventory inconsistent. A single existing
-/// registration is idempotent so the owning handle can safely revalidate membership.
+/// Returns false when the frame is not allocator-owned, is permanently reserved,
+/// the registry is full, or an existing duplicate slot makes the inventory inconsistent.
+/// One existing unique registration is idempotent so its owner can revalidate membership.
 pub fn register_address_space_root(physical_address: u64) -> bool {
     if physical_address == 0
         || physical_address & (PAGE_SIZE - 1) != 0
-        || !matches!(
+        || !oneos_core::frame_wx_root_frame_state_is_admissible(
             crate::memory::is_frame_allocated(physical_address),
-            Ok(true)
-        )
-        || !matches!(
             crate::memory::is_permanently_reserved(physical_address),
-            Ok(false)
         )
     {
         return false;

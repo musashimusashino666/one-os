@@ -32,6 +32,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-wx-runtime-audit" => build_bios_image(Some("test-wx-runtime-audit")),
         "image-test-cr3-switch-guard" => build_bios_image(Some("test-cr3-switch-guard")),
         "image-test-cr3-activation-guard" => build_bios_image(Some("test-cr3-activation-guard")),
+        "image-test-cr3-reserved-root-guard" => {
+            build_bios_image(Some("test-cr3-reserved-root-guard"))
+        }
         "image-test-nmi-wx-transition" => build_bios_image(Some("test-nmi-wx-transition")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
@@ -63,6 +66,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a QEMU test for rejecting an unregistered target in the real CR3 switch");
             println!("  cargo run -p oneos-xtask -- image-test-cr3-activation-guard");
             println!("      Build a QEMU test for rejecting an unregistered root in the initial CR3 activation");
+            println!("  cargo run -p oneos-xtask -- image-test-cr3-reserved-root-guard");
+            println!("      Build a QEMU test for rejecting a permanently-reserved target in the real CR3 switch");
             println!("  cargo run -p oneos-xtask -- image-test-nmi-wx-transition");
             println!(
                 "      Build a test-only image for QMP-injected NMI during W^X break-before-make"
@@ -197,6 +202,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-wx-runtime-audit") => "one-os-wx-runtime-audit-test-bios.img",
         Some("test-cr3-switch-guard") => "one-os-cr3-switch-guard-test-bios.img",
         Some("test-cr3-activation-guard") => "one-os-cr3-activation-guard-test-bios.img",
+        Some("test-cr3-reserved-root-guard") => "one-os-cr3-reserved-root-guard-test-bios.img",
         Some("test-nmi-wx-transition") => "one-os-nmi-wx-transition-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };

@@ -1,6 +1,9 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-#[cfg(feature = "test-wx-runtime-audit")]
+#[cfg(any(
+    feature = "test-wx-runtime-audit",
+    feature = "test-cr3-reserved-root-guard"
+))]
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,6 +58,13 @@ struct GlobalAllocator {
     reserved_bitmap: UnsafeCell<[u64; BITMAP_WORDS]>,
     #[cfg(feature = "test-wx-runtime-audit")]
     test_reserved_root_probe_frame: AtomicU64,
+    // Test-only state injection: marks an already registered live root as
+    // permanently reserved to exercise revalidation at security boundaries.
+    #[cfg(any(
+        feature = "test-wx-runtime-audit",
+        feature = "test-cr3-reserved-root-guard"
+    ))]
+    test_injected_permanent_reservation_frame: AtomicU64,
     allocator: UnsafeCell<MaybeUninit<FrameAllocator<'static>>>,
 }
 
@@ -72,6 +82,11 @@ impl GlobalAllocator {
             reserved_bitmap: UnsafeCell::new([0; BITMAP_WORDS]),
             #[cfg(feature = "test-wx-runtime-audit")]
             test_reserved_root_probe_frame: AtomicU64::new(0),
+            #[cfg(any(
+                feature = "test-wx-runtime-audit",
+                feature = "test-cr3-reserved-root-guard"
+            ))]
+            test_injected_permanent_reservation_frame: AtomicU64::new(0),
             allocator: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -337,6 +352,98 @@ pub fn free_frame_count() -> Result<usize, MemoryError> {
     // and the lock provides exclusive access for the duration of this query.
     let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
     Ok(allocator.stats().free_frames)
+}
+
+/// Injects a permanent-reservation bit for an allocated live root in dedicated tests.
+///
+/// This intentionally creates the otherwise-invalid state "registered live root is
+/// permanently reserved" so that production admission paths can be tested against
+/// corrupted/stale reservation metadata. Only dedicated QEMU test features compile
+/// this helper; it must not be called by normal kernel code.
+#[cfg(any(
+    feature = "test-wx-runtime-audit",
+    feature = "test-cr3-reserved-root-guard"
+))]
+pub fn inject_permanent_reservation_for_test(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    let Ok(_guard) = GLOBAL.acquire() else {
+        return false;
+    };
+    if !GLOBAL.initialized.load(Ordering::Acquire)
+        || GLOBAL
+            .test_injected_permanent_reservation_frame
+            .load(Ordering::Acquire)
+            != 0
+    {
+        return false;
+    }
+
+    // SAFETY: the allocator and side metadata are protected by GLOBAL's lock.
+    let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
+    if !allocator.is_frame_allocated(physical_address) {
+        return false;
+    }
+    let Some(index) = allocator.managed_frame_index(physical_address) else {
+        return false;
+    };
+    let bitmap = unsafe { &mut *GLOBAL.reserved_bitmap.get() };
+    let word = index / u64::BITS as usize;
+    let mask = 1u64 << (index % u64::BITS as usize);
+    if bitmap[word] & mask != 0 {
+        return false;
+    }
+
+    GLOBAL
+        .test_injected_permanent_reservation_frame
+        .store(physical_address, Ordering::Release);
+    bitmap[word] |= mask;
+    true
+}
+
+/// Removes exactly the permanent-reservation bit introduced by the test helper.
+///
+/// Returns false if the supplied frame is not the active injection target or the
+/// bitmap no longer has the expected state. The helper fails closed rather than
+/// clearing an unrelated legitimate reservation.
+#[cfg(any(
+    feature = "test-wx-runtime-audit",
+    feature = "test-cr3-reserved-root-guard"
+))]
+pub fn clear_permanent_reservation_injection_for_test(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    let Ok(_guard) = GLOBAL.acquire() else {
+        return false;
+    };
+    if !GLOBAL.initialized.load(Ordering::Acquire)
+        || GLOBAL
+            .test_injected_permanent_reservation_frame
+            .load(Ordering::Acquire)
+            != physical_address
+    {
+        return false;
+    }
+
+    // SAFETY: the allocator and side metadata are protected by GLOBAL's lock.
+    let allocator = unsafe { (&*GLOBAL.allocator.get()).assume_init_ref() };
+    let Some(index) = allocator.managed_frame_index(physical_address) else {
+        return false;
+    };
+    let bitmap = unsafe { &mut *GLOBAL.reserved_bitmap.get() };
+    let word = index / u64::BITS as usize;
+    let mask = 1u64 << (index % u64::BITS as usize);
+    if bitmap[word] & mask == 0 {
+        return false;
+    }
+
+    bitmap[word] &= !mask;
+    GLOBAL
+        .test_injected_permanent_reservation_frame
+        .store(0, Ordering::Release);
+    true
 }
 
 /// Returns whether the physical frame was permanently reserved before allocation.

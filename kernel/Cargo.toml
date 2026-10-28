@@ -27,6 +27,8 @@ test-wx-runtime-audit = []
 # Dedicated QEMU rejection tests for the real CR3 switch and initial activation paths.
 test-cr3-switch-guard = []
 test-cr3-activation-guard = []
+# Dedicated QEMU regression for a root marked permanently reserved after registration.
+test-cr3-reserved-root-guard = []
 # Dedicated QMP-injected asynchronous NMI test during the W^X non-present window.
 test-nmi-wx-transition = []
 

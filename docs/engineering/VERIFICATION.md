@@ -16,7 +16,7 @@ ONE OS uses layered evidence. Each layer proves a different scope; no layer subs
 
 ## Current CI contract
 
-The GitHub Actions workflow is the executable definition of automated acceptance. It currently includes formatting, core tests, Clippy for the core/kernel/build tool, kernel checking, CR3 assembly validation, Python validator tests, image build, three independent normal QEMU boots, and dedicated W^X runtime-audit checks. The same workflow includes selected exception, interrupt-stack, supervisor-write-protection, NX, and VM transition acceptance images.
+The GitHub Actions workflow is the executable definition of automated acceptance. It currently includes formatting, core tests, Clippy for the core/kernel/build tool, kernel checking, CR3 assembly validation, Python validator tests, image build, three independent normal QEMU boots, dedicated W^X runtime-audit checks, and real-path CR3 rejection profiles for unregistered and permanently reserved roots. The same workflow includes selected exception, interrupt-stack, supervisor-write-protection, NX, and VM transition acceptance images.
 
 The prescribed guest profile is:
 
@@ -39,6 +39,8 @@ Tests should verify both the positive path and the denial path. Depending on the
 - Root-registry removal rejects active or still-allocated roots; the dedicated QEMU profile verifies a rejected live-root removal leaves that root in a complete subsequent inventory.
 - A test-only missing registry entry for an allocated inactive target is passed directly to the shared admission guard and rejected; this does not test the CR3-switch call paths. The entry is restored before the complete follow-up audit.
 - Dedicated QEMU profiles fault-inject missing live-root registration and execute the real `switch_address_space()` and `activate_supervisor_kernel_root()` paths; both must reject before the CR3 write. The switch profile checks unchanged CR3, restored registry membership, and retained allocator ownership. The activation profile checks unchanged CR3 plus safe root zeroization/release. CI must require both unique pass markers and the expected `isa-debug-exit` status.
+- A dedicated QEMU profile injects the permanent-reservation bitmap bit for an otherwise registered and allocated target, then exercises the real `switch_address_space()` path. It must reject before writing CR3, clear only the injected bit, and retain registry membership and allocator ownership.
+- The W^X runtime-audit profile injects the same reserved-state inconsistency for a registered inactive root, requires the real audit to return an error before walking that root, then clears the bit and requires a complete follow-up audit. This is a controlled fault-injection scenario, not a claim that a truly reserved frame is eligible for root registration.
 - 4 KiB, 2 MiB, and 1 GiB physical overlaps are checked using effective ancestor permissions and full extents.
 - The dedicated QEMU runtime-audit profile injects a writable alias in an inactive root for a frame with a controlled RX alias in the active root; the audit must report the physical overlap, and a second audit after restoring the original PTE must be complete and conflict-free.
 - Large-page demotion preserves unrelated attributes and sibling-frame writability.

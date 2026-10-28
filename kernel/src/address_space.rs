@@ -527,7 +527,7 @@ pub(super) fn switch_address_space_flush_local_tlb(
     Ok(())
 }
 
-/// Rejects target roots that are not uniquely registered and allocator-owned.
+/// Rejects target roots that are not uniquely registered, allocator-owned, and non-reserved.
 /// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
 fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
     #[cfg(feature = "test-cr3-activation-guard")]
@@ -543,11 +543,13 @@ fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), Add
         false
     };
 
-    // Run the same registry and allocator predicate that production activation
-    // relies on, while the dedicated test has actually removed the registry entry.
+    // Recheck registration, ordinary allocator ownership, and permanent-reservation
+    // metadata immediately before the CR3 write. Every uncertain query fails closed.
     let admission = if !super::paging::is_uniquely_registered_address_space_root(root_physical)
-        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
-    {
+        || !oneos_core::frame_wx_root_frame_state_is_admissible(
+            super::memory::is_frame_allocated(root_physical),
+            super::memory::is_permanently_reserved(root_physical),
+        ) {
         Err(AddressSpaceError::RootNotRegistered)
     } else {
         Ok(())
@@ -570,7 +572,8 @@ pub(super) fn cr3_activation_guard_test_passed() -> bool {
 
 #[cfg(any(
     feature = "test-cr3-switch-guard",
-    feature = "test-cr3-activation-guard"
+    feature = "test-cr3-activation-guard",
+    feature = "test-cr3-reserved-root-guard"
 ))]
 pub(super) fn cr3_guard_test_exit(
     success: bool,
@@ -749,7 +752,10 @@ pub fn verify_runtime_address_space_switch_smoke_test_with_wx_probe(
     )
 }
 
-#[cfg(not(feature = "test-cr3-switch-guard"))]
+#[cfg(not(any(
+    feature = "test-cr3-switch-guard",
+    feature = "test-cr3-reserved-root-guard"
+)))]
 fn verify_runtime_address_space_switch_smoke_test_impl(
     boot_info: &BootInfo,
     active_root: ActiveAddressSpaceRoot,
@@ -1265,6 +1271,77 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
                     Ok(true)
                 )
                 && matches!(super::memory::is_frame_allocated(second_physical), Ok(true));
+            cr3_guard_test_exit(invariants_hold, PASS, FAIL);
+        }
+        _ => cr3_guard_test_exit(false, PASS, FAIL),
+    }
+}
+
+#[cfg(feature = "test-cr3-reserved-root-guard")]
+fn verify_runtime_address_space_switch_smoke_test_impl(
+    boot_info: &BootInfo,
+    active_root: ActiveAddressSpaceRoot,
+    _wx_probe: Option<(u64, u64)>,
+) -> Result<ActiveAddressSpaceRoot, AddressSpaceError> {
+    const PASS: &[u8] = b"ONE OS CR3 SWITCH PERMANENTLY RESERVED ROOT REJECT PASS\n";
+    const FAIL: &[u8] = b"ONE OS CR3 SWITCH PERMANENTLY RESERVED ROOT REJECT FAIL\n";
+
+    let original_physical = active_root.physical_address();
+    let second_root = match create_inactive_address_space_root(boot_info, &active_root) {
+        Ok(root) => root,
+        Err(_) => cr3_guard_test_exit(false, PASS, FAIL),
+    };
+    let second_physical = second_root.physical_address();
+    if second_root.recursive_index().is_none()
+        || second_physical == original_physical
+        || !super::paging::is_uniquely_registered_address_space_root(original_physical)
+        || !super::paging::is_uniquely_registered_address_space_root(second_physical)
+        || !matches!(
+            super::memory::is_frame_allocated(original_physical),
+            Ok(true)
+        )
+        || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
+        || !matches!(
+            super::memory::is_permanently_reserved(second_physical),
+            Ok(false)
+        )
+    {
+        cr3_guard_test_exit(false, PASS, FAIL);
+    }
+
+    // Corrupt only the test reservation metadata after the valid root has been
+    // registered. This simulates stale/inconsistent state at the activation boundary;
+    // a legitimately reserved frame cannot pass production root registration.
+    if !super::memory::inject_permanent_reservation_for_test(second_physical)
+        || !matches!(
+            super::memory::is_permanently_reserved(second_physical),
+            Ok(true)
+        )
+    {
+        let _ = super::memory::clear_permanent_reservation_injection_for_test(second_physical);
+        cr3_guard_test_exit(false, PASS, FAIL);
+    }
+
+    // Exercise the actual CR3 switching function with a unique, allocated, but now
+    // permanently-reserved target. The guard must refuse before any CR3 write.
+    let switch_result = switch_address_space(active_root, second_root, boot_info, false);
+    let reservation_cleared =
+        super::memory::clear_permanent_reservation_injection_for_test(second_physical);
+    match switch_result {
+        Err(AddressSpaceError::RootNotRegistered) => {
+            let invariants_hold = reservation_cleared
+                && active_root_table_physical() == original_physical
+                && super::paging::is_uniquely_registered_address_space_root(original_physical)
+                && super::paging::is_uniquely_registered_address_space_root(second_physical)
+                && matches!(
+                    super::memory::is_frame_allocated(original_physical),
+                    Ok(true)
+                )
+                && matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
+                && matches!(
+                    super::memory::is_permanently_reserved(second_physical),
+                    Ok(false)
+                );
             cr3_guard_test_exit(invariants_hold, PASS, FAIL);
         }
         _ => cr3_guard_test_exit(false, PASS, FAIL),
