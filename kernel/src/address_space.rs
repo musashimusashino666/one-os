@@ -737,7 +737,10 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         const FAIL: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT FAIL\n";
         if !super::paging::is_uniquely_registered_address_space_root(original_physical)
             || !super::paging::is_uniquely_registered_address_space_root(second_physical)
-            || !matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+            || !matches!(
+                super::memory::is_frame_allocated(original_physical),
+                Ok(true)
+            )
             || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
         {
             cr3_guard_test_exit(false, PASS, FAIL);
@@ -756,7 +759,10 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
                     && active_root_table_physical() == original_physical
                     && super::paging::is_uniquely_registered_address_space_root(original_physical)
                     && super::paging::is_uniquely_registered_address_space_root(second_physical)
-                    && matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+                    && matches!(
+                        super::memory::is_frame_allocated(original_physical),
+                        Ok(true)
+                    )
                     && matches!(super::memory::is_frame_allocated(second_physical), Ok(true));
                 cr3_guard_test_exit(invariants_hold, PASS, FAIL);
             }
