@@ -325,10 +325,10 @@ pub fn unregister_address_space_root(physical_address: u64) -> bool {
 
     let mut matching_slot = None;
     for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
-        if slot.load(Ordering::Acquire) == physical_address {
-            if matching_slot.replace(index).is_some() {
-                return false;
-            }
+        if slot.load(Ordering::Acquire) == physical_address
+            && matching_slot.replace(index).is_some()
+        {
+            return false;
         }
     }
 
