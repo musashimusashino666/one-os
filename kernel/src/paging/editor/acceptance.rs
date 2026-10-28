@@ -11,6 +11,8 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     if inactive_physical == active_physical
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
+        || !is_uniquely_registered_address_space_root(active_physical)
+        || !is_uniquely_registered_address_space_root(inactive_physical)
         || !matches!(crate::memory::is_frame_allocated(active_physical), Ok(true))
         || !matches!(
             crate::memory::is_frame_allocated(inactive_physical),
@@ -26,6 +28,8 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
         || unregister_address_space_root(inactive_physical)
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
+        || !is_uniquely_registered_address_space_root(active_physical)
+        || !is_uniquely_registered_address_space_root(inactive_physical)
     {
         return Err(PagingError::WxAuditFailed);
     }

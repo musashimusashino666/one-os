@@ -530,7 +530,7 @@ fn switch_address_space(
     // Every kernel-created root that may become active must remain in the
     // authoritative live-root registry and retain allocator ownership. The
     // bootloader root is the sole exception: it is the source root, not next.
-    if !super::paging::is_address_space_root_frame(root_physical)
+    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
         || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
     {
         return Err(AddressSpaceError::RootNotRegistered);
@@ -1485,7 +1485,7 @@ pub fn activate_supervisor_kernel_root(
 
     // This initial activation path writes CR3 directly rather than using
     // switch_address_space; enforce the same live-root invariant at its boundary.
-    if !super::paging::is_address_space_root_frame(root_physical)
+    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
         || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
     {
         clear_and_release_root(root, &mut editor, root_physical)?;

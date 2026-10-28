@@ -341,11 +341,33 @@ pub fn unregister_address_space_root(physical_address: u64) -> bool {
 }
 
 /// Returns whether this frame is a live kernel-created address-space root.
-pub fn is_address_space_root_frame(physical_address: u64) -> bool {
+fn is_address_space_root_frame(physical_address: u64) -> bool {
     physical_address != 0
         && ADDRESS_SPACE_ROOT_FRAMES
             .iter()
             .any(|slot| slot.load(Ordering::Acquire) == physical_address)
+}
+
+/// Returns true only when exactly one registry slot names this root frame.
+///
+/// Activation must reject duplicate entries even though ordinary ownership
+/// checks treat any matching entry as a root, so a duplicated root is never
+/// accidentally treated as reclaimable data.
+pub fn is_uniquely_registered_address_space_root(physical_address: u64) -> bool {
+    if physical_address == 0 || physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+
+    let mut found = false;
+    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
+        if slot.load(Ordering::Acquire) == physical_address {
+            if found {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
 }
 
 fn reserve_table_frame_slot() -> Option<usize> {

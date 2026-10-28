@@ -763,8 +763,9 @@ mod inspection;
 
 pub(super) use editor::{
     audit_registered_wx_roots, enforce_kernel_executable_alias_wx,
-    has_pending_detached_private_table, initialize_paging_controls, is_address_space_root_frame,
-    map_test_user_page_for_teardown, register_address_space_root,
+    has_pending_detached_private_table, initialize_paging_controls,
+    is_uniquely_registered_address_space_root, map_test_user_page_for_teardown,
+    register_address_space_root,
     registered_published_page_table_frame, teardown_inactive_user_address_space,
     teardown_inactive_user_address_space_with_table_release, unregister_address_space_root,
     validate_inactive_user_address_space, verify_large_page_demotion_smoke_test,
