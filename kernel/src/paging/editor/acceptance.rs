@@ -1,5 +1,171 @@
 use super::*;
 
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_wx_audit_cross_root_alias_for_smoke(
+    boot_info: &BootInfo,
+    inactive_root: &AddressSpaceRoot,
+    active_root: &ActiveAddressSpaceRoot,
+    executable_physical_page: u64,
+    executable_virtual_address: u64,
+) -> Result<(), PagingError> {
+    const USER_TEST_VIRTUAL_ADDRESS: u64 = 0x4000;
+
+    if executable_physical_page == 0
+        || executable_physical_page & (PAGE_SIZE - 1) != 0
+        || executable_virtual_address == USER_TEST_VIRTUAL_ADDRESS
+        || active_root_table_physical() != active_root.physical_address()
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    // Prove the RX alias is present in the active root before constructing a
+    // deliberately conflicting alias in a separate, never-activated root.
+    let mut active_editor = KernelPageTableEditor::new_with_recursive_index(
+        boot_info,
+        executable_virtual_address,
+        active_root.recursive_index(),
+    )?;
+    let executable_mapping = translate_with_editor(
+        &mut active_editor,
+        active_root.physical_address(),
+        executable_virtual_address,
+    )
+    .map_err(PagingError::Translation)?;
+    if executable_mapping.physical_address != executable_physical_page
+        || executable_mapping.page_size != PAGE_SIZE
+        || executable_mapping.writable
+        || executable_mapping.user_accessible
+        || !executable_mapping.executable
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    drop(active_editor);
+
+    // 0x4000 is a real, owned, NX user-data mapping in the inactive root. Save
+    // its exact PTE, replace only that PTE with a writable alias of the RX frame,
+    // run the read-only inventory, and restore the original entry before
+    // interpreting the result. This injection is compiled only into the
+    // dedicated QEMU acceptance image; normal mapping APIs remain fail-closed.
+    let mut editor = KernelInactiveAddressSpaceEditor::new(
+        boot_info,
+        inactive_root,
+        active_root,
+    )?;
+    let root_physical = inactive_root.physical_address();
+    let pml4_index = ((USER_TEST_VIRTUAL_ADDRESS >> 39) & 0x1ff) as usize;
+    let pdpt_index = ((USER_TEST_VIRTUAL_ADDRESS >> 30) & 0x1ff) as usize;
+    let pd_index = ((USER_TEST_VIRTUAL_ADDRESS >> 21) & 0x1ff) as usize;
+    let pt_index = ((USER_TEST_VIRTUAL_ADDRESS >> 12) & 0x1ff) as usize;
+
+    let pml4_entry = editor
+        .read_entry(root_physical, pml4_index, 4)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    if pml4_entry & PRESENT == 0
+        || pml4_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
+    {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
+    let pdpt_physical = pml4_entry & PHYSICAL_ADDRESS_MASK;
+
+    let pdpt_entry = editor
+        .read_entry(pdpt_physical, pdpt_index, 3)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    if pdpt_entry & PRESENT == 0
+        || pdpt_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
+    {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
+    let pd_physical = pdpt_entry & PHYSICAL_ADDRESS_MASK;
+
+    let pd_entry = editor
+        .read_entry(pd_physical, pd_index, 2)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    if pd_entry & PRESENT == 0
+        || pd_entry & (LARGE_PAGE | PROTECTION_KEY_FIELD_MASK) != 0
+    {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
+    let pt_physical = pd_entry & PHYSICAL_ADDRESS_MASK;
+
+    let original_pte = editor
+        .read_entry(pt_physical, pt_index, 1)
+        .ok_or(PagingError::InactivePageTableUnavailable)?;
+    if original_pte & PRESENT == 0
+        || original_pte & (WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+            != (WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+        || original_pte & PHYSICAL_ADDRESS_MASK == executable_physical_page
+    {
+        return Err(PagingError::InactivePageTableMalformed);
+    }
+
+    let injected_pte = executable_physical_page
+        | PRESENT
+        | WRITABLE
+        | USER_ACCESSIBLE
+        | NO_EXECUTE;
+    editor.write_entry(pt_physical, pt_index, 1, injected_pte);
+
+    let conflict_result = audit_registered_wx_roots(
+        boot_info,
+        active_root.physical_address(),
+        active_root.recursive_index(),
+        active_root.physical_address_bits(),
+    );
+
+    // The root has never been activated, so this temporary leaf cannot have a
+    // cached translation. Restore it before any result path or subsequent test.
+    editor.write_entry(pt_physical, pt_index, 1, original_pte);
+    drop(editor);
+
+    let (conflict_audit, conflict_scope, _) = conflict_result?;
+    let Some(conflict) = conflict_audit.first_conflict else {
+        return Err(PagingError::WxAuditFailed);
+    };
+    let conflict_rights_match = (conflict.first_virtual_start == executable_virtual_address
+        && conflict.second_virtual_start == USER_TEST_VIRTUAL_ADDRESS
+        && conflict.first_permissions.executable
+        && !conflict.first_permissions.writable
+        && conflict.second_permissions.writable
+        && !conflict.second_permissions.executable)
+        || (conflict.second_virtual_start == executable_virtual_address
+            && conflict.first_virtual_start == USER_TEST_VIRTUAL_ADDRESS
+            && conflict.second_permissions.executable
+            && !conflict.second_permissions.writable
+            && conflict.first_permissions.writable
+            && !conflict.first_permissions.executable);
+    if !conflict_scope.complete
+        || conflict_scope.declared_roots < 3
+        || conflict_scope.audited_roots != conflict_scope.declared_roots
+        || conflict_audit.conflicting_overlap_events == 0
+        || conflict.physical_start != executable_physical_page
+        || conflict.length != PAGE_SIZE
+        || !conflict_rights_match
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    // Prove the injected PTE was restored and the same all-root audit becomes
+    // conflict-free again. Coverage completeness and conflict state are distinct.
+    let (clean_audit, clean_scope, _) = audit_registered_wx_roots(
+        boot_info,
+        active_root.physical_address(),
+        active_root.recursive_index(),
+        active_root.physical_address_bits(),
+    )?;
+    if !clean_scope.complete
+        || clean_scope.declared_roots < 3
+        || clean_scope.audited_roots != clean_scope.declared_roots
+        || clean_audit.conflicting_overlap_events != 0
+        || clean_audit.first_conflict.is_some()
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    crate::serial_write(b"ONE OS W^X CROSS-ROOT ALIAS CONFLICT DETECTION PASS\n");
+    crate::serial_write(b"ONE OS W^X CROSS-ROOT ALIAS RESTORE PASS\n");
+    Ok(())
+}
+
 /// Failure from kernel-backed inactive address-space teardown.
 ///
 /// A user-page mutation failure retains its partial result and the remaining
