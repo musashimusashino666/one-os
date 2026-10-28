@@ -510,9 +510,7 @@ pub(super) fn switch_address_space_flush_local_tlb(
 
 /// Rejects target roots that are not uniquely registered and allocator-owned.
 /// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
-fn validate_registered_root_for_activation(
-    root_physical: u64,
-) -> Result<(), AddressSpaceError> {
+fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
     if !super::paging::is_uniquely_registered_address_space_root(root_physical)
         || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
     {
