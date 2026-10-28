@@ -1,8 +1,8 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "test-wx-runtime-audit")]
 use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use oneos_core::{
