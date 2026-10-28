@@ -360,12 +360,11 @@ pub fn is_uniquely_registered_address_space_root(physical_address: u64) -> bool 
 
     let mut found = false;
     for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
-        if slot.load(Ordering::Acquire) == physical_address {
-            if found {
-                return false;
-            }
-            found = true;
+        let matches = slot.load(Ordering::Acquire) == physical_address;
+        if matches && found {
+            return false;
         }
+        found |= matches;
     }
     found
 }
