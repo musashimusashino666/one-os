@@ -53,6 +53,8 @@ pub enum FrameWxAuditScopeError {
     EmptyRootInventory,
     /// The authoritative root inventory was already sealed.
     RootInventoryAlreadySealed,
+    /// A source cannot be accounted while the audit scope is incomplete or failed.
+    AuditScopeIncomplete,
     /// An audited root was not part of the declared inventory.
     RootNotDeclared,
     /// A root was marked complete more than once.
@@ -217,9 +219,28 @@ impl<const MAX_ROOTS: usize> FrameWxAuditScope<MAX_ROOTS> {
         Ok(())
     }
 
-    /// Records that a mapping source has been accounted for by a reviewed mechanism.
-    pub fn account_source(&mut self, source: FrameWxAuditSource) {
+    /// Records a mapping source only after every declared root has been audited.
+    ///
+    /// Premature accounting or accounting after any prior audit failure is sticky:
+    /// later successful operations cannot retroactively make the scope complete.
+    /// Source-specific validation remains the caller's responsibility.
+    pub fn account_source(
+        &mut self,
+        source: FrameWxAuditSource,
+    ) -> Result<(), FrameWxAuditScopeError> {
+        if self.audit_failed
+            || !self.root_inventory_sealed
+            || self.root_count == 0
+            || self.roots[..self.root_count]
+                .iter()
+                .any(|root| !root.occupied || !root.audited)
+        {
+            self.audit_failed = true;
+            return Err(FrameWxAuditScopeError::AuditScopeIncomplete);
+        }
+
         self.accounted_sources |= source.mask();
+        Ok(())
     }
 
     /// Permanently marks this scope as failed; later successes cannot yield complete coverage.
@@ -352,10 +373,10 @@ mod tests {
         scope.seal_root_inventory().unwrap();
         scope.mark_root_audited(ROOT_A).unwrap();
         scope.mark_root_audited(ROOT_B).unwrap();
-        scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias);
-        scope.account_source(FrameWxAuditSource::RecursivePageTableView);
-        scope.account_source(FrameWxAuditSource::SharedKernelMappings);
-        scope.account_source(FrameWxAuditSource::LargePageLeaves);
+        scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias).unwrap();
+        scope.account_source(FrameWxAuditSource::RecursivePageTableView).unwrap();
+        scope.account_source(FrameWxAuditSource::SharedKernelMappings).unwrap();
+        scope.account_source(FrameWxAuditSource::LargePageLeaves).unwrap();
         scope
     }
 
@@ -364,7 +385,10 @@ mod tests {
         let mut scope = FrameWxAuditScope::<2>::new(48).unwrap();
         scope.declare_root(ROOT_A).unwrap();
         scope.mark_root_audited(ROOT_A).unwrap();
-        scope.account_source(FrameWxAuditSource::LargePageLeaves);
+        assert_eq!(
+            scope.account_source(FrameWxAuditSource::LargePageLeaves),
+            Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+        );
 
         let summary = scope.summary();
         assert_eq!(summary.declared_roots, 1);
@@ -373,8 +397,10 @@ mod tests {
         assert!(!summary.complete);
         assert_eq!(
             summary.missing_sources,
-            FRAME_WX_AUDIT_REQUIRED_SOURCES & !FrameWxAuditSource::LargePageLeaves.mask()
+            FRAME_WX_AUDIT_REQUIRED_SOURCES
         );
+        assert_eq!(summary.accounted_sources, 0);
+        assert!(summary.audit_failed);
     }
 
     #[test]
@@ -406,7 +432,10 @@ mod tests {
             FrameWxAuditSource::SharedKernelMappings,
             FrameWxAuditSource::LargePageLeaves,
         ] {
-            scope.account_source(source);
+            assert_eq!(
+                scope.account_source(source),
+                Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+            );
         }
         let summary = scope.summary();
         assert_eq!(summary.audited_roots, 1);
@@ -414,7 +443,16 @@ mod tests {
         assert!(summary.roots[0].audited);
         assert_eq!(summary.roots[1].physical_address, ROOT_B);
         assert!(!summary.roots[1].audited);
+        assert!(summary.audit_failed);
+        assert_eq!(summary.accounted_sources, 0);
+        assert_eq!(summary.missing_sources, FRAME_WX_AUDIT_REQUIRED_SOURCES);
         assert!(!summary.complete);
+
+        // Completing the remaining root later cannot clear the sticky failure.
+        scope.mark_root_audited(ROOT_B).unwrap();
+        let complete_roots_after_failure = scope.summary();
+        assert_eq!(complete_roots_after_failure.audited_roots, 2);
+        assert!(!complete_roots_after_failure.complete);
     }
 
     #[test]
@@ -487,10 +525,25 @@ mod tests {
         let mut scope = FrameWxAuditScope::<1>::new(48).unwrap();
         scope.declare_root(ROOT_A).unwrap();
         scope.seal_root_inventory().unwrap();
-        scope.account_source(FrameWxAuditSource::LargePageLeaves);
-        scope.account_source(FrameWxAuditSource::LargePageLeaves);
         assert_eq!(
-            scope.summary().accounted_sources,
+            scope.account_source(FrameWxAuditSource::LargePageLeaves),
+            Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+        );
+        assert_eq!(scope.summary().accounted_sources, 0);
+        assert!(scope.summary().audit_failed);
+
+        let mut complete = FrameWxAuditScope::<1>::new(48).unwrap();
+        complete.declare_root(ROOT_A).unwrap();
+        complete.seal_root_inventory().unwrap();
+        complete.mark_root_audited(ROOT_A).unwrap();
+        complete
+            .account_source(FrameWxAuditSource::LargePageLeaves)
+            .unwrap();
+        complete
+            .account_source(FrameWxAuditSource::LargePageLeaves)
+            .unwrap();
+        assert_eq!(
+            complete.summary().accounted_sources,
             FrameWxAuditSource::LargePageLeaves.mask()
         );
     }
@@ -511,7 +564,10 @@ mod tests {
             FrameWxAuditSource::SharedKernelMappings,
             FrameWxAuditSource::LargePageLeaves,
         ] {
-            scope.account_source(source);
+            assert_eq!(
+                scope.account_source(source),
+                Err(FrameWxAuditScopeError::AuditScopeIncomplete)
+            );
         }
         let summary = scope.summary();
         assert!(summary.audit_failed);

@@ -200,10 +200,18 @@ pub fn audit_registered_wx_roots(
     // self-reference slots are omitted from the ordinary walk, then separately
     // audited above for every root by observing each reachable table-frame alias
     // against the complete executable/writable leaf inventory.
-    scope.account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias);
-    scope.account_source(FrameWxAuditSource::RecursivePageTableView);
-    scope.account_source(FrameWxAuditSource::SharedKernelMappings);
-    scope.account_source(FrameWxAuditSource::LargePageLeaves);
+    scope
+        .account_source(FrameWxAuditSource::PhysicalMemoryOffsetAlias)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    scope
+        .account_source(FrameWxAuditSource::RecursivePageTableView)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    scope
+        .account_source(FrameWxAuditSource::SharedKernelMappings)
+        .map_err(|_| PagingError::WxAuditFailed)?;
+    scope
+        .account_source(FrameWxAuditSource::LargePageLeaves)
+        .map_err(|_| PagingError::WxAuditFailed)?;
 
     // A complete walk is meaningful only if the active CR3 and the authoritative
     // registered-root set remained stable throughout the audit. Revalidate both
