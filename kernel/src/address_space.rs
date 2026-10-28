@@ -12,6 +12,8 @@ use core::arch::asm;
 use core::arch::x86_64::__cpuid;
 use core::mem::size_of;
 use core::ptr;
+#[cfg(feature = "test-cr3-activation-guard")]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, Optional};
 use bootloader_api::BootInfo;
@@ -30,6 +32,11 @@ const ACCESSED: u64 = 1 << 5;
 const USER_ACCESSIBLE: u64 = 1 << 2;
 const NO_EXECUTE: u64 = 1 << 63;
 const PHYSICAL_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+#[cfg(feature = "test-cr3-activation-guard")]
+static CR3_ACTIVATION_GUARD_TEST_TARGET: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-cr3-activation-guard")]
+static CR3_ACTIVATION_GUARD_TEST_PASSED: AtomicBool = AtomicBool::new(false);
 const PROTECTION_KEY_FIELD_MASK: u64 = 0x7800_0000_0000_0000;
 const PML4_ENTRY_COUNT: usize = 512;
 const LOWER_HALF_PML4_ENTRIES: usize = 256;
@@ -523,12 +530,43 @@ pub(super) fn switch_address_space_flush_local_tlb(
 /// Rejects target roots that are not uniquely registered and allocator-owned.
 /// This predicate is shared by both CR3 activation paths and the negative QEMU probe.
 fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), AddressSpaceError> {
-    if !super::paging::is_uniquely_registered_address_space_root(root_physical)
+    #[cfg(feature = "test-cr3-activation-guard")]
+    let fault_injected_missing_registration =
+        if CR3_ACTIVATION_GUARD_TEST_TARGET
+            .compare_exchange(root_physical, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if !super::paging::remove_address_space_root_registration_for_cr3_test(root_physical) {
+                return Err(AddressSpaceError::Cr3GuardTestFailed);
+            }
+            true
+        } else {
+            false
+        };
+
+    // Run the same registry and allocator predicate that production activation
+    // relies on, while the dedicated test has actually removed the registry entry.
+    let admission = if !super::paging::is_uniquely_registered_address_space_root(root_physical)
         || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
     {
-        return Err(AddressSpaceError::RootNotRegistered);
+        Err(AddressSpaceError::RootNotRegistered)
+    } else {
+        Ok(())
+    };
+
+    #[cfg(feature = "test-cr3-activation-guard")]
+    if fault_injected_missing_registration
+        && !super::paging::register_address_space_root(root_physical)
+    {
+        return Err(AddressSpaceError::Cr3GuardTestFailed);
     }
-    Ok(())
+
+    admission
+}
+
+#[cfg(feature = "test-cr3-activation-guard")]
+pub(super) fn cr3_activation_guard_test_passed() -> bool {
+    CR3_ACTIVATION_GUARD_TEST_PASSED.load(Ordering::Acquire)
 }
 
 #[cfg(any(
@@ -1582,37 +1620,25 @@ pub fn activate_supervisor_kernel_root(
     #[cfg(feature = "test-cr3-activation-guard")]
     let cr3_before_guard_test = active_root_table_physical();
     #[cfg(feature = "test-cr3-activation-guard")]
-    if !super::paging::remove_address_space_root_registration_for_cr3_test(root_physical) {
-        root.leak_frame();
-        return Err(AddressSpaceError::Cr3GuardTestFailed);
-    }
-
-    // Keep this result as the single admission decision used by production and
-    // by the test-only fault injection; bypassing this guard must reach the real
-    // CR3 write below and make the dedicated QEMU test fail.
-    let activation_guard_result = validate_registered_root_for_activation(root_physical);
-
-    #[cfg(feature = "test-cr3-activation-guard")]
     {
-        if !super::paging::register_address_space_root(root_physical) {
-            root.leak_frame();
-            return Err(AddressSpaceError::Cr3GuardTestFailed);
-        }
-        if activation_guard_result == Err(AddressSpaceError::RootNotRegistered) {
-            clear_and_release_root(root, &mut editor, root_physical)?;
-            let rejected_without_switch = active_root_table_physical() == cr3_before_guard_test
-                && matches!(super::memory::is_frame_allocated(root_physical), Ok(false))
-                && !super::paging::is_uniquely_registered_address_space_root(root_physical);
-            return if rejected_without_switch {
-                Err(AddressSpaceError::RootNotRegistered)
-            } else {
-                Err(AddressSpaceError::Cr3GuardTestFailed)
-            };
-        }
+        CR3_ACTIVATION_GUARD_TEST_PASSED.store(false, Ordering::Release);
+        CR3_ACTIVATION_GUARD_TEST_TARGET.store(root_physical, Ordering::Release);
     }
 
-    if let Err(error) = activation_guard_result {
+    if let Err(error) = validate_registered_root_for_activation(root_physical) {
+        // Keep the production rejection/cleanup path intact in the test image.
         clear_and_release_root(root, &mut editor, root_physical)?;
+        #[cfg(feature = "test-cr3-activation-guard")]
+        if error == AddressSpaceError::RootNotRegistered {
+            let rejection_invariants_hold =
+                active_root_table_physical() == cr3_before_guard_test
+                    && matches!(super::memory::is_frame_allocated(root_physical), Ok(false))
+                    && !super::paging::is_uniquely_registered_address_space_root(root_physical);
+            CR3_ACTIVATION_GUARD_TEST_PASSED.store(
+                rejection_invariants_hold,
+                Ordering::Release,
+            );
+        }
         return Err(error);
     }
 
