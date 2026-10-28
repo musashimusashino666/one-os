@@ -30,6 +30,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "image-test-vm-transitions" => build_bios_image(Some("test-vm-transitions")),
         "image-test-root-leak-safety" => build_bios_image(Some("test-root-leak-safety")),
         "image-test-wx-runtime-audit" => build_bios_image(Some("test-wx-runtime-audit")),
+        "image-test-nmi-wx-transition" => build_bios_image(Some("test-nmi-wx-transition")),
         "help" | "--help" | "-h" => {
             println!("ONE OS build tools");
             println!("  cargo run -p oneos-xtask -- image");
@@ -56,6 +57,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("      Build a test-only uncertain-CR3 root-token leak safety image");
             println!("  cargo run -p oneos-xtask -- image-test-wx-runtime-audit");
             println!("      Build a dedicated post-activation W^X audit diagnostic image");
+            println!("  cargo run -p oneos-xtask -- image-test-nmi-wx-transition");
+            println!(
+                "      Build a test-only image for QMP-injected NMI during W^X break-before-make"
+            );
             Ok(())
         }
         other => Err(format!("unknown command: {other}; run with --help").into()),
@@ -184,6 +189,7 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-vm-transitions") => "one-os-vm-transitions-test-bios.img",
         Some("test-root-leak-safety") => "one-os-root-leak-safety-test-bios.img",
         Some("test-wx-runtime-audit") => "one-os-wx-runtime-audit-test-bios.img",
+        Some("test-nmi-wx-transition") => "one-os-nmi-wx-transition-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
     let image_path = target_directory.join(image_name);

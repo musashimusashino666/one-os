@@ -24,6 +24,8 @@ test-vm-transitions = []
 test-root-leak-safety = []
 # Dedicated QEMU image for full post-activation W^X audit diagnostics.
 test-wx-runtime-audit = []
+# Dedicated QMP-injected asynchronous NMI test during the W^X non-present window.
+test-nmi-wx-transition = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

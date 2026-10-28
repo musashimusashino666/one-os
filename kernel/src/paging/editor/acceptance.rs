@@ -1455,6 +1455,12 @@ fn restrict_physical_offset_alias_read_only_nx(
         panic!("W^X direct-map leaf changed unexpectedly after invalidation");
     }
 
+    // This hook exists only in the dedicated test image. At this point the live
+    // PTE was re-read through the page-table editor and verified non-present,
+    // after the full local TLB invalidation and before the replacement is published.
+    #[cfg(feature = "test-nmi-wx-transition")]
+    crate::interrupts::hold_for_wx_nmi_transition();
+
     let replacement = (cleared | PRESENT) & !WRITABLE | NO_EXECUTE;
     editor.write_entry(leaf_table_physical, leaf_index, 1, replacement);
     if crate::address_space::switch_address_space_flush_local_tlb(root_table_physical).is_err() {

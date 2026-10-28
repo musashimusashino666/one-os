@@ -101,6 +101,23 @@ use oneos_core::{validate_memory_map, FrameWxAuditSource, MemoryMapError};
 ))]
 compile_error!("enable only one exception fault-injection feature at a time");
 
+#[cfg(all(
+    feature = "test-nmi-wx-transition",
+    any(
+        feature = "test-exception",
+        feature = "test-general-protection",
+        feature = "test-page-fault",
+        feature = "test-double-fault",
+        feature = "test-ist",
+        feature = "test-supervisor-write-protection",
+        feature = "test-nx-protection",
+        feature = "test-vm-transitions",
+        feature = "test-root-leak-safety",
+        feature = "test-wx-runtime-audit"
+    )
+))]
+compile_error!("test-nmi-wx-transition must be enabled by itself");
+
 mod address_space;
 mod interrupts;
 mod memory;
@@ -493,7 +510,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         feature = "test-nx-protection",
         feature = "test-vm-transitions",
         feature = "test-root-leak-safety",
-        feature = "test-wx-runtime-audit"
+        feature = "test-wx-runtime-audit",
+        feature = "test-nmi-wx-transition"
     )))]
     {
         match paging::verify_large_page_demotion_smoke_test(boot_info) {
