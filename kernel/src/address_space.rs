@@ -56,6 +56,11 @@ pub enum AddressSpaceError {
     RootFrameRegistryFull,
     RootRegistryCleanupFailed,
     RootNotRegistered,
+    #[cfg(any(
+        feature = "test-cr3-switch-guard",
+        feature = "test-cr3-activation-guard"
+    ))]
+    Cr3GuardTestFailed,
     #[cfg(feature = "test-wx-runtime-audit")]
     RootRegistryGuardFailed,
     NoUnusedRecursiveIndex,
@@ -161,6 +166,13 @@ impl AddressSpaceError {
             }
             Self::RootNotRegistered => {
                 b"Address-space activation rejected a root missing from the live-root registry\n"
+            }
+            #[cfg(any(
+                feature = "test-cr3-switch-guard",
+                feature = "test-cr3-activation-guard"
+            ))]
+            Self::Cr3GuardTestFailed => {
+                b"Real CR3 guard rejection acceptance test failed\n"
             }
             #[cfg(feature = "test-wx-runtime-audit")]
             Self::RootRegistryGuardFailed => {
@@ -519,6 +531,32 @@ fn validate_registered_root_for_activation(root_physical: u64) -> Result<(), Add
     Ok(())
 }
 
+#[cfg(any(
+    feature = "test-cr3-switch-guard",
+    feature = "test-cr3-activation-guard"
+))]
+pub(super) fn cr3_guard_test_exit(
+    success: bool,
+    pass_marker: &'static [u8],
+    failure_marker: &'static [u8],
+) -> ! {
+    super::serial_write(if success { pass_marker } else { failure_marker });
+    let exit_code = if success { 0x10u8 } else { 0x11u8 };
+    // Dedicated QEMU acceptance profiles attach isa-debug-exit at port 0xf4.
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") 0xf4u16,
+            in("al") exit_code,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    loop {
+        // If the test-exit device is missing, do not continue with consumed root handles.
+        unsafe { asm!("hlt", options(nomem, nostack)) };
+    }
+}
+
 /// Performs the validated hardware CR3 transition.
 ///
 /// When `allow_user_mappings` is true, the caller must have just completed
@@ -691,6 +729,39 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         .ok_or(AddressSpaceError::RootActivationFailed)?;
     if second_physical == original_physical || second_recursive_index == original_recursive_index {
         return Err(AddressSpaceError::RootActivationFailed);
+    }
+
+    #[cfg(feature = "test-cr3-switch-guard")]
+    {
+        const PASS: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT PASS\n";
+        const FAIL: &[u8] = b"ONE OS CR3 SWITCH UNREGISTERED ROOT REJECT FAIL\n";
+        if !super::paging::is_uniquely_registered_address_space_root(original_physical)
+            || !super::paging::is_uniquely_registered_address_space_root(second_physical)
+            || !matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+            || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
+        {
+            cr3_guard_test_exit(false, PASS, FAIL);
+        }
+        if !super::paging::remove_address_space_root_registration_for_cr3_test(second_physical) {
+            cr3_guard_test_exit(false, PASS, FAIL);
+        }
+
+        // Invoke the real function, not only its admission predicate. The function
+        // consumes both handles on failure, so this dedicated image exits immediately.
+        let result = switch_address_space(active_root, second_root, boot_info, false);
+        match result {
+            Err(AddressSpaceError::RootNotRegistered) => {
+                let target_restored = super::paging::register_address_space_root(second_physical);
+                let invariants_hold = target_restored
+                    && active_root_table_physical() == original_physical
+                    && super::paging::is_uniquely_registered_address_space_root(original_physical)
+                    && super::paging::is_uniquely_registered_address_space_root(second_physical)
+                    && matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+                    && matches!(super::memory::is_frame_allocated(second_physical), Ok(true));
+                cr3_guard_test_exit(invariants_hold, PASS, FAIL);
+            }
+            _ => cr3_guard_test_exit(false, PASS, FAIL),
+        }
     }
 
     // Build a second independent user root before either root is activated.
@@ -1502,7 +1573,39 @@ pub fn activate_supervisor_kernel_root(
 
     // This initial activation path writes CR3 directly rather than using
     // switch_address_space; enforce the same live-root invariant at its boundary.
-    if let Err(error) = validate_registered_root_for_activation(root_physical) {
+    #[cfg(feature = "test-cr3-activation-guard")]
+    let cr3_before_guard_test = active_root_table_physical();
+    #[cfg(feature = "test-cr3-activation-guard")]
+    if !super::paging::remove_address_space_root_registration_for_cr3_test(root_physical) {
+        root.leak_frame();
+        return Err(AddressSpaceError::Cr3GuardTestFailed);
+    }
+
+    // Keep this result as the single admission decision used by production and
+    // by the test-only fault injection; bypassing this guard must reach the real
+    // CR3 write below and make the dedicated QEMU test fail.
+    let activation_guard_result = validate_registered_root_for_activation(root_physical);
+
+    #[cfg(feature = "test-cr3-activation-guard")]
+    {
+        if !super::paging::register_address_space_root(root_physical) {
+            root.leak_frame();
+            return Err(AddressSpaceError::Cr3GuardTestFailed);
+        }
+        if activation_guard_result == Err(AddressSpaceError::RootNotRegistered) {
+            clear_and_release_root(root, &mut editor, root_physical)?;
+            let rejected_without_switch = active_root_table_physical() == cr3_before_guard_test
+                && matches!(super::memory::is_frame_allocated(root_physical), Ok(false))
+                && !super::paging::is_uniquely_registered_address_space_root(root_physical);
+            return if rejected_without_switch {
+                Err(AddressSpaceError::RootNotRegistered)
+            } else {
+                Err(AddressSpaceError::Cr3GuardTestFailed)
+            };
+        }
+    }
+
+    if let Err(error) = activation_guard_result {
         clear_and_release_root(root, &mut editor, root_physical)?;
         return Err(error);
     }
