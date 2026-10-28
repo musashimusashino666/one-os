@@ -1,6 +1,37 @@
 use super::*;
 
 #[cfg(feature = "test-wx-runtime-audit")]
+fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -> Option<u64> {
+    for region in boot_info.memory_regions.iter().rev() {
+        if region.kind != bootloader_api::info::MemoryRegionKind::Usable {
+            continue;
+        }
+        let Some(mut candidate) = region
+            .end
+            .checked_sub(PAGE_SIZE)
+            .map(|address| address & !(PAGE_SIZE - 1))
+        else {
+            continue;
+        };
+        for _ in 0..64 {
+            if candidate < region.start {
+                break;
+            }
+            if !is_address_space_root_frame(candidate)
+                && matches!(crate::memory::is_frame_allocated(candidate), Ok(false))
+            {
+                return Some(candidate);
+            }
+            let Some(previous) = candidate.checked_sub(PAGE_SIZE) else {
+                break;
+            };
+            candidate = previous;
+        }
+    }
+    None
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
@@ -9,6 +40,21 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
 ) -> Result<(), PagingError> {
     let active_physical = active_root.physical_address();
     let inactive_physical = inactive_root.physical_address();
+
+    // A page from a Usable region that is not allocator-owned must never be
+    // admitted into the authoritative address-space root inventory.
+    let unallocated_candidate = find_unallocated_usable_frame_for_root_registry_probe(boot_info)
+        .ok_or(PagingError::WxAuditFailed)?;
+    if register_address_space_root(unallocated_candidate)
+        || is_address_space_root_frame(unallocated_candidate)
+        || !matches!(
+            crate::memory::is_frame_allocated(unallocated_candidate),
+            Ok(false)
+        )
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X UNALLOCATED ROOT REGISTRATION REJECT PASS\\n");
     if inactive_physical == active_physical
         || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
