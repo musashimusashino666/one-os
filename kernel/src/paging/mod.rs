@@ -761,6 +761,11 @@ fn map_paging_precondition_error(error: PagingPreconditionError) -> PagingError 
 mod editor;
 mod inspection;
 
+#[cfg(any(
+    feature = "test-cr3-switch-guard",
+    feature = "test-cr3-activation-guard"
+))]
+pub(super) use editor::remove_address_space_root_registration_for_cr3_test;
 pub(super) use editor::{
     audit_registered_wx_roots, enforce_kernel_executable_alias_wx,
     has_pending_detached_private_table, initialize_paging_controls,
@@ -772,11 +777,6 @@ pub(super) use editor::{
     verify_teardown_corruption_preflight_for_smoke,
     verify_user_frame_zeroing_test_with_recursive_index, InactiveAddressSpaceTeardownError,
 };
-#[cfg(any(
-    feature = "test-cr3-switch-guard",
-    feature = "test-cr3-activation-guard"
-))]
-pub(super) use editor::remove_address_space_root_registration_for_cr3_test;
 pub(super) use inspection::inspect_boot_mappings;
 
 #[cfg(any(
