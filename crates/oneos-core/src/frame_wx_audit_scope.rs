@@ -693,11 +693,26 @@ mod tests {
 
     #[test]
     fn root_frame_admission_requires_owned_and_non_reserved_state() {
-        assert!(frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Ok::<_, ()>(false)));
-        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(false), Ok::<_, ()>(false)));
-        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Ok::<_, ()>(true)));
-        assert!(!frame_wx_root_frame_state_is_admissible(Err(()), Ok::<_, ()>(false)));
-        assert!(!frame_wx_root_frame_state_is_admissible(Ok::<_, ()>(true), Err(())));
+        assert!(frame_wx_root_frame_state_is_admissible(
+            Ok::<_, ()>(true),
+            Ok::<_, ()>(false),
+        ));
+        assert!(!frame_wx_root_frame_state_is_admissible(
+            Ok::<_, ()>(false),
+            Ok::<_, ()>(false),
+        ));
+        assert!(!frame_wx_root_frame_state_is_admissible(
+            Ok::<_, ()>(true),
+            Ok::<_, ()>(true),
+        ));
+        assert!(!frame_wx_root_frame_state_is_admissible(
+            Err(()),
+            Ok::<_, ()>(false),
+        ));
+        assert!(!frame_wx_root_frame_state_is_admissible(
+            Ok::<_, ()>(true),
+            Err(()),
+        ));
     }
 
     #[test]
