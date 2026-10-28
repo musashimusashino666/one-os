@@ -1296,9 +1296,15 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         || second_physical == original_physical
         || !super::paging::is_uniquely_registered_address_space_root(original_physical)
         || !super::paging::is_uniquely_registered_address_space_root(second_physical)
-        || !matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+        || !matches!(
+            super::memory::is_frame_allocated(original_physical),
+            Ok(true)
+        )
         || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
-        || !matches!(super::memory::is_permanently_reserved(second_physical), Ok(false))
+        || !matches!(
+            super::memory::is_permanently_reserved(second_physical),
+            Ok(false)
+        )
     {
         cr3_guard_test_exit(false, PASS, FAIL);
     }
@@ -1307,7 +1313,10 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
     // registered. This simulates stale/inconsistent state at the activation boundary;
     // a legitimately reserved frame cannot pass production root registration.
     if !super::memory::inject_permanent_reservation_for_test(second_physical)
-        || !matches!(super::memory::is_permanently_reserved(second_physical), Ok(true))
+        || !matches!(
+            super::memory::is_permanently_reserved(second_physical),
+            Ok(true)
+        )
     {
         let _ = super::memory::clear_permanent_reservation_injection_for_test(second_physical);
         cr3_guard_test_exit(false, PASS, FAIL);
@@ -1324,9 +1333,15 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
                 && active_root_table_physical() == original_physical
                 && super::paging::is_uniquely_registered_address_space_root(original_physical)
                 && super::paging::is_uniquely_registered_address_space_root(second_physical)
-                && matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+                && matches!(
+                    super::memory::is_frame_allocated(original_physical),
+                    Ok(true)
+                )
                 && matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
-                && matches!(super::memory::is_permanently_reserved(second_physical), Ok(false));
+                && matches!(
+                    super::memory::is_permanently_reserved(second_physical),
+                    Ok(false)
+                );
             cr3_guard_test_exit(invariants_hold, PASS, FAIL);
         }
         _ => cr3_guard_test_exit(false, PASS, FAIL),
