@@ -1,6 +1,8 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "test-wx-runtime-audit")]
+use core::sync::atomic::AtomicU64;
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use oneos_core::{
@@ -51,6 +53,8 @@ struct GlobalAllocator {
     // allocated through ordinary Frame tokens. The allocator's main bitmap
     // deliberately marks both unavailable, so it cannot make this distinction.
     reserved_bitmap: UnsafeCell<[u64; BITMAP_WORDS]>,
+    #[cfg(feature = "test-wx-runtime-audit")]
+    test_reserved_root_probe_frame: AtomicU64,
     allocator: UnsafeCell<MaybeUninit<FrameAllocator<'static>>>,
 }
 
@@ -66,6 +70,8 @@ impl GlobalAllocator {
             segments: UnsafeCell::new([FrameSegment::EMPTY; SEGMENT_CAPACITY]),
             bitmap: UnsafeCell::new([0; BITMAP_WORDS]),
             reserved_bitmap: UnsafeCell::new([0; BITMAP_WORDS]),
+            #[cfg(feature = "test-wx-runtime-audit")]
+            test_reserved_root_probe_frame: AtomicU64::new(0),
             allocator: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -152,6 +158,18 @@ pub fn initialize(
     )
     .map_err(MemoryError::Allocator)?;
 
+    // The W^X admission profile needs a deterministic permanent reservation.
+    // Reserve it while the allocator is still in its pre-allocation phase.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    let mut allocator = allocator;
+    #[cfg(feature = "test-wx-runtime-audit")]
+    reserve_test_permanent_root_registry_probe_frame(
+        &mut allocator,
+        regions,
+        kernel_physical_start,
+        kernel_physical_len,
+    )?;
+
     let stats = allocator.stats();
     // SAFETY: initialization is serialized and the initialized flag is false.
     unsafe {
@@ -159,6 +177,94 @@ pub fn initialize(
     }
     GLOBAL.initialized.store(true, Ordering::Release);
     Ok(stats)
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+fn reserve_test_permanent_root_registry_probe_frame(
+    allocator: &mut FrameAllocator<'static>,
+    regions: &[MemoryRegion],
+    kernel_physical_start: u64,
+    kernel_physical_len: u64,
+) -> Result<(), MemoryError> {
+    let kernel_physical_end = kernel_physical_start
+        .checked_add(kernel_physical_len)
+        .ok_or(MemoryError::ReservationTrackingFailed)?;
+
+    // Pick a real page from a Usable region outside the loaded kernel image.
+    // This runs during allocator initialization, before any Frame allocation,
+    // so FrameAllocator::reserve_frame can create a permanent no-token reserve.
+    for region in regions.iter().rev() {
+        if region.kind != MemoryRegionKind::Usable {
+            continue;
+        }
+        let Some(mut candidate) = region
+            .end
+            .checked_sub(PAGE_SIZE)
+            .map(|address| address & !(PAGE_SIZE - 1))
+        else {
+            continue;
+        };
+
+        loop {
+            if candidate == 0 || candidate < region.start {
+                break;
+            }
+            let Some(page_end) = candidate.checked_add(PAGE_SIZE) else {
+                break;
+            };
+            if page_end > region.end {
+                let Some(previous) = candidate.checked_sub(PAGE_SIZE) else {
+                    break;
+                };
+                candidate = previous;
+                continue;
+            }
+
+            let overlaps_kernel_image =
+                candidate < kernel_physical_end && kernel_physical_start < page_end;
+            if !overlaps_kernel_image {
+                let managed = allocator
+                    .reserve_frame(candidate)
+                    .map_err(MemoryError::Allocator)?;
+                if managed {
+                    let index = allocator
+                        .managed_frame_index(candidate)
+                        .ok_or(MemoryError::ReservationTrackingFailed)?;
+
+                    // SAFETY: initialize holds GLOBAL's lock; the side bitmap
+                    // was cleared above and the allocator is not yet published.
+                    let reserved_bitmap = unsafe { &mut *GLOBAL.reserved_bitmap.get() };
+                    reserved_bitmap[index / u64::BITS as usize] |=
+                        1u64 << (index % u64::BITS as usize);
+                    GLOBAL
+                        .test_reserved_root_probe_frame
+                        .store(candidate, Ordering::Release);
+                    return Ok(());
+                }
+            }
+
+            let Some(previous) = candidate.checked_sub(PAGE_SIZE) else {
+                break;
+            };
+            candidate = previous;
+        }
+    }
+
+    Err(MemoryError::ReservationTrackingFailed)
+}
+
+/// Returns the deterministic permanent-reservation frame used only by the
+/// test-wx-runtime-audit admission probe. It intentionally has no Frame token.
+#[cfg(feature = "test-wx-runtime-audit")]
+pub fn permanently_reserved_root_registry_probe_frame() -> Result<u64, MemoryError> {
+    let physical_address = GLOBAL
+        .test_reserved_root_probe_frame
+        .load(Ordering::Acquire);
+    if physical_address == 0 {
+        Err(MemoryError::ReservationTrackingFailed)
+    } else {
+        Ok(physical_address)
+    }
 }
 
 /// Allocates one physical frame from the global allocator.

@@ -35,51 +35,6 @@ fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -
 /// This stays bounded while allowing the probe to reach boot reservations
 /// beyond the loaded kernel and low-memory regions.
 #[cfg(feature = "test-wx-runtime-audit")]
-const MAX_RESERVED_ROOT_PROBE_PAGES: usize = 32768;
-
-#[cfg(feature = "test-wx-runtime-audit")]
-fn find_permanently_reserved_frame_for_root_registry_probe(
-    boot_info: &BootInfo,
-) -> Result<u64, PagingError> {
-    let mut pages_examined = 0usize;
-    for region in boot_info.memory_regions.iter() {
-        if region.kind != bootloader_api::info::MemoryRegionKind::Usable {
-            continue;
-        }
-        let Some(mut candidate) = region
-            .start
-            .checked_add(PAGE_SIZE - 1)
-            .map(|address| address & !(PAGE_SIZE - 1))
-        else {
-            return Err(PagingError::WxAuditFailed);
-        };
-        while let Some(page_end) = candidate.checked_add(PAGE_SIZE) {
-            if page_end > region.end {
-                break;
-            }
-            if pages_examined >= MAX_RESERVED_ROOT_PROBE_PAGES {
-                return Err(PagingError::WxAuditFailed);
-            }
-            pages_examined += 1;
-
-            let permanently_reserved = crate::memory::is_permanently_reserved(candidate)
-                .map_err(|_| PagingError::WxAuditFailed)?;
-            if permanently_reserved
-                && matches!(crate::memory::is_frame_allocated(candidate), Ok(true))
-                && !is_address_space_root_frame(candidate)
-            {
-                return Ok(candidate);
-            }
-            let Some(next) = candidate.checked_add(PAGE_SIZE) else {
-                break;
-            };
-            candidate = next;
-        }
-    }
-    Err(PagingError::WxAuditFailed)
-}
-
-#[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
@@ -107,7 +62,8 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     // Permanent reservations are allocator-unavailable but have no ordinary
     // releasable Frame token. They must not be admitted as address-space roots.
     let permanently_reserved_candidate =
-        find_permanently_reserved_frame_for_root_registry_probe(boot_info)?;
+        crate::memory::permanently_reserved_root_registry_probe_frame()
+            .map_err(|_| PagingError::WxAuditFailed)?;
     if !matches!(
         crate::memory::is_permanently_reserved(permanently_reserved_candidate),
         Ok(true)
