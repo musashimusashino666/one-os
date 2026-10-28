@@ -284,8 +284,7 @@ static ADDRESS_SPACE_ROOT_FRAMES: [AtomicU64; ADDRESS_SPACE_ROOT_CAPACITY] =
 ///
 /// Returns false when the frame is not allocator-owned, is permanently reserved,
 /// the registry is full, or an existing duplicate slot makes the inventory inconsistent.
-/// A single existing
-/// registration is idempotent so the owning handle can safely revalidate membership.
+/// One existing unique registration is idempotent so its owner can revalidate membership.
 pub fn register_address_space_root(physical_address: u64) -> bool {
     if physical_address == 0
         || physical_address & (PAGE_SIZE - 1) != 0
