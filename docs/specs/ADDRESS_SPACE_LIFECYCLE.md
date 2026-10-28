@@ -25,7 +25,7 @@ Before publishing a root:
 
 ## Switching requirements
 
-A switch must validate the source/target lifecycle states, root physical address, recursive slot, relevant CPU state, and shared kernel mappings. Activation must read back CR3 and fail closed if the observed root differs from the requested root.
+A switch must validate the source/target lifecycle states, root physical address, recursive slot, relevant CPU state, and shared kernel mappings. Every kernel-created target root must still be present in the live-root registry and allocator-owned immediately before activation; otherwise the switch is refused. Activation must read back CR3 and fail closed if the observed root differs from the requested root.
 
 The supported baseline has one CPU and maskable interrupts disabled. The design must explicitly handle CR3/TLB semantics and cannot assume PCID or a future SMP policy. Root switching tests must demonstrate that two address spaces can map the same user VA to distinct frames, that writes remain private to the selected mapping, and that switching back does not expose stale translations from the other root.
 

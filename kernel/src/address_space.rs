@@ -55,6 +55,7 @@ pub enum AddressSpaceError {
     RootTableUnavailable,
     RootFrameRegistryFull,
     RootRegistryCleanupFailed,
+    RootNotRegistered,
     NoUnusedRecursiveIndex,
     RootVerificationFailed {
         index: usize,
@@ -155,6 +156,9 @@ impl AddressSpaceError {
             }
             Self::RootRegistryCleanupFailed => {
                 b"Released address-space root could not be safely removed from its registry\n"
+            }
+            Self::RootNotRegistered => {
+                b"Address-space activation rejected a root missing from the live-root registry\n"
             }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
@@ -522,6 +526,15 @@ fn switch_address_space(
         .recursive_index()
         .filter(|index| (LOWER_HALF_PML4_ENTRIES as u16..PML4_ENTRY_COUNT as u16).contains(index))
         .ok_or(AddressSpaceError::RootActivationFailed)?;
+
+    // Every kernel-created root that may become active must remain in the
+    // authoritative live-root registry and retain allocator ownership. The
+    // bootloader root is the sole exception: it is the source root, not next.
+    if !is_address_space_root_frame(root_physical)
+        || !matches!(super::memory::is_frame_allocated(root_physical), Ok(true))
+    {
+        return Err(AddressSpaceError::RootNotRegistered);
+    }
 
     if !next.is_initialized()
         || root_physical == current_physical
