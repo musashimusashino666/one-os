@@ -81,6 +81,8 @@ static INTERRUPT_INIT_STARTED: AtomicBool = AtomicBool::new(false);
 static NMI_IST_TEST_PASSED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "test-ist")]
 static MACHINE_CHECK_IST_TEST_PASSED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-nmi-wx-transition")]
+static WX_NMI_TRANSITION_TEST_ARMED: AtomicBool = AtomicBool::new(false);
 static mut GDT: [u64; MAX_GDT_ENTRIES] = [0; MAX_GDT_ENTRIES];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
@@ -172,8 +174,53 @@ extern "x86-interrupt" fn unexpected_interrupt_handler(frame: InterruptStackFram
 
 no_error_handler!(divide_error_handler, 0, "divide error");
 no_error_handler!(debug_handler, 1, "debug exception");
-#[cfg(not(feature = "test-ist"))]
+#[cfg(not(any(feature = "test-ist", feature = "test-nmi-wx-transition")))]
 no_error_handler!(non_maskable_interrupt_handler, 2, "non-maskable interrupt");
+
+#[cfg(feature = "test-nmi-wx-transition")]
+extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackFrame) -> ! {
+    let handler_rsp: u64;
+    // SAFETY: reading RSP is valid in this privileged x86_64 NMI handler.
+    unsafe {
+        asm!(
+            "mov {}, rsp",
+            out(reg) handler_rsp,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    let stack_bottom = unsafe { ptr::addr_of!(NON_MASKABLE_INTERRUPT_STACK) as u64 };
+    let stack_top = stack_bottom + size_of::<NonMaskableInterruptStack>() as u64;
+    let entered_on_ist2 = handler_rsp >= stack_bottom && handler_rsp < stack_top;
+    let transition_was_armed = WX_NMI_TRANSITION_TEST_ARMED.load(Ordering::Acquire);
+
+    if entered_on_ist2 && transition_was_armed {
+        super::serial_write(
+            b"ONE OS WX NMI TEST PASS: vector 2 on IST2 during non-present window\\n",
+        );
+        // QEMU's isa-debug-exit turns value 0x10 into process status 33.
+        unsafe {
+            asm!(
+                "out dx, eax",
+                in("dx") 0xf4u16,
+                in("eax") 0x10u32,
+                options(nomem, nostack)
+            );
+        }
+    } else {
+        super::serial_write(
+            b"ONE OS WX NMI TEST FAILED: unexpected vector state or IST2 stack\\n",
+        );
+        unsafe {
+            asm!(
+                "out dx, eax",
+                in("dx") 0xf4u16,
+                in("eax") 0x11u32,
+                options(nomem, nostack)
+            );
+        }
+    }
+    super::halt_forever()
+}
 
 #[cfg(feature = "test-ist")]
 extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackFrame) {
@@ -1146,6 +1193,21 @@ pub fn test_nmi_ist_passed() -> bool {
 #[cfg(feature = "test-ist")]
 pub fn test_machine_check_ist_passed() -> bool {
     MACHINE_CHECK_IST_TEST_PASSED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "test-nmi-wx-transition")]
+pub fn hold_for_wx_nmi_transition() -> ! {
+    // The caller invokes this only after confirming the selected PTE is
+    // non-present following the full local TLB invalidation.
+    WX_NMI_TRANSITION_TEST_ARMED.store(true, Ordering::Release);
+    super::serial_write(
+        b"ONE OS WX NMI TEST READY: target direct-map PTE confirmed non-present\\n",
+    );
+    // The CI controller must inject a genuine NMI through QMP. A missing
+    // injection is a host-side timeout/failure, never a normal-boot wait.
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 pub unsafe fn init(kernel_stack_bottom: u64, kernel_stack_len: u64) {

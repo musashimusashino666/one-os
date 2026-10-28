@@ -255,6 +255,18 @@ jobs:
             --log "$log" \
             --exit-status "$status"
 
+      - name: Verify real NMI during W^X break-before-make in QEMU
+        shell: bash
+        run: |
+          cargo run --locked -p oneos-xtask -- image-test-nmi-wx-transition
+          python3 tools/ci/run_qemu_nmi_wx_transition.py \
+            --image "$CARGO_TARGET_DIR/one-os-nmi-wx-transition-test-bios.img" \
+            --log "$CARGO_TARGET_DIR/qemu-nmi-wx-transition.log" \
+            --machine "$QEMU_MACHINE" \
+            --cpu "$QEMU_CPU" \
+            --smp "$QEMU_SMP" \
+            --memory "$QEMU_MEMORY"
+
       - name: Verify supervisor write protection in QEMU
         shell: bash
         run: |
