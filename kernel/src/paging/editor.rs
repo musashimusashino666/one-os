@@ -292,6 +292,10 @@ pub fn register_address_space_root(physical_address: u64) -> bool {
             crate::memory::is_frame_allocated(physical_address),
             Ok(true)
         )
+        || !matches!(
+            crate::memory::is_permanently_reserved(physical_address),
+            Ok(false)
+        )
     {
         return false;
     }
