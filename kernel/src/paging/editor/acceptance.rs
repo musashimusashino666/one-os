@@ -1,6 +1,43 @@
 use super::*;
 
 #[cfg(feature = "test-wx-runtime-audit")]
+pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
+    boot_info: &BootInfo,
+    inactive_root: &AddressSpaceRoot,
+    active_root: &ActiveAddressSpaceRoot,
+) -> Result<(), PagingError> {
+    let inactive_physical = inactive_root.physical_address();
+    if inactive_physical == active_root.physical_address()
+        || !is_address_space_root_frame(inactive_physical)
+        || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    // Attempt the exact registry-removal operation while the root still owns
+    // an allocated frame. It must refuse to shrink the audit scope.
+    if unregister_address_space_root(inactive_physical) {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    let (_, scope, _) = audit_registered_wx_roots(
+        boot_info,
+        active_root.physical_address(),
+        active_root.recursive_index(),
+        active_root.physical_address_bits(),
+    )?;
+    let root_remains_audited = scope.roots[..scope.declared_roots]
+        .iter()
+        .any(|root| root.physical_address == inactive_physical && root.audited);
+    if !scope.complete || !root_remains_audited {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    crate::serial_write(b"ONE OS W^X LIVE ROOT UNREGISTER REJECT PASS\n");
+    Ok(())
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_wx_audit_cross_root_alias_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,

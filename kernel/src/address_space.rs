@@ -54,6 +54,7 @@ pub enum AddressSpaceError {
     RootInitialization(AddressSpaceRootInitializationError),
     RootTableUnavailable,
     RootFrameRegistryFull,
+    RootRegistryCleanupFailed,
     NoUnusedRecursiveIndex,
     RootVerificationFailed {
         index: usize,
@@ -151,6 +152,9 @@ impl AddressSpaceError {
             }
             Self::RootFrameRegistryFull => {
                 b"Address-space root frame registry is full\n"
+            }
+            Self::RootRegistryCleanupFailed => {
+                b"Released address-space root could not be safely removed from its registry\n"
             }
             Self::NoUnusedRecursiveIndex => {
                 b"Address-space root setup found no empty upper-half PML4 slot for its private recursive mapping\n"
@@ -691,6 +695,16 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         &user_registry,
         third_physical,
         peer_frame_physical,
+    )
+    .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
+
+    // Prove a live inactive root cannot be removed from the inventory merely
+    // by calling the registry cleanup API; it must remain in a complete audit.
+    #[cfg(feature = "test-wx-runtime-audit")]
+    super::paging::verify_live_root_registry_unregistration_rejected_for_smoke(
+        boot_info,
+        &second_root,
+        &active_root,
     )
     .map_err(|_| AddressSpaceError::PagingIntegrationFailed)?;
 
@@ -1574,11 +1588,8 @@ fn clear_and_release_root(
     // release a never-activated construction root with no private child tables,
     // or call only after switching away and completing inactive-root teardown.
     let result = release_frame(unsafe { root.into_frame() });
-    if result.is_ok() {
-        // A released frame can be reused as data. Remove it from the root-frame
-        // registry only after the allocator accepted it; a failed release keeps
-        // the conservative reservation in place.
-        super::paging::unregister_address_space_root(root_physical);
+    if result.is_ok() && !super::paging::unregister_address_space_root(root_physical) {
+        return Err(AddressSpaceError::RootRegistryCleanupFailed);
     }
     result
 }

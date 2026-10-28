@@ -304,14 +304,40 @@ pub fn register_address_space_root(physical_address: u64) -> bool {
     false
 }
 
-/// Removes one released address-space root frame from the registry.
+/// Ensures a released root frame is absent from the registry.
 ///
-/// A missing entry is intentionally ignored: cleanup paths may run after a
-/// failed registration or after a conservative leak decision.
-pub fn unregister_address_space_root(physical_address: u64) {
-    for slot in ADDRESS_SPACE_ROOT_FRAMES.iter() {
-        let _ = slot.compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire);
+/// A root may be removed only after its frame is no longer allocator-owned and
+/// is not the current CR3. This prevents a live, still-activatable root from
+/// being silently removed from the W^X audit's authoritative lifecycle set.
+/// The operation is idempotent for an already-absent, released frame. Duplicate
+/// registry entries or allocator/query uncertainty fail closed.
+pub fn unregister_address_space_root(physical_address: u64) -> bool {
+    if physical_address == 0
+        || physical_address & (PAGE_SIZE - 1) != 0
+        || physical_address == active_root_table_physical()
+        || !matches!(crate::memory::is_frame_allocated(physical_address), Ok(false))
+    {
+        return false;
     }
+
+    let mut matching_slot = None;
+    for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
+        if slot.load(Ordering::Acquire) == physical_address {
+            if matching_slot.replace(index).is_some() {
+                return false;
+            }
+        }
+    }
+
+    let Some(index) = matching_slot else {
+        // Registration may have failed because the bounded registry was full.
+        // Once the new, never-published frame is released, it is safe to ensure
+        // that it is absent without requiring a matching registry entry.
+        return true;
+    };
+    ADDRESS_SPACE_ROOT_FRAMES[index]
+        .compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Returns whether this frame is a live kernel-created address-space root.
@@ -2751,6 +2777,7 @@ pub use acceptance::verify_user_frame_zeroing_test;
 #[cfg(feature = "test-wx-runtime-audit")]
 pub use acceptance::{
     apply_wx_sibling_test_transition, kernel_executable_direct_alias_for_test,
+    verify_live_root_registry_unregistration_rejected_for_smoke,
     verify_wx_audit_cross_root_alias_for_smoke, verify_wx_sibling_large_page_precondition,
     verify_wx_sibling_test_after_transition, WxSiblingRegressionTest,
 };
