@@ -1239,7 +1239,10 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         || second_physical == original_physical
         || !super::paging::is_uniquely_registered_address_space_root(original_physical)
         || !super::paging::is_uniquely_registered_address_space_root(second_physical)
-        || !matches!(super::memory::is_frame_allocated(original_physical), Ok(true))
+        || !matches!(
+            super::memory::is_frame_allocated(original_physical),
+            Ok(true)
+        )
         || !matches!(super::memory::is_frame_allocated(second_physical), Ok(true))
     {
         cr3_guard_test_exit(false, PASS, FAIL);
