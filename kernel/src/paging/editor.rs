@@ -330,10 +330,7 @@ pub fn unregister_address_space_root(physical_address: u64) -> bool {
     }
 
     let Some(index) = matching_slot else {
-        // Registration may have failed because the bounded registry was full.
-        // Once the new, never-published frame is released, it is safe to ensure
-        // that it is absent without requiring a matching registry entry.
-        return true;
+        return false;
     };
     ADDRESS_SPACE_ROOT_FRAMES[index]
         .compare_exchange(physical_address, 0, Ordering::AcqRel, Ordering::Acquire)

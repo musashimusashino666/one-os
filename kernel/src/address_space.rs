@@ -247,7 +247,7 @@ pub fn verify_root_initialization_smoke_test(
         destination_root_pointer: None,
     };
     if !super::paging::register_address_space_root(root_physical) {
-        clear_and_release_root(root, &mut editor, root_physical)?;
+        clear_and_release_unregistered_root(root, &mut editor, root_physical)?;
         return Err(AddressSpaceError::RootFrameRegistryFull);
     }
 
@@ -1573,6 +1573,22 @@ fn verify_initialized_entries(
 
 /// Clears and verifies the entire PML4 frame before releasing its ownership token.
 /// If zeroization fails, the frame is deliberately leaked rather than recycled.
+/// Clears and releases a newly allocated root whose registry insertion failed.
+///
+/// This is used only before the root has been initialized or published. It must
+/// not remove any registry entry because registration did not succeed.
+fn clear_and_release_unregistered_root(
+    root: AddressSpaceRoot,
+    editor: &mut KernelAddressSpaceRootEditor<'_>,
+    root_physical: u64,
+) -> Result<(), AddressSpaceError> {
+    if let Err(error) = clear_root_entries(editor, root_physical) {
+        root.leak_frame();
+        return Err(error);
+    }
+    release_frame(unsafe { root.into_frame() })
+}
+
 fn clear_and_release_root(
     root: AddressSpaceRoot,
     editor: &mut KernelAddressSpaceRootEditor<'_>,

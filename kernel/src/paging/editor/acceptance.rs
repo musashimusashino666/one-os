@@ -6,17 +6,24 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     inactive_root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
 ) -> Result<(), PagingError> {
+    let active_physical = active_root.physical_address();
     let inactive_physical = inactive_root.physical_address();
-    if inactive_physical == active_root.physical_address()
+    if inactive_physical == active_physical
+        || !is_address_space_root_frame(active_physical)
         || !is_address_space_root_frame(inactive_physical)
+        || !matches!(crate::memory::is_frame_allocated(active_physical), Ok(true))
         || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
     {
         return Err(PagingError::WxAuditFailed);
     }
 
-    // Attempt the exact registry-removal operation while the root still owns
-    // an allocated frame. It must refuse to shrink the audit scope.
-    if unregister_address_space_root(inactive_physical) {
+    // Neither the current CR3 nor a still-allocated inactive root may be
+    // removed. This verifies both rejection branches before auditing the set.
+    if unregister_address_space_root(active_physical)
+        || unregister_address_space_root(inactive_physical)
+        || !is_address_space_root_frame(active_physical)
+        || !is_address_space_root_frame(inactive_physical)
+    {
         return Err(PagingError::WxAuditFailed);
     }
 
