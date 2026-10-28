@@ -180,6 +180,9 @@ pub fn initialize(
 }
 
 #[cfg(feature = "test-wx-runtime-audit")]
+const MAX_TEST_ROOT_REGISTRY_PROBE_PAGES: usize = 4096;
+
+#[cfg(feature = "test-wx-runtime-audit")]
 fn reserve_test_permanent_root_registry_probe_frame(
     allocator: &mut FrameAllocator<'static>,
     regions: &[MemoryRegion],
@@ -193,6 +196,7 @@ fn reserve_test_permanent_root_registry_probe_frame(
     // Pick a real page from a Usable region outside the loaded kernel image.
     // This runs during allocator initialization, before any Frame allocation,
     // so FrameAllocator::reserve_frame can create a permanent no-token reserve.
+    let mut pages_examined = 0usize;
     for region in regions.iter().rev() {
         if region.kind != MemoryRegionKind::Usable {
             continue;
@@ -209,6 +213,10 @@ fn reserve_test_permanent_root_registry_probe_frame(
             if candidate == 0 || candidate < region.start {
                 break;
             }
+            if pages_examined >= MAX_TEST_ROOT_REGISTRY_PROBE_PAGES {
+                return Err(MemoryError::ReservationTrackingFailed);
+            }
+            pages_examined += 1;
             let Some(page_end) = candidate.checked_add(PAGE_SIZE) else {
                 break;
             };

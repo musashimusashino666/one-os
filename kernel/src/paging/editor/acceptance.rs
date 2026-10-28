@@ -31,9 +31,6 @@ fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -
     None
 }
 
-/// Covers the full 128 MiB CI guest addressable RAM span in 4 KiB pages.
-/// This stays bounded while allowing the probe to reach boot reservations
-/// beyond the loaded kernel and low-memory regions.
 #[cfg(feature = "test-wx-runtime-audit")]
 pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
