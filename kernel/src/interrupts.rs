@@ -195,7 +195,7 @@ extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackF
 
     if entered_on_ist2 && transition_was_armed {
         super::serial_write(
-            b"ONE OS WX NMI TEST PASS: vector 2 on IST2 during non-present window\\n",
+            b"ONE OS WX NMI TEST PASS: vector 2 on IST2 during non-present window\n",
         );
         // QEMU's isa-debug-exit turns value 0x10 into process status 33.
         unsafe {
@@ -208,7 +208,7 @@ extern "x86-interrupt" fn non_maskable_interrupt_handler(_frame: InterruptStackF
         }
     } else {
         super::serial_write(
-            b"ONE OS WX NMI TEST FAILED: unexpected vector state or IST2 stack\\n",
+            b"ONE OS WX NMI TEST FAILED: unexpected vector state or IST2 stack\n",
         );
         unsafe {
             asm!(
@@ -1201,7 +1201,7 @@ pub fn hold_for_wx_nmi_transition() -> ! {
     // non-present following the full local TLB invalidation.
     WX_NMI_TRANSITION_TEST_ARMED.store(true, Ordering::Release);
     super::serial_write(
-        b"ONE OS WX NMI TEST READY: target direct-map PTE confirmed non-present\\n",
+        b"ONE OS WX NMI TEST READY: target direct-map PTE confirmed non-present\n",
     );
     // The CI controller must inject a genuine NMI through QMP. A missing
     // injection is a host-side timeout/failure, never a normal-boot wait.
