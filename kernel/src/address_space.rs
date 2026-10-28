@@ -807,6 +807,8 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
         }
     }
 
+    #[cfg(not(feature = "test-cr3-switch-guard"))]
+    {
     // Build a second independent user root before either root is activated.
     // Both roots deliberately map the same VA to different, simultaneously
     // allocated physical frames.
@@ -1257,6 +1259,7 @@ fn verify_runtime_address_space_switch_smoke_test_impl(
     #[cfg(feature = "test-root-leak-safety")]
     verify_root_leak_allocator_smoke_test(boot_info, &final_active)?;
     Ok(final_active)
+    }
 }
 
 /// Clears and releases one inactive root after its user mappings and private
