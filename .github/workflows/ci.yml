@@ -150,6 +150,7 @@ jobs:
           grep -Fq "ONE OS W^X WRITABLE SIBLING DIRECT-MAP PASS" "$log"
           grep -Fq "ONE OS W^X SIBLING ALIAS DATA CONSISTENCY PASS" "$log"
           grep -Fq "ONE OS W^X LIVE ROOT UNREGISTER REJECT PASS" "$log"
+          grep -Fq "ONE OS W^X UNREGISTERED ROOT ACTIVATION REJECT PASS" "$log"
           grep -Fq "ONE OS W^X CROSS-ROOT ALIAS CONFLICT DETECTION PASS" "$log"
           grep -Fq "ONE OS W^X CROSS-ROOT ALIAS RESTORE PASS" "$log"
           python3 - "$log" <<'PY'
