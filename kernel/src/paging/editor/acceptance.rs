@@ -5,6 +5,7 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     boot_info: &BootInfo,
     inactive_root: &AddressSpaceRoot,
     active_root: &ActiveAddressSpaceRoot,
+    activation_guard_rejects: impl FnOnce(u64) -> bool,
 ) -> Result<(), PagingError> {
     let active_physical = active_root.physical_address();
     let inactive_physical = inactive_root.physical_address();
@@ -33,6 +34,41 @@ pub fn verify_live_root_registry_unregistration_rejected_for_smoke(
     {
         return Err(PagingError::WxAuditFailed);
     }
+
+    // Deliberately remove the still-allocated inactive root from the registry,
+    // simulating a corrupted/incomplete inventory. This is test-only fault
+    // injection: the production unregister API correctly refuses this operation.
+    let mut matching_slot = None;
+    for (index, slot) in ADDRESS_SPACE_ROOT_FRAMES.iter().enumerate() {
+        if slot.load(Ordering::Acquire) == inactive_physical
+            && matching_slot.replace(index).is_some()
+        {
+            return Err(PagingError::WxAuditFailed);
+        }
+    }
+    let index = matching_slot.ok_or(PagingError::WxAuditFailed)?;
+    if ADDRESS_SPACE_ROOT_FRAMES[index]
+        .compare_exchange(
+            inactive_physical,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let activation_rejected = activation_guard_rejects(inactive_physical);
+    let registration_restored = register_address_space_root(inactive_physical);
+    if !activation_rejected
+        || !registration_restored
+        || active_root_table_physical() != active_physical
+        || !is_uniquely_registered_address_space_root(inactive_physical)
+        || !matches!(crate::memory::is_frame_allocated(inactive_physical), Ok(true))
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    crate::serial_write(b"ONE OS W^X UNREGISTERED ROOT ACTIVATION REJECT PASS\n");
 
     let (_, scope, _) = audit_registered_wx_roots(
         boot_info,
