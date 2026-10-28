@@ -31,8 +31,11 @@ fn find_unallocated_usable_frame_for_root_registry_probe(boot_info: &BootInfo) -
     None
 }
 
+/// Covers the full 128 MiB CI guest addressable RAM span in 4 KiB pages.
+/// This stays bounded while allowing the probe to reach boot reservations
+/// beyond the loaded kernel and low-memory regions.
 #[cfg(feature = "test-wx-runtime-audit")]
-const MAX_RESERVED_ROOT_PROBE_PAGES: usize = 4096;
+const MAX_RESERVED_ROOT_PROBE_PAGES: usize = 32768;
 
 #[cfg(feature = "test-wx-runtime-audit")]
 fn find_permanently_reserved_frame_for_root_registry_probe(
