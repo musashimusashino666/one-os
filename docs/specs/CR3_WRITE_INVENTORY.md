@@ -18,6 +18,8 @@ The checked-in allowlist pins the current asm! call-site count per source file. 
 
 The kernel package's resolved Cargo dependency closure is inspected with `cargo metadata --all-features --locked`; local path/workspace packages are allowed only when their resolved manifest is in the explicit source inventory or the reviewed `crates/oneos-core` package. This catches `workspace = true` dependencies and transitive local path crates instead of comparing manifest strings. Patch/replace tables and unreviewed custom Cargo targets are rejected. The only target rustflag permitted by `.cargo/config.toml` is `-C relocation-model=pic`. Compiler/linker wrappers, environment overrides, and alternate native/build-script inputs are rejected.
 
+The resolved graph is not a source scan of every dependency. Registry packages are traversed as graph nodes so that local path crates anywhere below them are still detected, but registry package Rust files are not scanned by this policy. Assembly or CR3 writes originating in registry code are therefore outside the source gate's guarantee. The companion linked-ELF gate in PR #76 checks actual CR3-writing instructions in the normal linked kernel artifact; it does not retroactively make PR #73's source scan cover registry crates.
+
 ## Alias and source-loading deny rules
 
 The inventory does not attempt general Rust namespace resolution or macro expansion. Instead, it denies source forms that could hide an assembly call or load code outside the inventory:
