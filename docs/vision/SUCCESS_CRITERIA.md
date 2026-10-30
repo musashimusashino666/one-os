@@ -25,16 +25,9 @@ any unfinished criterion has passed.
 7. **Report dimensions separately.** Do not collapse security, recovery, accessibility,
    compatibility, and performance into a single average that hides a critical failure.
 8. **Use the canonical strategic model without weakening detailed gates.**
-[World-Class OS: Definition and Design](WORLD_CLASS_OS.md) defines
+   [World-Class OS: Definition and Design](WORLD_CLASS_OS.md) defines
    seven weighted quality dimensions. Their weights summarize comparative value; this
    scorecard's acceptance contracts and the release gates below remain authoritative.
-
-## Strategic scorecard
-
-The seven weighted quality dimensions are defined only in
-[World-Class OS](WORLD_CLASS_OS.md). This document does not
-duplicate their weights. The detailed criteria below define the testable contracts,
-evidence, and current maturity for each outcome.
 
 ## Evaluation scorecard
 
