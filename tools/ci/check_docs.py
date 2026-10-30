@@ -721,7 +721,7 @@ def _markdown_table_lines(lines: list[str], fenced_lines: set[int]) -> set[int]:
         delimiter_cells, delimiter_quote_depth = delimiter
         if (
             header_quote_depth != delimiter_quote_depth
-            or len(header_cells) < 2
+            or not header_cells
             or len(header_cells) != len(delimiter_cells)
             or not all(delimiter_cell.fullmatch(cell) for cell in delimiter_cells)
         ):
@@ -901,12 +901,18 @@ def _normalize_reference_label(label: str) -> str:
     return " ".join(label.casefold().split())
 
 
-def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[DocProblem]]:
+def _extract_links(
+    text: str,
+    path: str,
+    image_targets: list[tuple[str, int]] | None = None,
+) -> tuple[list[tuple[str, int]], list[DocProblem]]:
     """Extract inline/reference links while respecting Markdown containers.
 
     Reference definitions may be placed in blockquotes or list items, and
     their destination may begin on the following line. Definitions are kept
     separate from use sites and use CommonMark's first-definition-wins rule.
+    When supplied, image_targets receives image destinations separately from
+    clickable links so images can be validated without satisfying navigation.
     """
     original_lines = text.splitlines(keepends=True)
     fenced, html_blocks = _markdown_block_regions(original_lines)
@@ -1030,6 +1036,12 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
         line_number += content.count("\n", index, next_index)
         index = next_index
 
+    def collect_target(target: str, source_line: int, is_image: bool) -> None:
+        if is_image and image_targets is not None:
+            image_targets.append((target, source_line))
+        else:
+            links.append((target, source_line))
+
     while index < len(content):
         if content[index] != "[" or _is_escaped(content, index):
             advance_to(index + 1)
@@ -1042,13 +1054,18 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
 
         visible_label = content[index + 1:close_bracket]
         next_index = close_bracket + 1
+        is_image = (
+            index > 0
+            and content[index - 1] == "!"
+            and not _is_escaped(content, index - 1)
+        )
 
         if next_index < len(content) and content[next_index] == "(":
             target, end, error = _parse_inline_destination(content, next_index)
             if error:
                 problems.append(DocProblem(path, line_number, error))
             elif target is not None:
-                links.append((_unescape_destination(target), line_number))
+                collect_target(_unescape_destination(target), line_number, is_image)
             advance_to(max(end, next_index + 1))
             continue
 
@@ -1077,7 +1094,7 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
                     )
                 )
             elif definition[0] is not None:
-                links.append((definition[0], line_number))
+                collect_target(definition[0], line_number, is_image)
             advance_to(end)
             continue
 
@@ -1320,10 +1337,17 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
                     )
                 )
 
-        links, parse_problems = _extract_links(content, relative)
+        image_targets: list[tuple[str, int]] = []
+        links, parse_problems = _extract_links(
+            content, relative, image_targets=image_targets
+        )
         problems.extend(parse_problems)
         discovered_links[relative] = []
-        for target, line_number in links:
+        typed_targets = (
+            [(target, line_number, False) for target, line_number in links]
+            + [(target, line_number, True) for target, line_number in image_targets]
+        )
+        for target, line_number, is_image in typed_targets:
             resolved, fragment, external = _resolve_target(relative, target)
             if external:
                 continue  # External websites are intentionally not checked.
@@ -1343,7 +1367,8 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
             if not target_path.is_file() and not target_path.is_dir():
                 problems.append(DocProblem(relative, line_number, f"unsupported link target: {target}"))
                 continue
-            discovered_links[relative].append(resolved)
+            if not is_image:
+                discovered_links[relative].append(resolved)
 
             if fragment:
                 anchor_file = target_path
