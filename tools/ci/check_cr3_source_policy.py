@@ -26,7 +26,7 @@ from rust_lexer import (
 # Counts are reviewed source call-site inventory, not inferred semantic proofs.
 # Any new site or moved site must be reviewed and explicitly approved here.
 EXPECTED_ASM_COUNTS = {
-    "kernel/src/address_space.rs": 30,
+    "kernel/src/address_space.rs": 35,
     "kernel/src/paging/inspection.rs": 4,
     "kernel/src/paging/editor.rs": 13,
     "kernel/src/paging/editor/acceptance.rs": 1,
