@@ -2,55 +2,69 @@
 
 **A security-first operating system research project.**
 
-ONE OS aims to give people secure, understandable, and revocable control over their digital environment, with resilience and practical software choice. “World-class” is a target that must be earned with reproducible evidence, not a claim of current maturity.
+ONE OS aims to give people secure, understandable, and revocable control
+over their digital environment, with resilience and practical choice.
 
-> **Current status: bootstrap-stage research.** ONE OS is not a daily-use or production operating system. Security principles describe design goals unless an implementation and its acceptance evidence are explicitly identified.
+“World-class” is an engineering target earned through evidence.
+It is not a claim about current maturity.
 
-## What exists today
+> **Current status: bootstrap-stage research.**
+> ONE OS is not a daily-use or production operating system.
+> A design goal or passing test does not establish a global guarantee.
 
-The current x86_64 Rust bootstrap includes a bare-metal kernel, a host-testable `no_std` core crate, BIOS image tooling, fixed-capacity physical-frame allocation, selected boot mapping inspection, guarded page-table operations, and QEMU acceptance paths for selected protection and TLB-transition behavior.
+## Current implementation
 
-Important limitations remain: global frame-wide W^X is incomplete; Ring 3 process isolation and kernel-enforced capabilities are not complete; SMP and remote TLB shootdowns are unsupported; storage, networking, integrated drivers, a service manager, and a usable user environment are not implemented. See [Implementation Status](docs/project/IMPLEMENTATION_STATUS.md) for the bounded status snapshot.
+The current target is an x86_64 Rust BIOS/QEMU kernel.
+
+Implemented slices include:
+
+- A bare-metal kernel and host-testable `no_std` core crate.
+- BIOS image tooling and a fixed-capacity frame allocator.
+- Selected boot-mapping inspection and guarded page-table operations.
+- QEMU checks for selected protection and TLB transitions.
+- CR3 checks at source, optimized-assembly, and linked-ELF levels.
+
+The linked-ELF CR3 check covers the normal BIOS image.
+It does not inspect every feature-specific test image.
+
+Major incomplete areas:
+
+- Global frame-wide W^X and complete boot-map classification.
+- Ring 3 process isolation and kernel-enforced capabilities.
+- IPC, scheduling, storage, networking, and integrated drivers.
+- SMP, authenticated boot, signed updates, and recovery.
+- A usable service manager and user environment.
+
+See [Implementation Status](docs/project/IMPLEMENTATION_STATUS.md)
+for verified scope and known exclusions.
 
 ## Start here
 
 - [Documentation map](docs/README.md)
-- [Vision and definition](docs/vision/VISION.md)
-- [Design principles](docs/vision/PRINCIPLES.md)
-- [Success criteria](docs/vision/SUCCESS_CRITERIA.md)
-- [Architecture overview](docs/architecture/OVERVIEW.md)
-- [Security model](docs/architecture/SECURITY_MODEL.md)
-- [Specifications](docs/specs/)
-- [Development guide](docs/engineering/DEVELOPMENT.md)
-- [Verification strategy](docs/engineering/VERIFICATION.md)
-- [Implementation status](docs/project/IMPLEMENTATION_STATUS.md)
-- [Roadmap](docs/project/ROADMAP.md)
-- [Architecture decision records](docs/project/decisions/)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
-## Quick start
+## Build and verification
 
-Use the pinned nightly Rust toolchain, the components and target in `rust-toolchain.toml`, QEMU, and Python 3.
+Use the pinned Rust toolchain in `rust-toolchain.toml`.
+QEMU and Python 3 are required for the full acceptance workflow.
 
-~~~sh
-cargo fmt --all -- --check
-cargo test --locked -p oneos-core
-cargo clippy --locked -p oneos-core --all-targets -- -D warnings
-cargo clippy --locked -p one-os-kernel --target x86_64-unknown-none -- -D warnings
-cargo clippy --locked -p oneos-xtask --all-targets -- -D warnings
-cargo check --locked -p one-os-kernel --target x86_64-unknown-none
-cargo run --locked -p oneos-xtask -- image
-~~~
+Follow the [Development Guide](docs/engineering/DEVELOPMENT.md)
+for setup, build, and local commands.
+See the [Verification Strategy](docs/engineering/VERIFICATION.md)
+for CI, QEMU profiles, and evidence requirements.
 
-The QEMU boot profile, expected markers, and full acceptance flow are documented in the [development guide](docs/engineering/DEVELOPMENT.md) and [verification strategy](docs/engineering/VERIFICATION.md). A successful build or boot is not proof of global security properties.
+A successful build or boot is not proof of global security properties.
 
 ## Project rules
 
-1. Requirements and aspirations are not evidence of implementation.
-2. Security claims must state scope, assumptions, tests, and exclusions.
-3. A milestone is complete only when its acceptance criteria pass on the exact reviewed commit.
-4. Changes to security boundaries and long-lived architecture decisions require updated specifications and, where appropriate, an ADR.
-5. Do not relax fail-closed behavior to make a test pass.
+1. Requirements and aspirations are not implementation evidence.
+2. Security claims state scope, assumptions, tests, and exclusions.
+3. Milestones require evidence on the exact reviewed commit.
+4. Security-boundary changes update specifications and tests.
+5. Fail-closed behavior must not be weakened to make tests pass.
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+Dual-licensed under MIT or Apache-2.0.
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

@@ -1,39 +1,65 @@
-# Documentation Map
+# Documentation
 
-This directory is the authoritative documentation set for ONE OS. Documents describe either the intended product, normative contracts, verification evidence, or project execution. They must not silently mix those categories.
+This directory contains the authoritative project documentation.
+Use this index to find the specification or evidence you need.
+Avoid duplicate summaries: each fact has one canonical home.
 
-## Start here
+## Product definition
 
-1. [World-class OS definition and design](vision/WORLD_CLASS_OS.md) — canonical definition, seven quality dimensions, target architecture, device profiles, and evaluation model.
-2. [Vision](vision/VISION.md) — why ONE OS exists, the product thesis, and evidence-based goals.
-3. [Principles](vision/PRINCIPLES.md) — rules that constrain design and implementation.
-4. [Success criteria](vision/SUCCESS_CRITERIA.md) — detailed outcomes, acceptance evidence, and release gates.
-5. [Architecture overview](architecture/OVERVIEW.md) — target system layers, device profiles, and current boundaries.
-6. [Security model](architecture/SECURITY_MODEL.md) — assets, threats, assumptions, controls, and explicit limits.
-7. [Implementation status](project/IMPLEMENTATION_STATUS.md) — what exists now, what has been tested, and what has not been proved.
-8. [Roadmap](project/ROADMAP.md) — ordered milestones and exit criteria.
+- [World-class OS definition](vision/WORLD_CLASS_OS.md):
+  product target, quality dimensions, and platform scope.
+- [Vision](vision/VISION.md): purpose, user needs, and hypotheses.
+- [Principles](vision/PRINCIPLES.md): architectural constraints.
+- [Success criteria](vision/SUCCESS_CRITERIA.md):
+  measurable requirements, release gates, and traceability.
 
-## Top-level entry points
+## Architecture and contracts
 
-The files `SECURITY.md`, `DEVELOPMENT.md`, and `ROADMAP.md` are concise entry points for repository consumers and issue acceptance links. The canonical detailed documents remain `architecture/SECURITY_MODEL.md`, `engineering/DEVELOPMENT.md`, and `project/ROADMAP.md`; update those source documents when behavior or evidence changes.
+- [Architecture overview](architecture/OVERVIEW.md)
+- [Security model](architecture/SECURITY_MODEL.md)
+- [User experience](architecture/USER_EXPERIENCE.md)
+- [Updates and recovery](architecture/UPDATES_AND_RECOVERY.md)
+- [Normative specifications](specs/):
+  boot, memory, address spaces, process authority, and acceptance.
 
-## By purpose
+Specifications define required behavior.
+A design target is not proof of implementation.
 
-- **Vision:** `vision/WORLD_CLASS_OS.md`, `vision/VISION.md`, `vision/PRINCIPLES.md`, `vision/SUCCESS_CRITERIA.md`
-- **Architecture:** `architecture/OVERVIEW.md`, `architecture/SECURITY_MODEL.md`, `architecture/USER_EXPERIENCE.md`, `architecture/UPDATES_AND_RECOVERY.md`
-- **Normative specifications:** `specs/BOOT_AND_MEMORY.md`, `specs/VIRTUAL_MEMORY_ACCEPTANCE.md`, `specs/ADDRESS_SPACE_LIFECYCLE.md`, `specs/PROCESS_AND_CAPABILITIES.md`, `specs/RING3_ISOLATION_ACCEPTANCE.md`
-- **Engineering and evidence:** `engineering/DEVELOPMENT.md`, `engineering/VERIFICATION.md`
-- **Execution and decisions:** `project/ROADMAP.md`, `project/IMPLEMENTATION_STATUS.md`, `project/decisions/`
+## Engineering
 
-## Rules for authoritative documentation
+- [Development guide](engineering/DEVELOPMENT.md):
+  toolchain, build, and local workflows.
+- [Verification strategy](engineering/VERIFICATION.md):
+  tests, CI contract, evidence scope, and exclusions.
+- [Contributing guide](../CONTRIBUTING.md):
+  change and review policy.
+- [Security reporting policy](../SECURITY.md):
+  vulnerability disclosure route and current limitations.
 
-- Vision documents state intended outcomes; they do not assert that those outcomes already exist.
-- Specifications state required behavior and invariants. An implementation is not compliant merely because the code compiles.
-- Implementation status must be supported by current source, tests, and the exact CI result or explicitly marked unverified.
-- A security claim must name its scope, assumptions, evidence, and known exclusions.
-- A design decision that changes a security boundary, interface contract, or long-term architecture must be recorded as an ADR.
-- Avoid duplicating detailed facts. Link to the source of truth instead.
-- When behavior changes, update the relevant specification, verification evidence, and status in the same change.
-- Remove superseded documentation rather than maintaining competing sources of truth.
+## Project execution
 
-Use RFC 2119-style words consistently: **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** express normative strength. A MUST-level requirement needs a testable acceptance condition or a documented reason why it cannot yet be tested.
+- [Implementation status](project/IMPLEMENTATION_STATUS.md):
+  what exists and what has been verified.
+- [Roadmap](project/ROADMAP.md):
+  milestones, dependencies, and exit criteria.
+- [Architecture decisions](project/decisions/README.md):
+  accepted ADRs and the decision template.
+
+## Documentation rules
+
+1. Keep one canonical source for each requirement or claim.
+2. Keep Markdown prose and table rows within 88 characters.
+   Prefer headings and lists over wide tables.
+   Exempt fenced code, inline code that cannot be split,
+   and unbreakable URLs only.
+3. Vision describes intent; specifications define contracts.
+4. Implementation status cites source and exact verification evidence.
+5. Security claims state assumptions, scope, and exclusions.
+6. Update specifications and tests in the same change as behavior.
+7. Record durable architecture changes as ADRs.
+8. Remove obsolete documents instead of preserving redirect pages.
+
+Use RFC 2119 terms consistently:
+**MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**.
+Every MUST-level requirement needs a testable acceptance condition
+or a documented reason why it cannot yet be tested.
