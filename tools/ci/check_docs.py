@@ -67,67 +67,105 @@ def _is_escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
+def _blockquote_content(line: str) -> tuple[str, int]:
+    """Remove consecutive blockquote prefixes and return the nesting depth."""
+    offset = 0
+    depth = 0
+    while offset < len(line):
+        cursor = offset
+        spaces = 0
+        while cursor < len(line) and line[cursor] == " " and spaces < 4:
+            cursor += 1
+            spaces += 1
+        if spaces > 3 or cursor >= len(line) or line[cursor] != ">":
+            break
+        depth += 1
+        offset = cursor + 1
+        if offset < len(line) and line[offset] in " \t":
+            offset += 1
+    return line[offset:], depth
+
+
 def _fenced_code_lines(lines: list[str]) -> set[int]:
-    """Return zero-based line numbers inside Markdown fenced code blocks."""
+    """Return zero-based lines inside fenced blocks, including blockquotes."""
     fenced: set[int] = set()
     marker: str | None = None
     marker_length = 0
+    quote_depth = 0
 
     for index, line in enumerate(lines):
-        stripped = line.lstrip(" ")
-        indent = len(line) - len(stripped)
-        if indent <= 3:
-            match = re.match(rf"({re.escape(BACKTICK)}{{3,}}|~{{3,}})(.*)$", stripped)
-        else:
-            match = None
+        container_line, current_quote_depth = _blockquote_content(line)
 
-        if marker is None:
-            if match:
-                candidate = match.group(1)
-                info = match.group(2)
-                if candidate[0] != BACKTICK or BACKTICK not in info:
-                    marker = candidate[0]
-                    marker_length = len(candidate)
-                    fenced.add(index)
-            continue
-
-        fenced.add(index)
-        close = re.match(rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}\s*$", line)
-        if close:
+        if marker is not None and current_quote_depth < quote_depth:
+            # The enclosing blockquote ended; its fenced block cannot consume
+            # subsequent text outside that container.
             marker = None
             marker_length = 0
+            quote_depth = 0
+
+        stripped = container_line.lstrip(" ")
+        indent = len(container_line) - len(stripped)
+        match = (
+            re.match(rf"({re.escape(BACKTICK)}{{3,}}|~{{3,}})(.*)$", stripped)
+            if indent <= 3
+            else None
+        )
+
+        if marker is not None:
+            fenced.add(index)
+            close = re.match(
+                rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}[ \t]*$",
+                container_line,
+            )
+            if close and current_quote_depth >= quote_depth:
+                marker = None
+                marker_length = 0
+                quote_depth = 0
+            continue
+
+        if match:
+            candidate = match.group(1)
+            info = match.group(2)
+            if candidate[0] != BACKTICK or BACKTICK not in info:
+                marker = candidate[0]
+                marker_length = len(candidate)
+                quote_depth = current_quote_depth
+                fenced.add(index)
 
     return fenced
 
 
-def _inline_code_ranges(line: str) -> list[tuple[int, int]]:
-    """Find matched inline-code spans, respecting escaped backticks."""
+def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
+    """Find matched inline-code spans across the complete text."""
     ranges: list[tuple[int, int]] = []
     index = 0
-    while index < len(line):
-        if line[index] != BACKTICK or _is_escaped(line, index):
+    while index < len(text):
+        if text[index] != BACKTICK or _is_escaped(text, index):
             index += 1
             continue
+
         run_end = index + 1
-        while run_end < len(line) and line[run_end] == BACKTICK:
+        while run_end < len(text) and text[run_end] == BACKTICK:
             run_end += 1
         run_length = run_end - index
+
         search = run_end
         closing: tuple[int, int] | None = None
-        while search < len(line):
-            candidate = line.find(BACKTICK, search)
+        while search < len(text):
+            candidate = text.find(BACKTICK, search)
             if candidate < 0:
                 break
-            if _is_escaped(line, candidate):
+            if _is_escaped(text, candidate):
                 search = candidate + 1
                 continue
             candidate_end = candidate + 1
-            while candidate_end < len(line) and line[candidate_end] == BACKTICK:
+            while candidate_end < len(text) and text[candidate_end] == BACKTICK:
                 candidate_end += 1
             if candidate_end - candidate == run_length:
                 closing = (candidate, candidate_end)
                 break
             search = candidate_end
+
         if closing is None:
             index = run_end
             continue
@@ -136,17 +174,82 @@ def _inline_code_ranges(line: str) -> list[tuple[int, int]]:
     return ranges
 
 
-def _line_length_is_exempt(line: str, max_line_length: int = DEFAULT_MAX_LINE_LENGTH) -> bool:
-    """Allow only unbreakable inline code and URL spans to exceed the limit."""
+def _document_inline_code_ranges(
+    text: str, fenced_lines: set[int] | None = None
+) -> list[tuple[int, int]]:
+    """Find inline-code spans in contiguous non-fenced document sections."""
+    lines = text.splitlines(keepends=True)
+    fenced = fenced_lines if fenced_lines is not None else _fenced_code_lines(lines)
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    segment_start: int | None = None
+    segment_parts: list[str] = []
+
+    def flush() -> None:
+        nonlocal segment_start, segment_parts
+        if segment_start is not None:
+            segment = "".join(segment_parts)
+            ranges.extend(
+                (segment_start + start, segment_start + end)
+                for start, end in _inline_code_ranges(segment)
+            )
+        segment_start = None
+        segment_parts = []
+
+    for index, line in enumerate(lines):
+        if index in fenced:
+            flush()
+        else:
+            if segment_start is None:
+                segment_start = offset
+            segment_parts.append(line)
+        offset += len(line)
+    flush()
+    return ranges
+
+
+def _line_inline_code_ranges(text: str, fenced_lines: set[int]) -> dict[int, list[tuple[int, int]]]:
+    """Map inline-code intersections to per-line offsets for line-length checks."""
+    lines = text.splitlines(keepends=True)
+    ranges = _document_inline_code_ranges(text, fenced_lines)
+    result: dict[int, list[tuple[int, int]]] = {}
+    line_start = 0
+    range_index = 0
+
+    for line_number, line in enumerate(lines):
+        content_end = line_start + len(line.rstrip("\r\n"))
+        current: list[tuple[int, int]] = []
+        while range_index < len(ranges) and ranges[range_index][1] <= line_start:
+            range_index += 1
+        scan = range_index
+        while scan < len(ranges) and ranges[scan][0] < content_end:
+            start, end = ranges[scan]
+            left = max(start, line_start) - line_start
+            right = min(end, content_end) - line_start
+            if right > left:
+                current.append((left, right))
+            scan += 1
+        if current:
+            result[line_number] = current
+        line_start += len(line)
+
+    return result
+
+
+def _line_length_is_exempt(
+    line: str,
+    max_line_length: int = DEFAULT_MAX_LINE_LENGTH,
+    code_ranges: list[tuple[int, int]] | None = None,
+) -> bool:
+    """Allow atomic inline-code/URL spans only when residual prose fits."""
     if line.count("|") >= 2:
         return False  # Wide Markdown table rows must be rewritten, not exempted.
 
-    spans = _inline_code_ranges(line)
+    spans = list(code_ranges) if code_ranges is not None else _inline_code_ranges(line)
     spans.extend((match.start(), match.end()) for match in re.finditer(r"https?://\S+", line))
     if not spans:
         return False
 
-    # Merge overlapping spans (for example, a URL inside inline code).
     merged: list[list[int]] = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
@@ -166,20 +269,20 @@ def _mask_inline_code(text: str) -> str:
     fenced = _fenced_code_lines(lines)
     output = list(text)
     offset = 0
+
     for line_number, line in enumerate(lines):
         if line_number in fenced:
             for index in range(offset, offset + len(line)):
                 if output[index] not in "\r\n":
                     output[index] = " "
-            offset += len(line)
-            continue
-        for start, end in _inline_code_ranges(line):
-            for index in range(offset + start, offset + end):
-                if output[index] not in "\r\n":
-                    output[index] = " "
         offset += len(line)
-    return "".join(output)
 
+    for start, end in _document_inline_code_ranges(text, fenced):
+        for index in range(start, end):
+            if output[index] not in "\r\n":
+                output[index] = " "
+
+    return "".join(output)
 
 def _find_closing_bracket(text: str, start: int) -> int | None:
     depth = 0
@@ -277,59 +380,132 @@ def _unescape_destination(target: str) -> str:
     return re.sub(r"\\([\\*{}\[\]()#+\-.!_>])", r"\1", target).replace("\\" + BACKTICK, BACKTICK)
 
 
+def _normalize_reference_label(label: str) -> str:
+    label = re.sub(r"\\([\\`!"#$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~])", r"\1", label)
+    return " ".join(label.casefold().split())
+
+
 def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[DocProblem]]:
-    """Extract inline links and reference definitions, retaining source line numbers."""
+    """Extract links actually used in the document and validate reference labels.
+
+    Reference definitions are kept separately from use sites: an unused
+    definition is not a navigation link and cannot satisfy required entry-point
+    checks. Duplicate definitions follow CommonMark's first-definition-wins rule.
+    """
     masked = _mask_inline_code(text)
     links: list[tuple[str, int]] = []
     problems: list[DocProblem] = []
-
-    # Reference definitions are validated even if no use-site is found.
     definitions: dict[str, tuple[str, int]] = {}
-    for line_number, line in enumerate(masked.splitlines(), 1):
-        match = re.match(r"^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))", line)
-        if match:
-            label = " ".join(match.group(1).casefold().split())
-            target = match.group(2) or match.group(3)
-            definitions[label] = (target, line_number)
+    definition_lines: set[int] = set()
 
-    # Inline links/images. The parser balances nested brackets and parentheses.
+    for line_number, line in enumerate(masked.splitlines(), 1):
+        match = re.match(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$", line)
+        if not match:
+            continue
+
+        definition_lines.add(line_number)
+        label = _normalize_reference_label(match.group(1))
+        destination_text = match.group(2).strip()
+        target: str | None = None
+
+        if destination_text.startswith("<"):
+            closing = next(
+                (
+                    index
+                    for index in range(1, len(destination_text))
+                    if destination_text[index] == ">" and not _is_escaped(destination_text, index)
+                ),
+                None,
+            )
+            if closing is not None:
+                target = destination_text[1:closing]
+        elif destination_text:
+            target_match = re.match(r"(\S+)", destination_text)
+            if target_match:
+                target = target_match.group(1)
+
+        if label in definitions:
+            first_line = definitions[label][1]
+            problems.append(
+                DocProblem(
+                    path,
+                    line_number,
+                    f"duplicate Markdown reference definition '{label}'; "
+                    f"first definition on line {first_line} is used",
+                )
+            )
+            continue
+
+        if target is None or target == "":
+            problems.append(DocProblem(path, line_number, f"malformed Markdown reference definition: [{label}]"))
+            definitions[label] = ("", line_number)
+            continue
+
+        definitions[label] = (_unescape_destination(target), line_number)
+
+    # Remove definition lines from link-use scanning, retaining offsets/newlines.
+    scannable_lines = masked.splitlines(keepends=True)
+    scannable: list[str] = []
+    for line_number, line in enumerate(scannable_lines, 1):
+        if line_number in definition_lines:
+            scannable.append("".join("\n" if char == "\n" else "\r" if char == "\r" else " " for char in line))
+        else:
+            scannable.append(line)
+    content = "".join(scannable)
+
     index = 0
-    while index < len(masked):
-        if masked[index] != "[" or _is_escaped(masked, index):
+    while index < len(content):
+        if content[index] != "[" or _is_escaped(content, index):
             index += 1
             continue
-        close_bracket = _find_closing_bracket(masked, index)
+
+        close_bracket = _find_closing_bracket(content, index)
         if close_bracket is None:
             index += 1
             continue
+
+        visible_label = content[index + 1:close_bracket]
         next_index = close_bracket + 1
-        if next_index < len(masked) and masked[next_index] == "(":
-            target, end, error = _parse_inline_destination(masked, next_index)
-            line_number = masked.count("\n", 0, index) + 1
+        line_number = content.count("\n", 0, index) + 1
+
+        if next_index < len(content) and content[next_index] == "(":
+            target, end, error = _parse_inline_destination(content, next_index)
             if error:
                 problems.append(DocProblem(path, line_number, error))
             elif target is not None:
                 links.append((_unescape_destination(target), line_number))
             index = max(end, next_index + 1)
             continue
-        if next_index < len(masked) and masked[next_index] == "[":
-            close_reference = _find_closing_bracket(masked, next_index)
+
+        reference_label: str | None = None
+        end = close_bracket + 1
+        if next_index < len(content) and content[next_index] == "[":
+            close_reference = _find_closing_bracket(content, next_index)
             if close_reference is not None:
-                label_text = masked[next_index + 1:close_reference]
-                label = label_text if label_text else masked[index + 1:close_bracket]
-                normalized = " ".join(label.casefold().split())
-                line_number = masked.count("\n", 0, index) + 1
-                if normalized not in definitions:
-                    problems.append(DocProblem(path, line_number, f"undefined Markdown reference: [{label}]"))
-                index = close_reference + 1
-                continue
+                explicit_label = content[next_index + 1:close_reference]
+                reference_label = explicit_label if explicit_label else visible_label
+                end = close_reference + 1
+        else:
+            # CommonMark shortcut reference: [label] when a definition exists.
+            candidate = _normalize_reference_label(visible_label)
+            if candidate in definitions:
+                reference_label = visible_label
+
+        if reference_label is not None:
+            normalized = _normalize_reference_label(reference_label)
+            definition = definitions.get(normalized)
+            if definition is None:
+                problems.append(
+                    DocProblem(path, line_number, f"undefined Markdown reference: [{reference_label}]")
+                )
+            elif definition[0]:
+                links.append((definition[0], line_number))
+            index = end
+            continue
+
         index = close_bracket + 1
 
-    for target, line_number in definitions.values():
-        links.append((_unescape_destination(target), line_number))
-
     return links, problems
-
 
 def _strip_heading_markup(heading: str) -> str:
     heading = re.sub(re.escape(BACKTICK) + r"+([^" + re.escape(BACKTICK) + r"]*?)" + re.escape(BACKTICK) + r"+", r"\1", heading)
@@ -429,13 +605,17 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
             problems.append(DocProblem(relative, 0, f"Markdown is not valid UTF-8: {error}"))
             continue
         file_contents[relative] = content
-        lines = content.splitlines()
+        lines = content.splitlines(keepends=True)
         fenced = _fenced_code_lines(lines)
-        for index, line in enumerate(lines):
+        inline_code_by_line = _line_inline_code_ranges(content, fenced)
+        for index, raw_line in enumerate(lines):
+            line = raw_line.rstrip("\r\n")
             if index in fenced or len(line) <= max_line_length:
                 continue
-            # Inline code and URLs are atomic; the residual prose must still fit.
-            if not _line_length_is_exempt(line, max_line_length):
+            # Inline code spans can cross line boundaries in CommonMark.
+            if not _line_length_is_exempt(
+                line, max_line_length, inline_code_by_line.get(index, [])
+            ):
                 problems.append(
                     DocProblem(
                         relative,
