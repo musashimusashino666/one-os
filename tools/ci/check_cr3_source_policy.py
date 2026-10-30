@@ -310,7 +310,7 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     if include_count:
         errors.append(f"{path}: include! is denied because it hides source from the inventory")
 
-    macro_rules_count = len(re.findall(r"\bmacro_rules\s*!", source))
+    macro_rules_count = len(rust_macro_invocations(source, {"macro_rules"}))
     expected_rules = EXPECTED_MACRO_RULES.get(path, 0)
     if macro_rules_count != expected_rules:
         errors.append(
@@ -354,7 +354,7 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
         errors.append(f"{path}: local declarations or imports shadow a trusted macro root")
     if FORBIDDEN_DIRECT_MACRO_FORWARD_RE.search(source) or FORBIDDEN_REPEATED_PATH_FORWARD_RE.search(source):
         errors.append(f"{path}: macro forwarding through a metavariable is denied")
-    if re.search(r"\bconcat\s*!\s*\(", source):
+    if rust_macro_invocations(source, {"concat"}):
         errors.append(f"{path}: concat! is denied until assembly templates can be inspected without expansion")
     errors.extend(_assembler_directive_errors(path, source))
 
