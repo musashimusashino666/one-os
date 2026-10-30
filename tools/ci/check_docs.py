@@ -861,7 +861,7 @@ def _parse_link_title(text: str, start: int) -> tuple[int | None, str | None]:
 def _parse_destination_suffix(
     text: str, index: int, closing_delimiter: str | None
 ) -> tuple[int | None, str | None]:
-    """Parse optional whitespace/title and a required optional closing delimiter."""
+    """Parse an optional title after a destination and validate its terminator."""
     initial = index
     while index < len(text) and text[index].isspace():
         index += 1
@@ -922,10 +922,7 @@ def _parse_inline_destination(
                     return None, len(text) if end is None else end, error
                 assert end is not None
                 return target, end, None
-            if _is_escaped(text, index):
-                index += 2
-            else:
-                index += 1
+            index += 2 if _is_escaped(text, index) else 1
         return None, len(text), "link has an unterminated angle-bracket destination"
 
     start = index
@@ -974,15 +971,9 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
                 return None, "unescaped '<' in angle-bracket link destination"
             if char == ">" and not _is_escaped(text, index):
                 target = text[start:index]
-                end, error = _parse_destination_suffix(text, index + 1, None)
-                if error is not None:
-                    return None, error
-                assert end is not None
-                return target, None
-            if _is_escaped(text, index):
-                index += 2
-            else:
-                index += 1
+                _, error = _parse_destination_suffix(text, index + 1, None)
+                return (target, None) if error is None else (None, error)
+            index += 2 if _is_escaped(text, index) else 1
         return None, "unterminated angle-bracket reference destination"
 
     start = index
@@ -1008,76 +999,6 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
     if depth:
         return None, "unbalanced '(' in reference destination"
     return text[start:index], None
-
-
-    index = open_paren + 1
-    while index < len(text) and text[index].isspace():
-        index += 1
-    if index >= len(text):
-        return None, len(text), "link destination is not closed"
-    if text[index] == ")":
-        return "", index + 1, None
-
-    if text[index] == "<":
-        start = index + 1
-        index = start
-        while index < len(text):
-            if text[index] == ">" and not _is_escaped(text, index):
-                target = text[start:index]
-                index += 1
-                while index < len(text) and text[index].isspace():
-                    index += 1
-                if index < len(text) and text[index] == ")":
-                    return target, index + 1, None
-                # An optional Markdown title may follow an angle-bracket destination.
-                title_depth = 0
-                while index < len(text):
-                    title_char = text[index]
-                    if not _is_escaped(text, index):
-                        if title_char == "(":
-                            title_depth += 1
-                        elif title_char == ")":
-                            if title_depth == 0:
-                                return target, index + 1, None
-                            title_depth -= 1
-                    index += 1
-                return target, len(text), "link destination is not closed"
-            index += 1
-        return None, len(text), "link has an unterminated angle-bracket destination"
-
-    start = index
-    depth = 0
-    while index < len(text):
-        char = text[index]
-        if _is_escaped(text, index):
-            index += 1
-            continue
-        if char == "(" and not _is_escaped(text, index):
-            depth += 1
-        elif char == ")":
-            if depth == 0:
-                target = text[start:index]
-                return target, index + 1, None
-            depth -= 1
-        elif char.isspace() and depth == 0:
-            target = text[start:index]
-            while index < len(text) and text[index].isspace():
-                index += 1
-            # The rest is an optional title; require the final outer ')'.
-            title_depth = 0
-            while index < len(text):
-                title_char = text[index]
-                if not _is_escaped(text, index):
-                    if title_char == "(":
-                        title_depth += 1
-                    elif title_char == ")":
-                        if title_depth == 0:
-                            return target, index + 1, None
-                        title_depth -= 1
-                index += 1
-            return None, len(text), "link destination is not closed"
-        index += 1
-    return None, len(text), "link destination is not closed"
 
 
 def _unescape_destination(target: str) -> str:
