@@ -109,59 +109,12 @@ alternative systems, workload, hardware, configuration, and method. ONE OS must 
 imply that competitors lack a capability merely because the project intends to implement
 it differently.
 
-## What “world-class” means for ONE OS
+## Design constraints
 
-The phrase does **not** mean universally best at every workload or a single score that
-hides severe weaknesses. It means becoming demonstrably best-in-class for the declared
-target users and priority outcomes, while meeting explicit minimum gates in every
-safety-critical dimension. The canonical seven-dimension model and proposed strategic
-weights are in [World-Class OS: Definition and Design](WORLD_CLASS_OS.md);
-the release gates and detailed acceptance evidence remain
-authoritative in [Success Criteria](SUCCESS_CRITERIA.md).
-
-A defensible claim requires all of the following:
-
-1. **A declared scope:** intended users, supported hardware/software, threat model, and
-   exclusions are published.
-2. **Hard security gates:** no unresolved Critical security finding in the declared
-   scope; every Critical finding must be fixed and its regression/acceptance tests must
-   pass on the exact release candidate. No exception may waive a Critical finding or a
-   failed hard gate. A High finding that could violate a hard gate also blocks release.
-   Any other High-finding exception must satisfy the documented approval, evidence,
-   scope, expiry, and disclosure policy in
-[Success Criteria](SUCCESS_CRITERIA.md). Passing tests are evidence about their
-   coverage, not proof of zero vulnerabilities.
-3. **Recoverable operation:** update integrity, interruption handling, downgrade policy,
-   and recovery behavior are tested before production claims.
-4. **Usable owner control:** representative users can understand, grant, inspect, and
-   revoke sensitive access, with task outcomes and errors reported using a published
-   method.
-5. **Honest compatibility and performance:** representative application and hardware
-   sets are named; performance is compared against relevant alternatives using
-   repeatable workloads and reported variance. Targets are set before results are
-   collected.
-6. **Independent and reproducible evidence:** build, test, evaluation methods,
-   limitations, and the exact candidate revision are available for review.
-7. **No compensating away catastrophic gaps:** strong benchmark results or convenient UI
-   cannot compensate for a failed isolation, integrity, or recovery gate.
-
-Until comparable evidence exists, the accurate description is “a research project
-pursuing these outcomes,” not “the world's best,” “more secure,” or “faster.”
-
-## Design pillars
-
-1. **Security by construction:** keep privileged code small, validate boundaries,
-   default to denial, and enforce authority in a trusted component.
-2. **Owner control:** access, network activity, background work, and AI-initiated
-   actions should be visible, scoped, and revocable.
-3. **Resilience:** failure states, update interruption, rollback, and recovery are
-   designed and tested rather than left to convention.
-4. **Practical compatibility:** portability is a set of explicit execution contracts,
-   not an unqualified promise that every application will run.
-5. **Understandability and accessibility:** controls and failure messages must support
-   real users with different levels of expertise and ability.
-6. **Evidence over marketing:** performance, privacy, security, accessibility, and
-   compatibility claims require reproducible tests or measurements.
+The normative implementation constraints are maintained in
+[Principles](PRINCIPLES.md). The product definition is in
+[World-Class OS](WORLD_CLASS_OS.md), and measurable acceptance and
+release gates are in [Success Criteria](SUCCESS_CRITERIA.md).
 
 ## Non-goals and rejected shortcuts
 
