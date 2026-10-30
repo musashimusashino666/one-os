@@ -334,7 +334,7 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
             )
 
     if re.search(
-        r"\b(?:core|std|alloc)\s*::\s*arch\s*::\s*(?:asm|global_asm|naked_asm)\s*!",
+        r"\b(?:core|std|alloc)\s*::\s*arch\s*::\s*(?:r#)?(?:asm|global_asm|naked_asm)\s*!",
         code,
     ):
         errors.append(f"{path}: qualified assembly macro paths are denied; use reviewed imports")
