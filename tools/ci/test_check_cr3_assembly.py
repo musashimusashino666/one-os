@@ -624,6 +624,7 @@ fn unreviewed_cr3_writer(root_physical: u64) {
             'asm// line comment\n!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
             'asm!/* after bang */("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
             'asm/* outer /* nested */ inner */!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm/* comment */!(r#"mov cr3, {}"#, in(reg) root_physical, options(nostack, preserves_flags));',
         )
         for invocation in invocations:
             with self.subTest(invocation=invocation):
