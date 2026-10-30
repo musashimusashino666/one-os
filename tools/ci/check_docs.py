@@ -1084,7 +1084,7 @@ def _extract_links(
             previous_quote, previous_lists, _ = contexts[previous]
             starts_new_block = (
                 previous in ignored_blocks
-                or previous in definition_lines
+                or previous + 1 in definition_lines
                 or not previous_line.strip()
                 or (previous_quote, previous_lists) != (current_quote, current_lists)
                 or atx_heading.match(previous_line) is not None
