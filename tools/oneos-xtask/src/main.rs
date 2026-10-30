@@ -206,6 +206,9 @@ fn build_bios_image(test_feature: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some("test-nmi-wx-transition") => "one-os-nmi-wx-transition-test-bios.img",
         Some(other) => return Err(format!("unknown test feature: {other}").into()),
     };
+    // Report the exact Cargo-resolved executable path so CI inspects the ELF used for this image.
+    println!("Kernel ELF: {}", kernel_path.display());
+
     let image_path = target_directory.join(image_name);
 
     bootloader::BiosBoot::new(&kernel_path).create_disk_image(&image_path)?;

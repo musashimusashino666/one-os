@@ -16,7 +16,7 @@ ONE OS uses layered evidence. Each layer proves a different scope; no layer subs
 
 ## Current CI contract
 
-The GitHub Actions workflow is the executable definition of automated acceptance. It currently includes formatting, core tests, Clippy for the core/kernel/build tool, kernel checking, CR3 assembly validation, Python validator tests, image build, three independent normal QEMU boots, dedicated W^X runtime-audit checks, and real-path CR3 rejection profiles for unregistered and permanently reserved roots. The same workflow includes selected exception, interrupt-stack, supervisor-write-protection, NX, and VM transition acceptance images.
+The GitHub Actions workflow is the executable definition of automated acceptance. It currently includes formatting, core tests, Clippy for the core/kernel/build tool, kernel checking, CR3 source and optimized-assembly validation, final linked-ELF CR3-write inventory, Python validator tests, image build, three independent normal QEMU boots, dedicated W^X runtime-audit checks, and real-path CR3 rejection profiles for unregistered and permanently reserved roots. The same workflow includes selected exception, interrupt-stack, supervisor-write-protection, NX, and VM transition acceptance images.
 
 The prescribed guest profile is:
 
@@ -34,6 +34,7 @@ Tests should verify both the positive path and the denial path. Depending on the
 - Malformed or overlapping memory maps fail before allocation.
 - Allocator capacity exhaustion fails predictably and reserved regions are not allocated.
 - Invalid page-table roots, entries, address widths, and ownership tokens are rejected.
+- The final linked kernel ELF is disassembled after the BIOS-image build. Exactly three CR3 writes must remain under the three exact demangled symbols listed by the ELF validator; similarly named symbols do not satisfy a reviewed role.
 - The CR3 source inventory, unsupported-form deny rules, and optimized-assembly contract are specified in [CR3 Write-Site Inventory](../specs/CR3_WRITE_INVENTORY.md). The gate rejects incomplete or ambiguous source coverage rather than treating it as safe; it does not prove all bootloader-created mappings are expected.
 - W^X audit reports incomplete scope distinctly from a complete clean audit.
 - The dedicated W^X QEMU profile requires `ONE OS KERNEL W^X DIRECT-MAP PREFLIGHT PASS` before `ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS`. The preflight validates every executable PT_LOAD page and its physical-offset alias before the first permission mutation; it does not classify all bootloader mappings or establish transactional W^X across all aliases. The runtime-audit profile also injects a deterministic failure before the next page's translation after one page passes preflight, verifies the first executable page's direct-map translation and effective permissions remain unchanged, and requires `ONE OS KERNEL W^X PREFLIGHT LATE-FAILURE NO-MUTATION PASS`.
