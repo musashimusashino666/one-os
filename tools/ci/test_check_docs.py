@@ -8,7 +8,9 @@ BACKTICK = chr(96)
 FENCE = BACKTICK * 3
 
 from check_docs import (
+    _document_inline_code_ranges,
     _extract_links,
+    _indented_code_lines,
     _inline_code_ranges,
     _line_length_is_exempt,
     _markdown_anchors,
@@ -190,6 +192,40 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("missing.md", 3)])
         self.assertEqual(problems, [])
 
+    def test_inline_code_spans_do_not_cross_atx_heading_blocks(self):
+        text = (
+            BACKTICK + "\n"
+            "# Heading\n"
+            "[broken](missing.md)\n"
+            + BACKTICK
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertEqual(problems, [])
+
+    def test_inline_code_spans_do_not_cross_list_or_blockquote_boundaries(self):
+        documents = (
+            BACKTICK + "\n- item\n[broken](missing.md)\n" + BACKTICK,
+            BACKTICK + "\n> quoted\n[broken](missing.md)\n" + BACKTICK,
+            BACKTICK + "\n---\n[broken](missing.md)\n" + BACKTICK,
+        )
+        for text in documents:
+            with self.subTest(text=text):
+                links, problems = _extract_links(text, "README.md")
+                self.assertIn(("missing.md", 3), links)
+                self.assertEqual(problems, [])
+
+    def test_indented_code_block_links_are_ignored(self):
+        text = (
+            "    [hidden](missing.md)\n"
+            "    [hidden reference]: missing-ref.md\n"
+            "\n"
+            "[visible](existing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 4)])
+        self.assertEqual(problems, [])
+
     def test_unmatched_brackets_are_paired_in_linear_pass(self):
         self.assertEqual(_matching_bracket_pairs("[" * 100_000), {})
         self.assertEqual(
@@ -205,7 +241,32 @@ class AnchorTests(unittest.TestCase):
         anchors = _markdown_anchors("# Hello, World!\n\n## Hello, World!\n\n## " + BACKTICK + "Code" + BACKTICK + " & More\n")
         self.assertIn("hello-world", anchors)
         self.assertIn("hello-world-1", anchors)
-        self.assertIn("code-more", anchors)
+        self.assertIn("code--more", anchors)
+
+    def test_indented_code_blocks_do_not_create_markdown_or_html_anchors(self):
+        anchors = _markdown_anchors(
+            "    # hidden heading\n"
+            "    <div id=\"hidden-html\"></div>\n"
+            "\n"
+            "# visible heading\n"
+        )
+        self.assertNotIn("hidden-heading", anchors)
+        self.assertNotIn("hidden-html", anchors)
+        self.assertIn("visible-heading", anchors)
+
+    def test_multiline_setext_heading_uses_all_text_lines(self):
+        anchors = _markdown_anchors(
+            "Some\n"
+            "Heading\n"
+            "-------\n"
+        )
+        self.assertIn("some-heading", anchors)
+        self.assertNotIn("heading", anchors)
+
+    def test_heading_html_character_references_are_decoded(self):
+        anchors = _markdown_anchors("## AT&amp;T\n")
+        self.assertIn("att", anchors)
+        self.assertNotIn("atampt", anchors)
 
     def test_fenced_headings_do_not_create_anchors(self):
         anchors = _markdown_anchors(FENCE + "md\n# hidden\n" + FENCE + "\n\n# visible\n")
@@ -582,12 +643,12 @@ class RepositoryValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with (root / "README.md").open("a", encoding="utf-8") as output:
-                output.write("\n[code heading](docs/guide.md#code-more)\n")
+                output.write("\n[code heading](docs/guide.md#code--more)\n")
             problems = validate_repository(root)
             self.assertFalse(
                 any(
                     problem.path == "README.md"
-                    and "missing heading anchor '#code-more'" in problem.message
+                    and "missing heading anchor '#code--more'" in problem.message
                     for problem in problems
                 )
             )
@@ -624,6 +685,47 @@ class RepositoryValidationTests(unittest.TestCase):
                     for problem in problems
                 )
             )
+
+    def test_indented_code_block_is_excluded_from_links_anchors_and_line_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            code_line = "    " + "[hidden](missing.md) " + ("x" * 100)
+            (root / "docs" / "guide.md").write_text(
+                "    <div id=\"fake-anchor\"></div>\n"
+                + code_line + "\n",
+                encoding="utf-8",
+            )
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\n[code fake link](docs/guide.md#fake-anchor)\n")
+            problems = validate_repository(root)
+            self.assertTrue(
+                any("missing heading anchor '#fake-anchor'" in p.message for p in problems)
+            )
+            self.assertFalse(
+                any("missing internal link target: missing.md" in p.message for p in problems)
+            )
+            self.assertFalse(
+                any(p.path == "docs/guide.md" and "characters (limit 88)" in p.message
+                    for p in problems)
+            )
+
+    def test_multiline_setext_heading_and_html_entity_fragment_resolve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "guide.md").write_text(
+                "Some\nHeading\n-------\n\n## AT&amp;T\n",
+                encoding="utf-8",
+            )
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[setext](docs/guide.md#some-heading)\n"
+                    "[entity](docs/guide.md#att)\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(any("missing heading anchor" in p.message for p in problems))
+
 
 
 class GitHubCompatibilityTests(unittest.TestCase):
