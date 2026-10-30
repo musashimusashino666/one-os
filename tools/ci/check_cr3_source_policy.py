@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tomllib
 
-from rust_lexer import rust_macro_invocations
+from rust_lexer import mask_rust_comments_and_literals, rust_macro_invocations
 
 # Counts are reviewed source call-site inventory, not inferred semantic proofs.
 # Any new site or moved site must be reviewed and explicitly approved here.
@@ -310,7 +310,8 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     if include_count:
         errors.append(f"{path}: include! is denied because it hides source from the inventory")
 
-    macro_rules_count = len(rust_macro_invocations(source, {"macro_rules"}))
+    macro_rules_code = mask_rust_comments_and_literals(source)
+    macro_rules_count = len(re.findall(r"(?<![#\\w])macro_rules\\b\\s*!", macro_rules_code))
     expected_rules = EXPECTED_MACRO_RULES.get(path, 0)
     if macro_rules_count != expected_rules:
         errors.append(
