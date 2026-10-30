@@ -4,7 +4,24 @@
 
 Milestones are completed by acceptance evidence, not by the presence of code or documentation. Dependencies that protect security boundaries block later milestones even when unrelated features could be prototyped in parallel.
 
-The product definition in [Vision](../vision/VISION.md) is a set of hypotheses until validated with users and comparative evidence. Keep user/product validation distinct from kernel implementation status; do not claim product-market fit or superiority based on technical progress alone.
+The product definition in [Vision](../vision/VISION.md) and the canonical [World-Class OS definition and design](../vision/WORLD_CLASS_OS.md) set the long-term target. They remain hypotheses to validate with users and comparative evidence. Keep user/product validation distinct from kernel implementation status; do not claim product-market fit or superiority based on technical progress alone.
+
+## Long-term platform scope
+
+ONE OS's long-term goal is a common platform across **PC/workstation, smartphone/mobile, server, and embedded/edge devices**. The current x86_64 BIOS/QEMU bootstrap is the first verification target, not a claim of support for all four domains.
+
+The platform should preserve common security, authority, resource-lifecycle, API-governance, and verification contracts while allowing device-specific binaries, drivers, interfaces, and scheduling policies. The intended target architecture is a capability-oriented microkernel with isolated user-space services, as defined in [World-Class OS: Definition and Design](../vision/WORLD_CLASS_OS.md) and [Architecture Overview](../architecture/OVERVIEW.md).
+
+Strategic expansion beyond the present kernel milestones is expected to follow these evidence gates:
+
+1. Establish real process isolation, kernel-enforced authority, defined IPC, and safe resource lifetimes.
+2. Integrate a minimum usable PC system, including storage, networking, drivers/services, a user environment, application execution, and tested recovery.
+3. Complete production-integrity prerequisites and validate a real hardware target.
+4. Port common contracts to AArch64 and validate that target independently.
+5. Add server, embedded/edge, and mobile profiles according to product research, hardware access, and engineering evidence. Each profile must have its own support matrix and acceptance suite; real-time deadlines, SMP safety, and device compatibility are never inferred from another profile's results.
+6. Publish comparative performance, compatibility, usability, and security evidence for each declared profile.
+
+This strategic sequence complements rather than silently redefines M0–M5. It is not a status claim, and the order of later profiles may be revised through product evidence without weakening shared security gates.
 
 ## P0 — Validate the product thesis
 

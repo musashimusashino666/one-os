@@ -11,6 +11,23 @@
 5. **Preserve negative evidence.** Failed tests, incomplete inventories, missing measurements, test exclusions, and known issues remain visible in the report.
 6. **Re-run on the exact candidate.** A criterion is satisfied only by reproducible evidence from the candidate revision under review. A prior commit's green CI does not transfer to a new candidate.
 7. **Report dimensions separately.** Do not collapse security, recovery, accessibility, compatibility, and performance into a single average that hides a critical failure.
+8. **Use the canonical strategic model without weakening detailed gates.** [World-Class OS: Definition and Design](WORLD_CLASS_OS.md) defines seven weighted quality dimensions. Their weights summarize comparative value; this scorecard's acceptance contracts and the release gates below remain authoritative.
+
+## World-class strategic scorecard
+
+The following are the proposed strategic weights from the canonical world-class OS design. They organize comparative evaluation across PC, smartphone, server, and embedded/edge profiles. They are not a substitute for the detailed acceptance contracts below, and they cannot compensate for a failed security, isolation, integrity, or recovery gate.
+
+| Strategic dimension | Weight | Mapped detailed criteria |
+| --- | ---: | --- |
+| Security | 20% | SC-01, SC-02, SC-03, SC-05 |
+| Reliability | 20% | SC-04, SC-06 |
+| Performance and efficiency | 15% | SC-08 |
+| Usability and accessibility | 15% | SC-09 |
+| Compatibility and extensibility | 10% | SC-07 |
+| Ecosystem and social/economic value | 10% | SC-11 |
+| Adaptability and evolution | 10% | SC-03, SC-07, SC-12 |
+
+The strategic weights are initial proposal values. Comparative reports must present all dimensions separately, explain profile-specific weighting where needed, and never use a weighted total to override a hard gate. A target profile must identify hardware, workload, comparator systems, configuration, and methods. The four long-term profiles are PC/workstation, smartphone/mobile, server, and embedded/edge; a result for one profile does not establish support or superiority in another.
 
 ## Evaluation scorecard
 
@@ -26,6 +43,8 @@
 | SC-08 — Performance and resource use | Performance claims are tied to named workloads and relevant baselines, with methodology and variance. Security-critical behavior is not disabled or weakened to achieve a target. | Same hardware and workload where feasible; pinned build/configuration; warm-up and sample method; median and tail latency where relevant, throughput, memory/CPU cost, variance, and baseline comparison. | **Not established.** No comparative performance claim or benchmark protocol exists. Numeric targets are TBD. |
 | SC-09 — Usability and accessibility | Representative users can complete core tasks—grant least privilege, inspect access, revoke it, and recover from a documented failure—with an understandable mental model and accessible interaction paths. | Published task definitions; participant/cohort description; task completion, error/recovery rate, time, and comprehension results; tests using declared assistive-technology and input profiles. Set acceptance thresholds before the study. | **Not established.** No integrated UI or user-study evidence exists. |
 | SC-10 — Engineering quality and traceability | Every MUST-level contract has a testable acceptance condition or a documented reason it cannot yet be tested. A release candidate is reproducible and required checks are green on its exact revision. Claims match the implemented and tested scope. | Requirement-to-test/evidence traceability; pinned toolchain and build instructions; required CI and artifact review; current issue/exception list; documentation and independent-review records. | **Partial.** CI and design documents exist; end-to-end traceability and review process remain under development. |
+| SC-11 — Ecosystem and social/economic value | The declared product scope provides a practical path for users and developers to obtain, create, maintain, and use software, with transparent support, reasonable total cost of ownership, accessible interaction, localization, and meaningful software choice. | Published supported software/developer workflows; developer task studies; total-cost model and assumptions; localization and accessibility coverage; support/maintenance policy; documented distribution and provenance model. | **Not established.** No integrated software ecosystem, product cost model, or representative developer/user evidence exists. |
+| SC-12 — Adaptability and evolution | The OS can adopt declared new hardware, architectures, and capabilities without silently breaking supported public contracts or weakening security and recovery requirements. Support and deprecation lifecycles are explicit. | Cross-architecture acceptance suites; API/ABI compatibility tests; upgrade and migration tests; documented deprecation policy; supported-platform matrix and long-term maintenance evidence. | **Not established.** Multi-architecture portability, stable public API lifecycle, and long-term support evidence are not established. |
 
 ## Traceability to design, specifications, and roadmap
 
@@ -42,6 +61,8 @@ This map identifies the authoritative contract and planned evidence route for ea
 | SC-08 — Performance and resource use | [P8](PRINCIPLES.md), [P12](PRINCIPLES.md) | This scorecard's comparative-claim and quantitative-target policies; [Development Guide](../engineering/DEVELOPMENT.md) | [M5](../project/ROADMAP.md#m5-release-hardening-and-portability); baseline and benchmark protocol must precede numeric claims |
 | SC-09 — Usability and accessibility | [P8](PRINCIPLES.md), [P9](PRINCIPLES.md) | [User Experience](../architecture/USER_EXPERIENCE.md) | [M4](../project/ROADMAP.md#m4-owner-controlled-resilient-user-environment); representative task study and named assistive-technology/input profiles |
 | SC-10 — Engineering quality and traceability | [P8](PRINCIPLES.md) | [Documentation Map and Rules](../README.md); [Development Guide](../engineering/DEVELOPMENT.md); [Verification Strategy](../engineering/VERIFICATION.md) | All milestones; required checks and evidence must identify the exact candidate revision |
+| SC-11 — Ecosystem and social/economic value | [P9](PRINCIPLES.md), [P10](PRINCIPLES.md), [P12](PRINCIPLES.md) | [World-Class OS design](WORLD_CLASS_OS.md); [User Experience](../architecture/USER_EXPERIENCE.md); [Architecture Overview](../architecture/OVERVIEW.md) | Product validation (P0), minimum usable system (M3), owner environment (M4), and release/portability evidence (M5); developer/user studies and cost/support model |
+| SC-12 — Adaptability and evolution | [P8](PRINCIPLES.md), [P10](PRINCIPLES.md), [P11](PRINCIPLES.md), [P12](PRINCIPLES.md) | [World-Class OS design](WORLD_CLASS_OS.md); [Architecture Overview](../architecture/OVERVIEW.md); [Updates and Recovery](../architecture/UPDATES_AND_RECOVERY.md) | Cross-architecture and API/ABI compatibility evidence under M5 and the long-term device-profile expansion plan in [Roadmap](../project/ROADMAP.md) |
 
 When a code change alters a contract, update the normative specification and the relevant acceptance test in the same change. Update [Implementation Status](../project/IMPLEMENTATION_STATUS.md) only when source or verification evidence materially changes. Keep this scorecard's statuses conservative until the exact evidence exists.
 
