@@ -374,7 +374,7 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         cases = (
             'asm!("mov cr3, {}", "nop", in(reg) root_physical);',
             'asm!(r#"mov cr3, {}"#, in(reg) root_physical);',
-            'global_asm!(".text", r#".globl reviewed_symbol"#,);',
+            'global_asm!(".global reviewed_symbol", r#".Lagain:"# ,);',
         )
         for source in cases:
             with self.subTest(source=source):
