@@ -353,6 +353,36 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         self.assertIn("concat! is denied", joined)
         self.assertIn("hexadecimal/Unicode escapes in assembly templates are denied", joined)
 
+    def test_assembly_template_macro_expansions_are_denied(self):
+        cases = (
+            'asm!(concat!("mov cr3, ", "rax"));',
+            'asm!(include_str!("hidden-assembly.txt"));',
+            'asm!("nop", custom_template!());',
+            'global_asm!(custom_template!());',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                errors = _assembler_directive_errors(
+                    "kernel/src/new_writer.rs", source
+                )
+                self.assertTrue(
+                    any("macro expansion or computed template expressions are denied" in error for error in errors),
+                    errors,
+                )
+
+    def test_multiple_direct_string_templates_and_raw_strings_remain_allowed(self):
+        cases = (
+            'asm!("mov cr3, {}", "nop", in(reg) root_physical);',
+            'asm!(r#"mov cr3, {}"#, in(reg) root_physical);',
+            'global_asm!(".text", r#".globl reviewed_symbol"#,);',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    _assembler_directive_errors("kernel/src/new_writer.rs", source),
+                    [],
+                )
+
     def test_comment_separated_macro_rules_and_concat_are_still_detected(self):
         macro_rules_source = "macro_rules/* comment */! { ($value:expr) => { $value }; }"
         macro_rules_errors = source_policy_errors(
