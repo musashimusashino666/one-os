@@ -825,8 +825,191 @@ def _matching_bracket_pairs(
     return pairs
 
 
-def _parse_inline_destination(text: str, open_paren: int) -> tuple[str | None, int, str | None]:
-    """Parse a Markdown inline destination and return (target, end, error)."""
+def _parse_link_title(text: str, start: int) -> tuple[int | None, str | None]:
+    """Parse one CommonMark link title beginning at start."""
+    if start >= len(text):
+        return None, "link title is missing"
+    opener = text[start]
+    if opener in {"\"", "'"}:
+        index = start + 1
+        while index < len(text):
+            if _is_escaped(text, index):
+                index += 2
+                continue
+            if text[index] == opener:
+                return index + 1, None
+            index += 1
+        return None, "link title is not closed"
+    if opener == "(":
+        depth = 1
+        index = start + 1
+        while index < len(text):
+            if _is_escaped(text, index):
+                index += 2
+                continue
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    return index + 1, None
+            index += 1
+        return None, "parenthesized link title is not closed"
+    return None, "link title must be quoted or parenthesized"
+
+
+def _parse_destination_suffix(
+    text: str, index: int, closing_delimiter: str | None
+) -> tuple[int | None, str | None]:
+    """Parse optional whitespace/title and a required optional closing delimiter."""
+    initial = index
+    while index < len(text) and text[index].isspace():
+        index += 1
+    had_separator = index > initial
+
+    if index >= len(text):
+        if closing_delimiter is None:
+            return index, None
+        return None, "link destination is not closed"
+
+    if closing_delimiter is not None and text[index] == closing_delimiter:
+        return index + 1, None
+    if not had_separator:
+        return None, "unexpected characters after link destination"
+
+    title_end, error = _parse_link_title(text, index)
+    if error is not None:
+        return None, error
+    assert title_end is not None
+    index = title_end
+    while index < len(text) and text[index].isspace():
+        index += 1
+
+    if closing_delimiter is None:
+        if index == len(text):
+            return index, None
+        return None, "unexpected text after link title"
+    if index < len(text) and text[index] == closing_delimiter:
+        return index + 1, None
+    return None, "unexpected text after link title"
+
+
+def _parse_inline_destination(
+    text: str, open_paren: int
+) -> tuple[str | None, int, str | None]:
+    """Parse an inline-link destination and optional CommonMark title."""
+    index = open_paren + 1
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if index >= len(text):
+        return None, len(text), "link destination is not closed"
+    if text[index] == ")":
+        return "", index + 1, None
+
+    if text[index] == "<":
+        start = index + 1
+        index = start
+        while index < len(text):
+            char = text[index]
+            if char in "\r\n":
+                return None, index, "line break in angle-bracket link destination"
+            if char == "<" and not _is_escaped(text, index):
+                return None, index, "unescaped '<' in angle-bracket link destination"
+            if char == ">" and not _is_escaped(text, index):
+                target = text[start:index]
+                end, error = _parse_destination_suffix(text, index + 1, ")")
+                if error is not None:
+                    return None, len(text) if end is None else end, error
+                assert end is not None
+                return target, end, None
+            if _is_escaped(text, index):
+                index += 2
+            else:
+                index += 1
+        return None, len(text), "link has an unterminated angle-bracket destination"
+
+    start = index
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if _is_escaped(text, index):
+            index += 2
+            continue
+        if char.isspace():
+            if depth:
+                return None, index, "whitespace in unbracketed link destination"
+            target = text[start:index]
+            end, error = _parse_destination_suffix(text, index, ")")
+            if error is not None:
+                return None, len(text) if end is None else end, error
+            assert end is not None
+            return target, end, None
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return text[start:index], index + 1, None
+            depth -= 1
+        index += 1
+
+    return None, len(text), "link destination is not closed"
+
+
+def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
+    """Parse a reference-definition destination and optional CommonMark title."""
+    index = 0
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    if index >= len(text):
+        return None, "link reference definition has no destination"
+
+    if text[index] == "<":
+        start = index + 1
+        index = start
+        while index < len(text):
+            char = text[index]
+            if char in "\r\n":
+                return None, "line break in angle-bracket link destination"
+            if char == "<" and not _is_escaped(text, index):
+                return None, "unescaped '<' in angle-bracket link destination"
+            if char == ">" and not _is_escaped(text, index):
+                target = text[start:index]
+                end, error = _parse_destination_suffix(text, index + 1, None)
+                if error is not None:
+                    return None, error
+                assert end is not None
+                return target, None
+            if _is_escaped(text, index):
+                index += 2
+            else:
+                index += 1
+        return None, "unterminated angle-bracket reference destination"
+
+    start = index
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if _is_escaped(text, index):
+            index += 2
+            continue
+        if char.isspace():
+            if depth:
+                return None, "whitespace in unbracketed reference destination"
+            target = text[start:index]
+            _, error = _parse_destination_suffix(text, index, None)
+            return (target, None) if error is None else (None, error)
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return None, "unbalanced ')' in reference destination"
+            depth -= 1
+        index += 1
+    if depth:
+        return None, "unbalanced '(' in reference destination"
+    return text[start:index], None
+
+
     index = open_paren + 1
     while index < len(text) and text[index].isspace():
         index += 1
@@ -959,6 +1142,12 @@ def _extract_links(
         normalized_lines.append(content)
         contexts.append((quote_depth, list_context, opened))
 
+    atx_heading = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+    setext_underline = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+    thematic_break = re.compile(
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    )
+
     for index, line in enumerate(normalized_lines):
         if index in ignored_blocks:
             continue
@@ -967,14 +1156,31 @@ def _extract_links(
             continue
 
         line_number = index + 1
-        definition_lines.add(line_number)
+        current_quote, current_lists, opened_item = contexts[index]
+        if index > 0:
+            previous = index - 1
+            previous_line = normalized_lines[previous]
+            previous_quote, previous_lists, _ = contexts[previous]
+            starts_new_block = (
+                previous in ignored_blocks
+                or previous in definition_lines
+                or not previous_line.strip()
+                or (previous_quote, previous_lists) != (current_quote, current_lists)
+                or atx_heading.match(previous_line) is not None
+                or setext_underline.fullmatch(previous_line) is not None
+                or thematic_break.fullmatch(previous_line) is not None
+            )
+            if not (opened_item or starts_new_block):
+                # A reference definition cannot interrupt an open paragraph.
+                continue
+
         label = _normalize_reference_label(match.group(1))
         destination_text = match.group(2).strip()
+        continuation_line: int | None = None
 
-        # CommonMark allows the destination to start on the next line.
+        # CommonMark allows the destination to start on the following line.
         if not destination_text and index + 1 < len(normalized_lines):
             next_index = index + 1
-            current_quote, current_lists, _ = contexts[index]
             next_quote, next_lists, next_opened = contexts[next_index]
             next_text = normalized_lines[next_index].strip()
             if (
@@ -985,25 +1191,19 @@ def _extract_links(
                 and next_lists == current_lists
             ):
                 destination_text = next_text
-                definition_lines.add(next_index + 1)
+                continuation_line = next_index + 1
 
-        target: str | None = None
-        if destination_text.startswith("<"):
-            closing = next(
-                (
-                    position
-                    for position in range(1, len(destination_text))
-                    if destination_text[position] == ">"
-                    and not _is_escaped(destination_text, position)
-                ),
-                None,
+        target, destination_error = _parse_reference_destination(destination_text)
+        if destination_error is not None or target is None:
+            detail = destination_error or "missing destination"
+            problems.append(
+                DocProblem(
+                    path,
+                    line_number,
+                    f"malformed Markdown reference definition '[{label}]': {detail}",
+                )
             )
-            if closing is not None:
-                target = destination_text[1:closing]
-        elif destination_text:
-            target_match = re.match(r"(\S+)", destination_text)
-            if target_match:
-                target = target_match.group(1)
+            continue
 
         if label in definitions:
             first_line = definitions[label][1]
@@ -1017,17 +1217,9 @@ def _extract_links(
             )
             continue
 
-        if target is None:
-            problems.append(
-                DocProblem(
-                    path,
-                    line_number,
-                    f"malformed Markdown reference definition: [{label}]",
-                )
-            )
-            definitions[label] = (None, line_number)
-            continue
-
+        definition_lines.add(line_number)
+        if continuation_line is not None:
+            definition_lines.add(continuation_line)
         definitions[label] = (_unescape_destination(target), line_number)
 
     # Remove complete definition blocks from link-use scanning, preserving
@@ -1419,7 +1611,13 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
             + [(target, line_number, True) for target, line_number in image_targets]
         )
         for target, line_number, is_image in typed_targets:
-            resolved, fragment, external = _resolve_target(relative, target)
+            try:
+                resolved, fragment, external = _resolve_target(relative, target)
+            except ValueError as error:
+                problems.append(
+                    DocProblem(relative, line_number, f"malformed link URL: {error}")
+                )
+                continue
             if external:
                 continue  # External websites are intentionally not checked.
             if resolved is None:
