@@ -1020,17 +1020,10 @@ fn validate_executable_page_aliases(
         recursive_index,
         regions,
     )?;
-    let direct_alias = physical_offset_alias(
-        physical_memory_offset,
-        executable.physical_address,
-    )?;
-    let direct = translate_virtual_address(
-        direct_alias,
-        root_table_physical,
-        recursive_index,
-        regions,
-    )
-    .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+    let direct_alias = physical_offset_alias(physical_memory_offset, executable.physical_address)?;
+    let direct =
+        translate_virtual_address(direct_alias, root_table_physical, recursive_index, regions)
+            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
 
     if direct.physical_address != executable.physical_address
         || !translation_preserves_page_offset(direct_alias, direct)
@@ -1103,14 +1096,13 @@ fn wx_executable_alias_snapshot(
         }
         let mut virtual_page = segment.first_page;
         loop {
-            let (translation, direct_alias, direct_translation) =
-                validate_executable_page_aliases(
-                    virtual_page,
-                    physical_memory_offset,
-                    root_table_physical,
-                    recursive_index,
-                    regions,
-                )?;
+            let (translation, direct_alias, direct_translation) = validate_executable_page_aliases(
+                virtual_page,
+                physical_memory_offset,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )?;
 
             for word in [
                 virtual_page,
