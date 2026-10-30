@@ -146,10 +146,20 @@ class LineLengthTests(unittest.TestCase):
         self.assertFalse(_line_length_is_exempt("ordinary prose " + "x" * 90))
 
     def test_wide_table_is_never_exempt(self):
-        self.assertFalse(_line_length_is_exempt("| " + BACKTICK + "x" * 90 + BACKTICK + " | value |"))
+        self.assertFalse(
+            _line_length_is_exempt(
+                "| " + BACKTICK + "x" * 90 + BACKTICK + " | value |",
+                is_table_row=True,
+            )
+        )
 
     def test_pipe_delimited_table_without_leading_pipe_is_not_exempt(self):
-        self.assertFalse(_line_length_is_exempt("cell | " + BACKTICK + "x" * 90 + BACKTICK + " | value"))
+        self.assertFalse(
+            _line_length_is_exempt(
+                "cell | " + BACKTICK + "x" * 90 + BACKTICK + " | value",
+                is_table_row=True,
+            )
+        )
 
 
     def test_two_column_table_without_edge_pipes_is_detected(self):
