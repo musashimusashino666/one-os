@@ -13,6 +13,15 @@ import re
 
 
 @dataclass(frozen=True)
+class RustStringLiteral:
+    """Contents and source offsets for a Rust string literal."""
+
+    start: int
+    end: int
+    value: str
+
+
+@dataclass(frozen=True)
 class RustMacroInvocation:
     """Source offsets for a macro invocation using a parenthesized token tree."""
 
@@ -53,6 +62,82 @@ def _skip_quoted_literal(source: str, start: int) -> int | None:
             return character.end()
 
     return None
+
+
+def rust_string_literals(source: str) -> list[RustStringLiteral]:
+    """Return string literal contents (without delimiters), including raw strings.
+
+    Comments, character literals, and strings are skipped as opaque lexical
+    units. The returned value preserves escape spelling, matching how the
+    existing assembly-template validators inspect placeholders and mnemonics.
+    """
+    literals: list[RustStringLiteral] = []
+    cursor = 0
+    while cursor < len(source):
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            cursor = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", cursor):
+            depth = 1
+            cursor += 2
+            while cursor < len(source) and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            continue
+
+        literal_start = cursor
+        raw_start = cursor
+        if source[cursor] in {"b", "c"} and cursor + 1 < len(source):
+            raw_start = cursor + 1
+        raw = _RAW_STRING_RE.match(source, raw_start)
+        if raw is not None:
+            terminator = '"' + raw.group("hashes")
+            value_start = raw.end()
+            value_end = source.find(terminator, value_start)
+            if value_end < 0:
+                return literals
+            end = value_end + len(terminator)
+            literals.append(
+                RustStringLiteral(literal_start, end, source[value_start:value_end])
+            )
+            cursor = end
+            continue
+
+        quote_index = cursor + 1 if source.startswith(("b\"", "c\""), cursor) else cursor
+        if quote_index < len(source) and source[quote_index] == '"':
+            value_start = quote_index + 1
+            scan = value_start
+            while scan < len(source):
+                if source[scan] == "\\":
+                    scan += 2
+                elif source[scan] == '"':
+                    literals.append(
+                        RustStringLiteral(literal_start, scan + 1, source[value_start:scan])
+                    )
+                    cursor = scan + 1
+                    break
+                else:
+                    scan += 1
+            else:
+                return literals
+            continue
+
+        if source[cursor] == "'":
+            character = _CHAR_LITERAL_RE.match(source, cursor)
+            if character is not None:
+                cursor = character.end()
+                continue
+
+        cursor += 1
+
+    return literals
 
 
 def mask_rust_comments_and_literals(source: str) -> str:
