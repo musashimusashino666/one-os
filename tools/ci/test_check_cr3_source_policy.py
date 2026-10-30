@@ -68,6 +68,26 @@ class Cr3SourcePolicyTests(unittest.TestCase):
                 )
                 self.assertTrue(any(".byte" in error for error in directive_errors), directive_errors)
 
+    def test_raw_identifier_assembly_macro_is_counted_and_extracted(self):
+        source = 'r#asm/* comment */!("mov cr3, rax");'
+        errors = source_policy_errors("kernel/src/new_writer.rs", source)
+        self.assertTrue(
+            any("asm! site count is 1" in error for error in errors),
+            errors,
+        )
+        bodies, delimiter_errors = _assembly_macro_bodies(source)
+        self.assertEqual(delimiter_errors, [])
+        self.assertEqual(len(bodies), 1)
+
+        qualified = 'core::arch::r#asm!("mov cr3, rax");'
+        qualified_errors = source_policy_errors(
+            "kernel/src/new_writer.rs", qualified
+        )
+        self.assertTrue(
+            any("qualified assembly macro paths are denied" in error for error in qualified_errors),
+            qualified_errors,
+        )
+
     def test_macro_text_inside_comments_and_literals_is_not_a_callsite(self):
         source = '''
             // asm!("mov cr3, rax");
