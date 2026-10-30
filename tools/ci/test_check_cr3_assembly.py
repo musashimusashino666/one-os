@@ -117,6 +117,47 @@ class ActivationAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(valid, message)
 
+    def test_rejects_loop_family_branch_that_bypasses_pge_clear(self):
+        # LOOP-family instructions have a taken edge that must be analyzed.
+        # The target skips the CR4.PGE-clear write and reaches CR3 directly.
+        for branch in ("loop", "loope", "loopz", "loopne", "loopnz"):
+            with self.subTest(branch=branch):
+                valid, message = validate_function_body(
+                    [
+                        "movq %cr4, %rbx",
+                        "movq %rbx, %rax",
+                        "andq $-129, %rax",
+                        "movq %rax, %r11",
+                        f"{branch} .Lwrite_cr3",
+                        "movq %r11, %cr4",
+                        ".Lwrite_cr3:",
+                        "movq %r12, %cr3",
+                        "movq %rbx, %r10",
+                        "movq %r10, %cr4",
+                        "retq",
+                    ]
+                )
+                self.assertFalse(valid)
+                self.assertIn("not dominated by a PGE-cleared CR4 write", message)
+
+    def test_rejects_calls_while_cr4_pge_clear_sequence_is_active(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %r11",
+                "movq %r11, %cr4",
+                "callq helper_that_may_change_cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %r10",
+                "movq %r10, %cr4",
+                "retq",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("call is not permitted", message)
+
     def test_tracks_cr4_value_saved_around_cpuid_with_xchg(self):
         # LLVM may preserve RBX across CPUID by exchanging it with RDI.
         # The saved CR4 provenance must survive this equivalent register swap.
@@ -441,6 +482,35 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr3_asm_memory_order(source)
         self.assertFalse(valid)
         self.assertIn("the template operand must bind directly to in(reg) root_physical, or to the checked active CR3", message)
+
+    def test_local_tlb_flush_rejects_active_cr3_check_after_write(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+                // This is too late: the active CR3 has already been reloaded.
+                if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+                    return Err(AddressSpaceError::InvalidKernelRoot);
+                }
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("checked active CR3", message)
 
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
