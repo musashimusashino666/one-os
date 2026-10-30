@@ -152,7 +152,7 @@ def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | No
     if stripped.startswith("<!--"):
         return "terminator", "-->"
     if stripped.startswith("<?"):
-        return "terminator", r"\?>"
+        return "terminator", "?>"
     if stripped.startswith("<![CDATA["):
         return "terminator", "]]>"
     if re.match(r"^<![A-Z]", stripped):
