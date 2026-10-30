@@ -224,6 +224,30 @@ class Cr3SourcePolicyTests(unittest.TestCase):
                 )
                 self.assertTrue(any(".byte" in error for error in errors), errors)
 
+    def test_rejects_directives_immediately_after_assembler_labels(self):
+        cases = (
+            ("foo:.byte 0x90", ".byte"),
+            ("foo:.insn 0x0f, 0x22, 0xd8", ".insn"),
+            ('foo:.include "hidden.inc"', ".include"),
+            ("foo: .byte 0x90", ".byte"),
+            ("foo:.Lnested:.include \"hidden.inc\"", ".include"),
+        )
+        for assembly, directive in cases:
+            with self.subTest(assembly=assembly):
+                source = f'global_asm!(r#"{assembly}"#);'
+                errors = _assembler_directive_errors("kernel/src/main.rs", source)
+                self.assertTrue(
+                    any(directive in error for error in errors),
+                    errors,
+                )
+
+    def test_label_definitions_without_directives_remain_allowed(self):
+        source = 'global_asm!("foo:nop\\\\n.Llocal: ret\\\\n1: nop");'
+        self.assertEqual(
+            _assembler_directive_errors("kernel/src/main.rs", source),
+            [],
+        )
+
     def test_indirect_control_transfers_are_denied(self):
         templates = (
             'asm!("nop\\njmp *%rax");',
