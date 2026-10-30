@@ -48,8 +48,7 @@ kernel path) must demonstrate:
    address space B. Verify it is non-present in address space A, switch to A, and branch
    to it. Require vector 14, CR2 and saved RIP equal to the target VA, and the complete
    error code exactly `0x14` for the declared profile.
-The target in B must have a distinct
-   fatal outcome if accidentally executed.
+   The target in B must have a distinct fatal outcome if accidentally executed.
 5. Two isolated address spaces using the same VA for different frames cannot read or
    modify one another's private memory.
 6. User mappings cannot expose page-table pages, recursive page-table aliases, kernel
@@ -97,8 +96,7 @@ CPL 0. Recovery must follow two stages:
 3. The kernel-side test-exit handler verifies the kernel-owned test phase, one-shot
    expected-fault state, and saved user continuation/stack. It alone emits the unique
    pass marker and triggers QEMU's `isa-debug-exit` success result.
-User code must not write the
-   debug-exit port or obtain I/O privilege.
+   User code must not write the debug-exit port or obtain I/O privilege.
 
 The marker and exit status are success only after the second, validated kernel entry.
 Reaching the user recovery stub alone is not success.
