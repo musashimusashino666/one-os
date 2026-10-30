@@ -8,6 +8,7 @@ from check_cr3_source_policy import (
     EXPECTED_ASM_COUNTS,
     _assembly_macro_bodies,
     _assembler_directive_errors,
+    _cargo_target_directory_overlaps_source_tree,
     _walk_package,
     _resolved_local_dependency_errors,
     source_policy_errors,
@@ -348,6 +349,23 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             self.assertTrue(
                 any("asm! site count is 1" in error for error in source_errors),
                 source_errors,
+            )
+
+    def test_cargo_target_directory_cannot_overlap_rust_source_tree(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "kernel" / "src"
+            source_root.mkdir(parents=True)
+
+            self.assertTrue(
+                _cargo_target_directory_overlaps_source_tree(
+                    root, source_root / "target"
+                )
+            )
+            self.assertFalse(
+                _cargo_target_directory_overlaps_source_tree(
+                    root, root / "kernel" / "target"
+                )
             )
 
     def test_path_module_source_redirection_is_denied(self):
