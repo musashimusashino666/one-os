@@ -941,7 +941,7 @@ def _balanced_block_end(code: str, opening: int) -> int | None:
 def _rust_if_condition_blocks(source: str) -> list[tuple[str, str]]:
     """Return condition/body pairs for Rust if blocks in masked Rust source."""
     blocks: list[tuple[str, str]] = []
-    for match in re.finditer(r"\\bif\\b", source):
+    for match in re.finditer(r"\bif\b", source):
         condition_start = match.end()
         parentheses = brackets = 0
         body_start: int | None = None
@@ -990,7 +990,7 @@ def _if_guard_unconditionally_returns_err(
     body = matching_bodies[0]
     return any(
         _brace_depth_at(body, match.start()) == 0
-        for match in re.finditer(r"\\breturn\\s+Err\\s*\\(", body)
+        for match in re.finditer(r"\breturn\s+Err\s*\(", body)
     )
 
 
