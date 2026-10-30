@@ -57,6 +57,36 @@ class LinkParsingTests(unittest.TestCase):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
         self.assertEqual(links, [("docs/guide.md", 3)])
         self.assertEqual(problems, [])
+    
+    def test_unused_reference_definition_is_not_a_navigation_link(self):
+        links, problems = _extract_links("[docs]: docs/README.md", "README.md")
+        self.assertEqual(links, [])
+        self.assertEqual(problems, [])
+
+    def test_duplicate_reference_uses_first_definition(self):
+        links, problems = _extract_links(
+            "[guide]: missing.md\n[guide]: docs/guide.md\n\n[Open][guide]",
+            "README.md",
+        )
+        self.assertEqual(links, [("missing.md", 4)])
+        self.assertTrue(any("duplicate Markdown reference definition" in p.message for p in problems))
+        self.assertTrue(any("first definition on line 1" in p.message for p in problems))
+
+    def test_multiline_inline_code_is_ignored(self):
+        links, problems = _extract_links(
+            "`\n[example](missing-file.md)\n`\n[actual](existing.md)",
+            "README.md",
+        )
+        self.assertEqual(links, [("existing.md", 4)])
+        self.assertEqual(problems, [])
+
+    def test_blockquote_fenced_code_is_ignored(self):
+        links, problems = _extract_links(
+            "> ```md\n> [example](missing-file.md)\n> ```\n[actual](existing.md)",
+            "README.md",
+        )
+        self.assertEqual(links, [("existing.md", 4)])
+        self.assertEqual(problems, [])
 
 
 class AnchorTests(unittest.TestCase):
@@ -152,6 +182,21 @@ class RepositoryValidationTests(unittest.TestCase):
             with (root / "README.md").open("a", encoding="utf-8") as output:
                 output.write("\n[setup](docs/guide.md#setup)\n")
             self.assertEqual(validate_repository(root), [])
+
+    def test_unused_reference_definition_does_not_satisfy_required_navigation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "README.md").write_text(
+                "[docs]: docs/README.md\n", encoding="utf-8"
+            )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    "required navigation link is missing: docs/README.md" in problem.message
+                    for problem in problems
+                )
+            )
 
     def test_long_prose_line_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:
