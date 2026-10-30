@@ -358,6 +358,7 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             'asm!(concat!("mov cr3, ", "rax"));',
             'asm!(include_str!("hidden-assembly.txt"));',
             'asm!("nop", custom_template!());',
+            'asm!("nop", options!());',
             'global_asm!(custom_template!());',
         )
         for source in cases:
