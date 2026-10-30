@@ -663,6 +663,34 @@ fn unreviewed_cr3_writer(root_physical: u64) {{
         self.assertFalse(valid)
         self.assertIn("switch_address_space", message)
 
+    def test_cr3_switch_guards_must_return_an_error_when_rejected(self):
+        function_start = self.source.index("fn switch_address_space(")
+        rejection = "        return Err(AddressSpaceError::InvalidKernelRoot);"
+        rejection_start = self.source.index(rejection, function_start)
+        changed = (
+            self.source[:rejection_start]
+            + "        let _ = AddressSpaceError::InvalidKernelRoot;"
+            + self.source[rejection_start + len(rejection):]
+        )
+
+        valid, message = validate_cr3_writer_contract(changed)
+        self.assertFalse(valid)
+        self.assertIn(
+            "switch_address_space guard for target-root initialization must have "
+            "an unconditional return Err(...) rejection",
+            message,
+        )
+        self.assertIn(
+            "switch_address_space guard for target root differs from current root "
+            "must have an unconditional return Err(...) rejection",
+            message,
+        )
+        self.assertIn(
+            "switch_address_space guard for hardware active root matches the current "
+            "handle must have an unconditional return Err(...) rejection",
+            message,
+        )
+
     def test_removing_root_registration_validation_fails(self):
         changed = self.source.replace(
             "validate_registered_root_for_activation(root_physical)",
