@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fail closed on unreviewed assembly-macro sites and source-loading aliases.
 
-This deliberately uses a short, explicit inventory instead of attempting to
-implement Rust name resolution or macro expansion in a regex-based lexer.
+A small comment-aware Rust lexer handles macro call-site discovery. The gate
+does not attempt Rust name resolution or macro expansion.
 """
 
 from __future__ import annotations
@@ -80,78 +80,6 @@ FORBIDDEN_ENV = (
 
 def _macro_count(source: str, macro: str) -> int:
     return len(rust_macro_invocations(source, {macro}))
-
-
-def _skip_quoted_string(source: str, start: int) -> int | None:
-    """Return the first index after a normal or raw Rust string literal."""
-    raw_prefix = re.match(r'(?:b)?r(?P<hashes>#{0,})"', source[start:])
-    if raw_prefix is not None:
-        closing = '"' + raw_prefix.group("hashes")
-        end = source.find(closing, start + raw_prefix.end())
-        return None if end < 0 else end + len(closing)
-
-    index = start + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-        elif source[index] == '"':
-            return index + 1
-        else:
-            index += 1
-    return None
-
-
-def _matching_macro_paren(source: str, opening: int) -> int | None:
-    """Find a macro call's closing parenthesis, skipping Rust strings/comments."""
-    depth = 0
-    index = opening
-    while index < len(source):
-        if source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            index = len(source) if newline < 0 else newline + 1
-            continue
-        if source.startswith("/*", index):
-            comment_depth = 1
-            index += 2
-            while index < len(source) and comment_depth:
-                if source.startswith("/*", index):
-                    comment_depth += 1
-                    index += 2
-                elif source.startswith("*/", index):
-                    comment_depth -= 1
-                    index += 2
-                else:
-                    index += 1
-            if comment_depth:
-                return None
-            continue
-
-        raw_prefix = re.match(r'(?:b)?r#{0,}"', source[index:])
-        if raw_prefix is not None:
-            end = _skip_quoted_string(source, index)
-            if end is None:
-                return None
-            index = end
-            continue
-        if source[index] == '"':
-            end = _skip_quoted_string(source, index)
-            if end is None:
-                return None
-            index = end
-            continue
-        if source[index] == "'":
-            char_literal = re.match(r"'(?:\\.|[^'\\])'", source[index:])
-            if char_literal is not None:
-                index += char_literal.end()
-                continue
-        if source[index] == "(":
-            depth += 1
-        elif source[index] == ")":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return None
 
 
 def _assembly_macro_bodies(source: str) -> tuple[list[tuple[int, str]], list[str]]:
