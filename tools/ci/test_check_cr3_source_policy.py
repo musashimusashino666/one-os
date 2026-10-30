@@ -1,11 +1,14 @@
 """Regression tests for the explicit CR3 source policy."""
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from check_cr3_source_policy import (
     EXPECTED_ASM_COUNTS,
     _assembly_macro_bodies,
     _assembler_directive_errors,
+    _walk_package,
     _resolved_local_dependency_errors,
     source_policy_errors,
 )
@@ -315,6 +318,28 @@ class Cr3SourcePolicyTests(unittest.TestCase):
                 },
             }
             self.assertEqual(_resolved_local_dependency_errors(root, metadata), [])
+
+    def test_target_named_rust_module_is_scanned_but_cargo_output_is_skipped(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "kernel"
+            source_module = package / "src" / "target" / "mod.rs"
+            generated_source = package / "target" / "debug" / "build" / "generated.rs"
+            source_module.parent.mkdir(parents=True)
+            generated_source.parent.mkdir(parents=True)
+            source_module.write_text('asm!("mov cr3, rax");', encoding="utf-8")
+            generated_source.write_text("fn generated() {}", encoding="utf-8")
+
+            files, errors = _walk_package(
+                root,
+                "kernel",
+                cargo_target_directory=package / "target",
+            )
+            found = {path.relative_to(root).as_posix() for path in files}
+
+            self.assertEqual(errors, [])
+            self.assertIn("kernel/src/target/mod.rs", found)
+            self.assertNotIn("kernel/target/debug/build/generated.rs", found)
 
     def test_path_module_source_redirection_is_denied(self):
         sources = (
