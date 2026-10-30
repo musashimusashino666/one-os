@@ -408,6 +408,9 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_source_restores_original_cr4_value(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
@@ -417,8 +420,43 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertTrue(valid, message)
 
+    def test_source_accepts_renamed_cr4_snapshot_chain(self):
+        source = """
+            let cr4_at_switch: u64;
+            asm!("mov {}, cr4", out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            let pge_disabled_snapshot = cr4_at_switch & !CR4_PGE;
+            asm!("mov cr4, {}", in(reg) pge_disabled_snapshot,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertTrue(valid, message)
+
+    def test_source_rejects_restore_from_different_cr4_snapshot(self):
+        source = """
+            let cr4_at_switch: u64;
+            let unrelated_cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov {}, cr4", out(reg) unrelated_cr4,
+                 options(nomem, nostack, preserves_flags));
+            let pge_disabled_snapshot = cr4_at_switch & !CR4_PGE;
+            asm!("mov cr4, {}", in(reg) pge_disabled_snapshot,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) unrelated_cr4,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertFalse(valid)
+        self.assertIn("exact CR4 snapshot", message)
+
     def test_source_rejects_restoring_masked_cr4_value(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
@@ -427,7 +465,7 @@ class ActivationAssemblyTests(unittest.TestCase):
         """
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertFalse(valid)
-        self.assertIn("restore the original cr4 value", message)
+        self.assertIn("exact CR4 snapshot", message)
 
     def test_local_tlb_flush_may_reload_only_the_checked_active_cr3(self):
         source = """
