@@ -1186,55 +1186,69 @@ def _markdown_anchors(text: str) -> set[str]:
         opened_items.append(opened)
 
     anchors: set[str] = _html_anchor_targets(text)
-    occurrences: dict[str, int] = {}
-    atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+    atx_pattern = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
     underline_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
     thematic_pattern = re.compile(
         r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
+    headings: list[tuple[int, str]] = []
     for index, line in enumerate(normalized):
         if index in ignored:
             continue
-        heading: str | None = None
-        atx = re.match(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", line)
+        atx = atx_pattern.match(line)
         if atx:
-            heading = atx.group(1)
-        elif index + 1 < len(lines) and index + 1 not in ignored:
-            same_container = contexts[index] == contexts[index + 1]
-            underline = underline_pattern.fullmatch(normalized[index + 1])
-            if same_container and underline and line.strip():
-                start = index
-                while start > 0:
-                    if opened_items[start]:
-                        break
-                    previous = start - 1
-                    previous_line = normalized[previous]
-                    if (
-                        previous in ignored
-                        or not previous_line.strip()
-                        or contexts[previous] != contexts[index]
-                        or atx_pattern.match(previous_line)
-                        or thematic_pattern.fullmatch(previous_line)
-                        or underline_pattern.fullmatch(previous_line)
-                    ):
-                        break
-                    if opened_items[previous]:
-                        start = previous
-                        break
-                    start = previous
-                heading = " ".join(
-                    part.strip() for part in normalized[start:index]
-                    if part.strip()
-                )
+            headings.append((index, atx.group(1)))
+            continue
+
+        if not underline_pattern.fullmatch(line) or index == 0:
+            continue
+        previous = index - 1
+        if (
+            previous in ignored
+            or not normalized[previous].strip()
+            or contexts[previous] != contexts[index]
+        ):
+            continue
+
+        start = previous
+        while start > 0:
+            if opened_items[start]:
+                break
+            candidate = start - 1
+            candidate_line = normalized[candidate]
+            if (
+                candidate in ignored
+                or not candidate_line.strip()
+                or contexts[candidate] != contexts[previous]
+                or atx_pattern.match(candidate_line)
+                or underline_pattern.fullmatch(candidate_line)
+                or thematic_pattern.fullmatch(candidate_line)
+            ):
+                break
+            if opened_items[candidate]:
+                start = candidate
+                break
+            start = candidate
+
+        heading = " ".join(
+            part.strip() for part in normalized[start:index] if part.strip()
+        )
         if heading:
-            base = _slugify_heading(heading)
-            slug = base
-            while slug in occurrences:
-                occurrences[base] = occurrences.get(base, 0) + 1
-                slug = f"{base}-{occurrences[base]}"
-            occurrences[slug] = 0
-            anchors.add(slug)
+            headings.append((start, heading))
+
+    # Slug collision suffixes follow source order, regardless of whether the
+    # heading uses ATX or Setext syntax.
+    occurrences: dict[str, int] = {}
+    for _, heading in sorted(headings, key=lambda entry: entry[0]):
+        base = _slugify_heading(heading)
+        slug = base
+        while slug in occurrences:
+            occurrences[base] = occurrences.get(base, 0) + 1
+            slug = f"{base}-{occurrences[base]}"
+        occurrences[slug] = 0
+        anchors.add(slug)
+
     return anchors
 
 def _resolve_target(source: str, target: str) -> tuple[str | None, str | None, bool]:
