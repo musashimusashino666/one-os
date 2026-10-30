@@ -25,7 +25,7 @@ The inventory does not attempt general Rust namespace resolution or macro expans
 - Imports of asm!/global_asm! are accepted only through the explicit per-file import allowlist. Unreviewed import paths, aliases, public re-exports, qualified assembly-macro paths, wildcard imports, aliases of core::arch, and aliases of trusted macro roots are rejected.
 - include!, #[macro_use], macro metavariable forwarding, and concat! are rejected.
 - Declarations that shadow core, std, alloc, or bootloader_api are rejected.
-- Hexadecimal and Unicode escapes in source strings are rejected so an instruction or directive cannot be obscured in the current source audit.
+- Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings so instructions or assembler directives cannot be obscured. Unrelated Rust strings, including binary-format markers, remain valid.
 
 The macro-call count check is intentionally literal and conservative. It may reject harmless edits to comments or string literals that contain assembly-macro spellings; those changes require explicit review rather than silently changing the counted inventory.
 
