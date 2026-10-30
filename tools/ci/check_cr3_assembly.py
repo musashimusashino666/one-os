@@ -938,6 +938,62 @@ def _balanced_block_end(code: str, opening: int) -> int | None:
                 return index
     return None
 
+def _rust_if_condition_blocks(source: str) -> list[tuple[str, str]]:
+    """Return condition/body pairs for Rust if blocks in masked Rust source."""
+    blocks: list[tuple[str, str]] = []
+    for match in re.finditer(r"\\bif\\b", source):
+        condition_start = match.end()
+        parentheses = brackets = 0
+        body_start: int | None = None
+        for cursor in range(condition_start, len(source)):
+            character = source[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0:
+                break
+
+        if body_start is None:
+            continue
+        body_end = _balanced_block_end(source, body_start)
+        if body_end is None:
+            continue
+        blocks.append(
+            (
+                source[condition_start:body_start],
+                source[body_start + 1:body_end],
+            )
+        )
+    return blocks
+
+
+def _if_guard_unconditionally_returns_err(
+    source: str, condition_pattern: str
+) -> bool:
+    """Require a matching if condition to reject through a top-level return Err."""
+    matching_bodies = [
+        body
+        for condition, body in _rust_if_condition_blocks(source)
+        if re.search(condition_pattern, condition)
+    ]
+    if len(matching_bodies) != 1:
+        return False
+
+    body = matching_bodies[0]
+    return any(
+        _brace_depth_at(body, match.start()) == 0
+        for match in re.finditer(r"\\breturn\\s+Err\\s*\\(", body)
+    )
+
+
 def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
     """Pin the three CR3 writes to their reviewed functions and root provenance."""
     expected_roles = {
@@ -1145,6 +1201,31 @@ def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
                     "switch_address_space must derive current_physical exactly once "
                     "from the current root handle"
                 )
+            required_guard_rejections = (
+                (
+                    "target-root initialization",
+                    r"!\s*next\s*\.\s*is_initialized\s*\(\s*\)",
+                ),
+                (
+                    "target root differs from current root",
+                    r"root_physical\s*==\s*current_physical",
+                ),
+                (
+                    "target physical-address width",
+                    r"next\s*\.\s*physical_address_bits\s*\(\s*\)\s*!=\s*physical_address_bits",
+                ),
+                (
+                    "hardware active root matches the current handle",
+                    r"active_root_table_physical\s*\(\s*\)\s*!=\s*current_physical",
+                ),
+            )
+            for guard_name, guard_pattern in required_guard_rejections:
+                if not _if_guard_unconditionally_returns_err(function_code, guard_pattern):
+                    errors.append(
+                        f"switch_address_space guard for {guard_name} must have "
+                        "an unconditional return Err(...) rejection"
+                    )
+
             ordered_contract = (
                 r"validate_runtime_root_context\s*\(\s*boot_info\s*,\s*&\s*current\s*\)",
                 current_binding.pattern,
@@ -1152,6 +1233,7 @@ def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
                 r"validate_registered_root_for_activation\s*\(\s*root_physical\s*\)",
                 r"!\s*next\s*\.\s*is_initialized\s*\(\s*\)",
                 r"root_physical\s*==\s*current_physical",
+                r"next\s*\.\s*physical_address_bits\s*\(\s*\)\s*!=\s*physical_address_bits",
                 r"active_root_table_physical\s*\(\s*\)\s*!=\s*current_physical",
                 r"verify_initialized_entries\s*\(\s*&\s*mut\s+editor\s*,\s*"
                 r"root_physical\s*,\s*current_physical\s*,",
