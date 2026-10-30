@@ -26,11 +26,12 @@ The inventory does not attempt general Rust namespace resolution or macro expans
 
 - Imports of asm!/global_asm! are accepted only through the explicit per-file import allowlist. Unreviewed import paths, aliases, public re-exports, qualified assembly-macro paths, wildcard imports, aliases of core::arch, and aliases of trusted macro roots are rejected.
 - include!, #[macro_use], macro metavariable forwarding, and concat! are rejected.
+- Assembly template arguments must be direct ordinary or raw string literals. Although Rust's inline-assembly grammar permits a macro invocation as a format string, the inventory rejects macro-expanded or computed templates so directive and CR3-writer checks always inspect the actual source text.
 - `#[path = "..."]` and `#[cfg_attr(..., path = "...")]` module redirection attributes are rejected in every inventoried Rust source file; they could otherwise load code from outside the scanned package trees.
 - Declarations that shadow core, std, alloc, or bootloader_api are rejected.
 - Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings. Cooked and raw Rust template strings are decoded, then every statement is checked after newline, carriage-return, semicolon, and tab separators; an allowlist-external directive is rejected regardless of its position in the template. Unrelated Rust strings, including binary-format markers, remain valid.
 
-The macro-call count check is intentionally literal and conservative. It may reject harmless edits to comments or string literals that contain assembly-macro spellings; those changes require explicit review rather than silently changing the counted inventory.
+Macro-call discovery uses a shared Rust-aware lexical scanner rather than regular expressions. It treats line comments and nested block comments as whitespace, ignores macro-like text inside comments and string/character literals, recognizes comments between an identifier and `!`, and balances parenthesis, bracket, and brace token trees. It is deliberately not a Rust name resolver or macro expander; unsupported or ambiguous assembly-template forms fail closed.
 
 ## Assembler directive policy
 
