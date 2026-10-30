@@ -8,9 +8,11 @@ implement Rust name resolution or macro expansion in a regex-based lexer.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -39,9 +41,8 @@ EXPECTED_MACRO_RULES = {
     "kernel/src/interrupts.rs": 4,
 }
 SOURCE_PACKAGES = ("kernel", "crates/oneos-core")
-EXPECTED_LOCAL_PATH_DEPENDENCIES = {
-    "kernel": {"../crates/oneos-core"},
-    "crates/oneos-core": set(),
+ALLOWED_LOCAL_DEPENDENCY_MANIFESTS = {
+    "crates/oneos-core/Cargo.toml",
 }
 ALLOWED_TARGET_PATHS = {
     "kernel": {"bin": {"src/main.rs"}},
@@ -173,31 +174,173 @@ def _assembly_macro_bodies(source: str) -> tuple[list[tuple[int, str]], list[str
     return bodies, errors
 
 
+def _rust_string_literals(source: str):
+    """Yield (offset, decoded_value, escape_error) for Rust string literals."""
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            depth = 1
+            index += 2
+            while index < len(source) and depth:
+                if source.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+
+        raw_prefix = re.match(r'(?:b)?r(?P<hashes>#{0,})"', source[index:])
+        if raw_prefix is not None:
+            hashes = raw_prefix.group("hashes")
+            content_start = index + raw_prefix.end()
+            closing = '"' + hashes
+            end = source.find(closing, content_start)
+            if end < 0:
+                yield index, "", "unterminated raw Rust string literal"
+                return
+            yield index, source[content_start:end], None
+            index = end + len(closing)
+            continue
+
+        quote_index = index
+        if source.startswith('b"', index):
+            quote_index += 1
+        if quote_index < len(source) and source[quote_index] == '"':
+            content_start = quote_index + 1
+            cursor = content_start
+            decoded: list[str] = []
+            escape_error = None
+            terminated = False
+            while cursor < len(source):
+                char = source[cursor]
+                if char == '"':
+                    terminated = True
+                    cursor += 1
+                    break
+                if char != "\\":
+                    decoded.append(char)
+                    cursor += 1
+                    continue
+
+                cursor += 1
+                if cursor >= len(source):
+                    escape_error = "unterminated Rust string escape"
+                    break
+                escaped = source[cursor]
+                simple_escapes = {
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                    "0": "\0",
+                    "\\": "\\",
+                    '"': '"',
+                    "'": "'",
+                }
+                if escaped in simple_escapes:
+                    decoded.append(simple_escapes[escaped])
+                    cursor += 1
+                    continue
+                if escaped == "\n":
+                    cursor += 1
+                    while cursor < len(source) and source[cursor] in " \t":
+                        cursor += 1
+                    continue
+                if escaped == "\r" and cursor + 1 < len(source) and source[cursor + 1] == "\n":
+                    cursor += 2
+                    while cursor < len(source) and source[cursor] in " \t":
+                        cursor += 1
+                    continue
+                if escaped in {"x", "u"}:
+                    escape_error = "hexadecimal/Unicode escapes in assembly templates are denied"
+                    cursor += 1
+                    continue
+                escape_error = f"unsupported Rust string escape \\{escaped}"
+                cursor += 1
+
+            if not terminated:
+                yield index, "", escape_error or "unterminated Rust string literal"
+                return
+            yield index, "".join(decoded), escape_error
+            index = cursor
+            continue
+
+        if source[index] == "'":
+            character = re.match(r"'(?:\\.|[^'\\])'", source[index:])
+            if character is not None:
+                index += character.end()
+                continue
+        index += 1
+
+
+def _is_indirect_control_transfer(statement: str) -> bool:
+    """Recognize direct and indirect x86 call/jump forms; reject indirect forms."""
+    candidate = statement.strip()
+    candidate = re.sub(r"^[A-Za-z_.$][A-Za-z0-9_.$@]*:\s*", "", candidate)
+    operation = re.match(
+        r"^(?:jmp|jmpq|jmpl|ljmp|ljmpq|ljmpl|call|callq|calll)\s+(.+)$",
+        candidate,
+        re.IGNORECASE,
+    )
+    if operation is None:
+        return False
+
+    operand = operation.group(1).strip()
+    if not operand:
+        return False
+    if operand.startswith("*") or "[" in operand or "]" in operand:
+        return True
+
+    # Intel-syntax register-indirect forms have no AT&T '*' prefix.
+    register = re.compile(
+        r"^%?(?:"
+        r"rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|rip|"
+        r"eax|ebx|ecx|edx|esi|edi|ebp|esp|eip|"
+        r"ax|bx|cx|dx|si|di|bp|sp|ip|"
+        r"al|bl|cl|dl|ah|bh|ch|dh|spl|bpl|sil|dil|"
+        r"r(?:[8-9]|1[0-5])(?:[dwb])?"
+        r")$",
+        re.IGNORECASE,
+    )
+    return register.fullmatch(operand) is not None
+
+
 def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
     path = Path(relative_path).as_posix()
     errors: list[str] = []
     bodies, delimiter_errors = _assembly_macro_bodies(source)
     errors.extend(f"{path}: {error}" for error in delimiter_errors)
 
-    # Escape checks apply only to assembly templates. Ordinary Rust strings in
-    # unrelated code (for example, ELF magic bytes) are not assembler inputs.
     for body_start, body in bodies:
-        for match in STRING_RE.finditer(body):
-            value = match.group(0)[1:-1].strip()
-            line = source.count("\n", 0, body_start + match.start()) + 1
-            if FORBIDDEN_ESCAPED_STRING_RE.search(value):
-                errors.append(
-                    f"{path}:{line}: hexadecimal/Unicode escapes in assembly templates are denied"
-                )
+        for match_start, value, escape_error in _rust_string_literals(body):
+            line = source.count("\n", 0, body_start + match_start) + 1
+            if escape_error is not None:
+                errors.append(f"{path}:{line}: {escape_error}")
                 continue
-            if not value.startswith("."):
-                continue
-            if GLOBAL_SYMBOL_RE.fullmatch(value) or LOCAL_LABEL_RE.fullmatch(value):
-                continue
-            errors.append(
-                f"{path}:{line}: assembler directive-like string {value!r} is denied; "
-                "only .global symbol exports and local .L labels are allowed"
-            )
+
+            # GNU as accepts statement separators within one template string.
+            # Normalize Rust escapes first, then inspect every possible statement.
+            statements = re.split(r"[;\r\n\t]+", value)
+            for statement in statements:
+                candidate = statement.strip()
+                if not candidate:
+                    continue
+                if candidate.startswith("."):
+                    if not (GLOBAL_SYMBOL_RE.fullmatch(candidate) or LOCAL_LABEL_RE.fullmatch(candidate)):
+                        errors.append(
+                            f"{path}:{line}: assembler directive-like statement {candidate!r} is denied; "
+                            "only .global symbol exports and local .L labels are allowed"
+                        )
+                if _is_indirect_control_transfer(candidate):
+                    errors.append(
+                        f"{path}:{line}: indirect x86 control transfer is denied: {candidate!r}"
+                    )
     return errors
 
 def source_policy_errors(relative_path: str, source: str) -> list[str]:
@@ -310,34 +453,127 @@ def _walk_package(root: Path, relative_package: str) -> tuple[list[Path], list[s
     return rust_files, errors
 
 
-def _dependency_path_strings(manifest: dict) -> set[str]:
-    paths: set[str] = set()
+def _resolved_local_dependency_errors(root: Path, metadata: dict) -> list[str]:
+    """Reject unscanned local crates in the resolved dependency closure."""
+    errors: list[str] = []
+    packages = metadata.get("packages")
+    resolve = metadata.get("resolve")
+    if not isinstance(packages, list) or not isinstance(resolve, dict):
+        return ["cargo metadata omitted package or resolve graph data"]
 
-    def visit_dependencies(value: object) -> None:
-        if not isinstance(value, dict):
-            return
-        for dependency in value.values():
-            if not isinstance(dependency, dict):
+    packages_by_id = {
+        package.get("id"): package
+        for package in packages
+        if isinstance(package, dict) and isinstance(package.get("id"), str)
+    }
+    nodes = resolve.get("nodes")
+    if not isinstance(nodes, list):
+        return ["cargo metadata omitted resolved dependency nodes"]
+    nodes_by_id = {
+        node.get("id"): node
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+
+    source_package_ids: set[str] = set()
+    allowed_manifests = {
+        (root / relative).resolve()
+        for relative in (*SOURCE_PACKAGES, *ALLOWED_LOCAL_DEPENDENCY_MANIFESTS)
+    }
+    for relative_package in SOURCE_PACKAGES:
+        expected_manifest = (root / relative_package / "Cargo.toml").resolve()
+        matches = [
+            package_id
+            for package_id, package in packages_by_id.items()
+            if isinstance(package.get("manifest_path"), str)
+            and Path(package["manifest_path"]).resolve() == expected_manifest
+        ]
+        if len(matches) != 1:
+            errors.append(
+                f"cargo metadata must resolve exactly one package for {expected_manifest}; found {len(matches)}"
+            )
+        else:
+            source_package_ids.add(matches[0])
+
+    if errors:
+        return errors
+
+    visited: set[str] = set()
+    pending = list(source_package_ids)
+    while pending:
+        package_id = pending.pop()
+        if package_id in visited:
+            continue
+        visited.add(package_id)
+
+        package = packages_by_id.get(package_id)
+        node = nodes_by_id.get(package_id)
+        if package is None or node is None:
+            errors.append(f"cargo metadata dependency node is incomplete for package {package_id}")
+            continue
+
+        manifest_value = package.get("manifest_path")
+        if not isinstance(manifest_value, str):
+            errors.append(f"cargo metadata package has no manifest path: {package_id}")
+            continue
+        manifest_path = Path(manifest_value).resolve()
+
+        # Cargo uses source=null for path/workspace packages. Only inventoried
+        # packages and the reviewed oneos-core manifest may be in this closure.
+        if package.get("source") is None and manifest_path not in allowed_manifests:
+            errors.append(
+                "unscanned local path dependency is denied in the resolved Cargo graph: "
+                f"{manifest_path}"
+            )
+
+        dependencies = node.get("deps")
+        if not isinstance(dependencies, list):
+            errors.append(f"cargo metadata node has no dependency list: {package_id}")
+            continue
+        for dependency in dependencies:
+            if not isinstance(dependency, dict) or not isinstance(dependency.get("pkg"), str):
+                errors.append(f"cargo metadata has an invalid dependency edge from {package_id}")
                 continue
-            dep_path = dependency.get("path")
-            if isinstance(dep_path, str):
-                paths.add(dep_path)
+            pending.append(dependency["pkg"])
 
-    for table in ("dependencies", "dev-dependencies", "build-dependencies"):
-        visit_dependencies(manifest.get(table))
-    target_tables = manifest.get("target", {})
-    if isinstance(target_tables, dict):
-        for target in target_tables.values():
-            if isinstance(target, dict):
-                for table in ("dependencies", "dev-dependencies", "build-dependencies"):
-                    visit_dependencies(target.get(table))
-    return paths
+    return errors
+
+
+def _cargo_metadata_errors(root: Path) -> list[str]:
+    command = [
+        "cargo",
+        "metadata",
+        "--format-version",
+        "1",
+        "--all-features",
+        "--locked",
+        "--manifest-path",
+        str(root / "Cargo.toml"),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        return [f"cannot execute cargo metadata for resolved source closure: {error}"]
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        return [f"cargo metadata failed; resolved source closure cannot be verified: {detail}"]
+    try:
+        metadata = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        return [f"cargo metadata returned invalid JSON: {error}"]
+    return _resolved_local_dependency_errors(root, metadata)
 
 
 def _manifest_errors(root: Path) -> list[str]:
     errors: list[str] = []
     manifest_paths = [root / "Cargo.toml"] + [root / p / "Cargo.toml" for p in SOURCE_PACKAGES]
-    package_manifests: dict[str, dict] = {}
     for path in manifest_paths:
         try:
             manifest = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -350,17 +586,9 @@ def _manifest_errors(root: Path) -> list[str]:
 
         rel_parent = path.parent.relative_to(root).as_posix()
         if rel_parent in SOURCE_PACKAGES:
-            package_manifests[rel_parent] = manifest
             build = manifest.get("package", {}).get("build")
             if build not in (None, False):
                 errors.append(f"custom package.build script is denied: {path}")
-            expected_paths = EXPECTED_LOCAL_PATH_DEPENDENCIES[rel_parent]
-            observed_paths = _dependency_path_strings(manifest)
-            if observed_paths != expected_paths:
-                errors.append(
-                    f"{path}: local dependency paths changed; expected {sorted(expected_paths)!r}, "
-                    f"found {sorted(observed_paths)!r}"
-                )
 
             targets = manifest.get("bin", [])
             if isinstance(targets, dict):
@@ -379,6 +607,8 @@ def _manifest_errors(root: Path) -> list[str]:
             for target_name in ("example", "test", "bench"):
                 if manifest.get(target_name):
                     errors.append(f"custom Cargo {target_name} targets are denied until inventoried: {path}")
+
+    errors.extend(_cargo_metadata_errors(root))
 
     config_path = root / ".cargo" / "config.toml"
     legacy_config_path = root / ".cargo" / "config"
