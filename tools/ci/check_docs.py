@@ -834,7 +834,7 @@ def _parse_link_title(text: str, start: int) -> tuple[int | None, str | None]:
         index = start + 1
         while index < len(text):
             if _is_escaped(text, index):
-                index += 2
+                index += 1
                 continue
             if text[index] == opener:
                 return index + 1, None
@@ -845,7 +845,7 @@ def _parse_link_title(text: str, start: int) -> tuple[int | None, str | None]:
         index = start + 1
         while index < len(text):
             if _is_escaped(text, index):
-                index += 2
+                index += 1
                 continue
             if text[index] == "(":
                 depth += 1
@@ -922,7 +922,7 @@ def _parse_inline_destination(
                     return None, len(text) if end is None else end, error
                 assert end is not None
                 return target, end, None
-            index += 2 if _is_escaped(text, index) else 1
+            index += 1
         return None, len(text), "link has an unterminated angle-bracket destination"
 
     start = index
@@ -973,7 +973,7 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
                 target = text[start:index]
                 _, error = _parse_destination_suffix(text, index + 1, None)
                 return (target, None) if error is None else (None, error)
-            index += 2 if _is_escaped(text, index) else 1
+            index += 1
         return None, "unterminated angle-bracket reference destination"
 
     start = index
