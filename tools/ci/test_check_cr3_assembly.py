@@ -667,29 +667,48 @@ fn unreviewed_cr3_writer(root_physical: u64) {{
         function_start = self.source.index("fn switch_address_space(")
         rejection = "        return Err(AddressSpaceError::InvalidKernelRoot);"
         rejection_start = self.source.index(rejection, function_start)
-        changed = (
-            self.source[:rejection_start]
-            + "        let _ = AddressSpaceError::InvalidKernelRoot;"
-            + self.source[rejection_start + len(rejection):]
+        replacements = (
+            (
+                "removed",
+                "        let _ = AddressSpaceError::InvalidKernelRoot;",
+            ),
+            (
+                "nested under another condition",
+                "        if allow_user_mappings {\\n"
+                "            return Err(AddressSpaceError::InvalidKernelRoot);\\n"
+                "        }",
+            ),
+            (
+                "conditionally compiled",
+                '        #[cfg(feature = "test-cr3-switch-guard")]\\n'
+                "        return Err(AddressSpaceError::InvalidKernelRoot);",
+            ),
         )
 
-        valid, message = validate_cr3_writer_contract(changed)
-        self.assertFalse(valid)
-        self.assertIn(
-            "switch_address_space guard for target-root initialization must have "
-            "an unconditional return Err(...) rejection",
-            message,
-        )
-        self.assertIn(
-            "switch_address_space guard for target root differs from current root "
-            "must have an unconditional return Err(...) rejection",
-            message,
-        )
-        self.assertIn(
-            "switch_address_space guard for hardware active root matches the current "
-            "handle must have an unconditional return Err(...) rejection",
-            message,
-        )
+        for case, replacement in replacements:
+            with self.subTest(case=case):
+                changed = (
+                    self.source[:rejection_start]
+                    + replacement
+                    + self.source[rejection_start + len(rejection):]
+                )
+                valid, message = validate_cr3_writer_contract(changed)
+                self.assertFalse(valid)
+                self.assertIn(
+                    "switch_address_space guard for target-root initialization must have "
+                    "an unconditional return Err(...) rejection",
+                    message,
+                )
+                self.assertIn(
+                    "switch_address_space guard for target root differs from current root "
+                    "must have an unconditional return Err(...) rejection",
+                    message,
+                )
+                self.assertIn(
+                    "switch_address_space guard for hardware active root matches the current "
+                    "handle must have an unconditional return Err(...) rejection",
+                    message,
+                )
 
     def test_removing_root_registration_validation_fails(self):
         changed = self.source.replace(
