@@ -242,7 +242,7 @@ class AnchorTests(unittest.TestCase):
         for document in documents:
             with self.subTest(document=document.splitlines()[0]):
                 links, problems = _extract_links(document, "README.md")
-                self.assertEqual(links, [("ok.md", len(document.splitlines()) - 1)])
+                self.assertEqual(links, [("ok.md", len(document.splitlines()))])
                 self.assertEqual(problems, [])
 
 class LineLengthTests(unittest.TestCase):
