@@ -87,23 +87,101 @@ def _blockquote_content(line: str, max_depth: int | None = None) -> tuple[str, i
     return line[offset:], depth
 
 
+def _container_content(
+    line: str,
+    list_stacks: dict[int, list[int]],
+    max_quote_depth: int | None = None,
+    allow_list_marker: bool = True,
+) -> tuple[str, int, tuple[int, ...], bool]:
+    """Strip blockquote/list container prefixes from one Markdown line.
+
+    List indentation is tracked independently per blockquote depth. This is
+    intentionally a small block-container parser for the syntax the validator
+    needs; it does not attempt to render or rewrite Markdown.
+    """
+    content, quote_depth = _blockquote_content(line.rstrip("\r\n"), max_quote_depth)
+    stack = list_stacks.setdefault(quote_depth, [])
+
+    # Blank lines may separate a list item from its fenced block, so they do
+    # not terminate the active list context.
+    if not content.strip():
+        return content, quote_depth, tuple(stack), False
+
+    leading = len(content) - len(content.lstrip(" "))
+    while stack and leading < stack[-1]:
+        stack.pop()
+
+    consumed = 0
+    for content_indent in stack:
+        required = content_indent - consumed
+        if leading >= content_indent:
+            content = content[required:]
+            consumed = content_indent
+        else:
+            break
+
+    opened_list_item = False
+    if allow_list_marker:
+        marker = re.match(
+            r"^( {0,3})([*+-]|[0-9]{1,9}[.)])(?=[ \t]|$)([ \t]+)?",
+            content,
+        )
+        if marker:
+            marker_indent = len(marker.group(1))
+            marker_width = len(marker.group(2))
+            padding = marker.group(3) or ""
+            # CommonMark treats five or more following spaces as one
+            # separating space; the remainder stays part of the content.
+            padding_used = len(padding) if 1 <= len(padding) <= 4 else (1 if padding else 0)
+            absolute_marker_indent = consumed + marker_indent
+            stack.append(absolute_marker_indent + marker_width + padding_used)
+            content = content[marker.end() - len(padding) + padding_used:]
+            opened_list_item = True
+
+    return content, quote_depth, tuple(stack), opened_list_item
+
+
 def _fenced_code_lines(lines: list[str]) -> set[int]:
-    """Return zero-based lines inside fenced blocks, including blockquotes."""
+    """Return zero-based fenced-code lines, including list/blockquote containers."""
     fenced: set[int] = set()
+    list_stacks: dict[int, list[int]] = {}
     marker: str | None = None
     marker_length = 0
     quote_depth = 0
+    marker_list_context: tuple[int, ...] = ()
 
     for index, line in enumerate(lines):
-        container_line, current_quote_depth = _blockquote_content(line)
+        if marker is not None:
+            container_line, current_quote_depth, list_context, _ = _container_content(
+                line,
+                list_stacks,
+                max_quote_depth=quote_depth,
+                allow_list_marker=False,
+            )
+            if (
+                current_quote_depth < quote_depth
+                or list_context[:len(marker_list_context)] != marker_list_context
+            ):
+                marker = None
+                marker_length = 0
+                quote_depth = 0
+                marker_list_context = ()
+            else:
+                fenced.add(index)
+                close = re.match(
+                    rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}[ \t]*$",
+                    container_line,
+                )
+                if close:
+                    marker = None
+                    marker_length = 0
+                    quote_depth = 0
+                    marker_list_context = ()
+                continue
 
-        if marker is not None and current_quote_depth < quote_depth:
-            # The enclosing blockquote ended; its fenced block cannot consume
-            # subsequent text outside that container.
-            marker = None
-            marker_length = 0
-            quote_depth = 0
-
+        container_line, current_quote_depth, list_context, _ = _container_content(
+            line, list_stacks
+        )
         stripped = container_line.lstrip(" ")
         indent = len(container_line) - len(stripped)
         match = (
@@ -112,24 +190,6 @@ def _fenced_code_lines(lines: list[str]) -> set[int]:
             else None
         )
 
-        if marker is not None:
-            fence_content, matched_quote_depth = _blockquote_content(line, quote_depth)
-            if matched_quote_depth < quote_depth:
-                marker = None
-                marker_length = 0
-                quote_depth = 0
-            else:
-                fenced.add(index)
-                close = re.match(
-                    rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}[ \t]*$",
-                    fence_content,
-                )
-                if close:
-                    marker = None
-                    marker_length = 0
-                    quote_depth = 0
-                continue
-
         if match:
             candidate = match.group(1)
             info = match.group(2)
@@ -137,10 +197,10 @@ def _fenced_code_lines(lines: list[str]) -> set[int]:
                 marker = candidate[0]
                 marker_length = len(candidate)
                 quote_depth = current_quote_depth
+                marker_list_context = list_context
                 fenced.add(index)
 
     return fenced
-
 
 def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
     """Find matched inline-code spans across the complete text."""
@@ -476,34 +536,72 @@ def _normalize_reference_label(label: str) -> str:
 
 
 def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[DocProblem]]:
-    """Extract links actually used in the document and validate reference labels.
+    """Extract inline/reference links while respecting Markdown containers.
 
-    Reference definitions are kept separately from use sites: an unused
-    definition is not a navigation link and cannot satisfy required entry-point
-    checks. Duplicate definitions follow CommonMark's first-definition-wins rule.
+    Reference definitions may be placed in blockquotes or list items, and
+    their destination may begin on the following line. Definitions are kept
+    separate from use sites and use CommonMark's first-definition-wins rule.
     """
+    original_lines = text.splitlines(keepends=True)
+    fenced = _fenced_code_lines(original_lines)
     masked = _mask_inline_code(text)
+    masked_lines = masked.splitlines(keepends=True)
+
     links: list[tuple[str, int]] = []
     problems: list[DocProblem] = []
     definitions: dict[str, tuple[str, int]] = {}
     definition_lines: set[int] = set()
 
-    for line_number, line in enumerate(masked.splitlines(), 1):
+    list_stacks: dict[int, list[int]] = {}
+    normalized_lines: list[str] = []
+    contexts: list[tuple[int, tuple[int, ...], bool]] = []
+    for index, line in enumerate(masked_lines):
+        if index in fenced:
+            normalized_lines.append("")
+            contexts.append((0, (), False))
+            continue
+        content, quote_depth, list_context, opened = _container_content(
+            line, list_stacks
+        )
+        normalized_lines.append(content)
+        contexts.append((quote_depth, list_context, opened))
+
+    for index, line in enumerate(normalized_lines):
+        if index in fenced:
+            continue
         match = re.match(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$", line)
         if not match:
             continue
 
+        line_number = index + 1
         definition_lines.add(line_number)
         label = _normalize_reference_label(match.group(1))
         destination_text = match.group(2).strip()
-        target: str | None = None
 
+        # CommonMark allows the destination to start on the next line.
+        if not destination_text and index + 1 < len(normalized_lines):
+            next_index = index + 1
+            current_quote, current_lists, _ = contexts[index]
+            next_quote, next_lists, next_opened = contexts[next_index]
+            next_text = normalized_lines[next_index].strip()
+            if (
+                next_index not in fenced
+                and next_text
+                and not next_opened
+                and next_quote == current_quote
+                and next_lists == current_lists
+            ):
+                destination_text = next_text
+                definition_lines.add(next_index + 1)
+
+        target: str | None = None
         if destination_text.startswith("<"):
             closing = next(
                 (
-                    index
-                    for index in range(1, len(destination_text))
-                    if destination_text[index] == ">" and not _is_escaped(destination_text, index)
+                    position
+                    for position in range(1, len(destination_text))
+                    if destination_text[position] == ">"
+                    and not _is_escaped(destination_text, position)
                 ),
                 None,
             )
@@ -526,22 +624,33 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
             )
             continue
 
-        if target is None or target == "":
-            problems.append(DocProblem(path, line_number, f"malformed Markdown reference definition: [{label}]"))
+        if target is None:
+            problems.append(
+                DocProblem(
+                    path,
+                    line_number,
+                    f"malformed Markdown reference definition: [{label}]",
+                )
+            )
             definitions[label] = ("", line_number)
             continue
 
         definitions[label] = (_unescape_destination(target), line_number)
 
-    # Remove definition lines from link-use scanning, retaining offsets/newlines.
-    scannable_lines = masked.splitlines(keepends=True)
-    scannable: list[str] = []
-    for line_number, line in enumerate(scannable_lines, 1):
+    # Remove complete definition blocks from link-use scanning, preserving
+    # offsets and line numbers for actual reference use sites.
+    scannable_lines: list[str] = []
+    for line_number, line in enumerate(masked_lines, 1):
         if line_number in definition_lines:
-            scannable.append("".join("\n" if char == "\n" else "\r" if char == "\r" else " " for char in line))
+            scannable_lines.append(
+                "".join(
+                    "\n" if char == "\n" else "\r" if char == "\r" else " "
+                    for char in line
+                )
+            )
         else:
-            scannable.append(line)
-    content = "".join(scannable)
+            scannable_lines.append(line)
+    content = "".join(scannable_lines)
 
     index = 0
     while index < len(content):
@@ -576,7 +685,6 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
                 reference_label = explicit_label if explicit_label else visible_label
                 end = close_reference + 1
         else:
-            # CommonMark shortcut reference: [label] when a definition exists.
             candidate = _normalize_reference_label(visible_label)
             if candidate in definitions:
                 reference_label = visible_label
@@ -586,7 +694,11 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
             definition = definitions.get(normalized)
             if definition is None:
                 problems.append(
-                    DocProblem(path, line_number, f"undefined Markdown reference: [{reference_label}]")
+                    DocProblem(
+                        path,
+                        line_number,
+                        f"undefined Markdown reference: [{reference_label}]",
+                    )
                 )
             elif definition[0]:
                 links.append((definition[0], line_number))
@@ -626,21 +738,46 @@ def _slugify_heading(heading: str) -> str:
 def _markdown_anchors(text: str) -> set[str]:
     lines = text.splitlines()
     fenced = _fenced_code_lines(lines)
-    anchors: set[str] = set()
-    counts: dict[str, int] = {}
+    list_stacks: dict[int, list[int]] = {}
+    normalized: list[str] = []
+    contexts: list[tuple[int, tuple[int, ...]]] = []
 
     for index, line in enumerate(lines):
         if index in fenced:
+            normalized.append("")
+            contexts.append((0, ()))
             continue
-        explicit_ids = re.findall(r"<a\s+[^>]*?id\s*=\s*[\"']([^\"']+)[\"']", line, re.IGNORECASE)
+        content, quote_depth, list_context, _ = _container_content(
+            line, list_stacks
+        )
+        normalized.append(content)
+        contexts.append((quote_depth, list_context))
+
+    anchors: set[str] = set()
+    counts: dict[str, int] = {}
+
+    for index, line in enumerate(normalized):
+        if index in fenced:
+            continue
+
+        explicit_ids = re.findall(
+            r"<a\s+[^>]*?id\s*=\s*[\"']([^\"']+)[\"']",
+            line,
+            re.IGNORECASE,
+        )
         anchors.update(explicit_ids)
 
         atx = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         if atx:
             heading = atx.group(2)
         elif index + 1 < len(lines) and index + 1 not in fenced:
-            underline = re.match(r"^ {0,3}(=+|-+)\s*$", lines[index + 1])
-            heading = line.strip() if underline and line.strip() else None
+            same_container = contexts[index] == contexts[index + 1]
+            underline = re.match(r"^ {0,3}(=+|-+)\s*$", normalized[index + 1])
+            heading = (
+                line.strip()
+                if same_container and underline and line.strip()
+                else None
+            )
         else:
             heading = None
 
@@ -652,7 +789,6 @@ def _markdown_anchors(text: str) -> set[str]:
             anchors.add(slug)
 
     return anchors
-
 
 def _resolve_target(source: str, target: str) -> tuple[str | None, str | None, bool]:
     """Return (repository-relative path, fragment, external)."""
@@ -680,8 +816,10 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
     root = root.resolve()
     markdown_files = sorted(
         path
-        for path in root.rglob("*.md")
-        if not any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".md", ".markdown"}
+        and not any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
     )
     relative_files = {path.relative_to(root).as_posix(): path for path in markdown_files}
     file_contents: dict[str, str] = {}
