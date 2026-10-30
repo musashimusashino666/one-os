@@ -20,6 +20,7 @@ TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
 SIZE_RE_TEMPLATE = r"^\s*\.size\s+{}\s*,"
 INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)(?:\s+(.+?))?\s*$")
+LOOP_BRANCHES = {"loop", "loope", "loopz", "loopne", "loopnz"}
 GPR_RE = re.compile(
     r"^(?:r(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+[dwb]?|"
     r"e(?:ax|bx|cx|dx|si|di|bp|sp)|(?:si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
@@ -258,19 +259,29 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     if not instructions:
         return False, "activation routine contains no instructions"
 
-    # Build the CFG and analyze both edges of each conditional branch. This is
-    # deliberately conservative: any reachable CR3 write must satisfy the
-    # protocol, even if another path through the function is safe.
+    # Build the CFG for every supported direct branch. LOOP/LOOPE/LOOPNE
+    # have a taken edge and a fallthrough edge just like conditional jumps;
+    # treating them as ordinary instructions would hide paths that bypass
+    # the PGE-clear write. Unknown/out-of-function branch targets fail closed.
     successors: list[list[int]] = [[] for _ in instructions]
     for index, (_, mnemonic, operands) in enumerate(instructions):
         fallthrough = index + 1 if index + 1 < len(instructions) else None
-        target = labels.get(operands[-1].strip()) if mnemonic.startswith("j") and operands else None
-        if mnemonic.startswith("jmp"):
-            if target is not None:
-                successors[index].append(target)
-        elif mnemonic.startswith("j"):
-            if target is not None:
-                successors[index].append(target)
+        is_loop_branch = mnemonic in LOOP_BRANCHES
+        is_conditional_jump = mnemonic.startswith("j") and not mnemonic.startswith("jmp")
+        is_unconditional_jump = mnemonic.startswith("jmp")
+        target = (
+            labels.get(operands[-1].strip())
+            if (is_loop_branch or is_conditional_jump or is_unconditional_jump) and operands
+            else None
+        )
+        if is_unconditional_jump:
+            if target is None:
+                return False, f"unresolved or non-local jump target at instruction {index}: {instructions[index][0].strip()}"
+            successors[index].append(target)
+        elif is_loop_branch or is_conditional_jump:
+            if target is None:
+                return False, f"unresolved or non-local conditional branch target at instruction {index}: {instructions[index][0].strip()}"
+            successors[index].append(target)
             if fallthrough is not None and fallthrough not in successors[index]:
                 successors[index].append(fallthrough)
         elif mnemonic.startswith(("ret", "iret", "ud2", "hlt")):
@@ -312,6 +323,11 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         if mnemonic == "rdmsr":
             state[reg_index["rax"]] = NONE
             state[reg_index["rdx"]] = NONE
+            return tuple(state), stage
+
+        if mnemonic in LOOP_BRANCHES:
+            # LOOP-family instructions implicitly decrement RCX.
+            state[reg_index["rcx"]] = NONE
             return tuple(state), stage
 
         clear_destination = _pge_clear_destination(raw_line)
@@ -406,6 +422,7 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     saw_restore_write = False
     saw_completed_switch = False
     unsafe_cr3_path: str | None = None
+    unsafe_call_path: str | None = None
     incomplete_exit: tuple[int, str] | None = None
 
     from collections import deque
@@ -426,6 +443,19 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
         raw_line, mnemonic, operands = instructions[index]
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
+
+        # A call is an interprocedural CR4 side-effect boundary. Do not permit
+        # it while an original CR4 snapshot is live or while the PGE/CR3
+        # transition is incomplete; callees are not part of this local CFG.
+        if mnemonic.startswith("call") and (
+            stage in (1, 2, 4)
+            or (stage == 0 and (ORIGINAL in tags or CLEARED in tags))
+        ) and unsafe_call_path is None:
+            unsafe_call_path = (
+                "call is not permitted while CR4 provenance or the "
+                f"PGE/CR3 transition is active (stage={stage}, instruction {index}: "
+                f"{raw_line.strip()})"
+            )
 
         # Reject each unsafe CR3 edge immediately. Do not return success merely
         # because some other path completed the protocol.
@@ -474,6 +504,8 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "no actual CR3 write instruction found in activation routine"
     if unsafe_cr3_path is not None:
         return False, unsafe_cr3_path
+    if unsafe_call_path is not None:
+        return False, unsafe_call_path
     if incomplete_exit is not None:
         stage, location = incomplete_exit
         if stage == 2:
@@ -721,7 +753,17 @@ def _cr3_source_is_validated_active_reload(
     # asm block must physically occur within its source span. This prevents the
     # exception from weakening validation of an unrelated root switch.
     helper_writes = _asm_blocks_writing_control_register(helper, "cr3")
-    if len(helper_writes) != 1 or source.find(block, start, end) < 0:
+    write_offset = helper.find(block)
+    if len(helper_writes) != 1 or write_offset < 0 or source.find(block, start, end) < 0:
+        return False
+
+    # The active-root comparison must guard the CR3 write, not merely appear
+    # somewhere in the function after the hardware state has already changed.
+    pre_write = _rust_code_without_literals_or_comments(helper[:write_offset])
+    if not _if_guard_unconditionally_returns(
+        pre_write,
+        r"cr3\s*&\s*PHYSICAL_ADDRESS_MASK\s*!=\s*expected_root_physical",
+    ):
         return False
 
     if not re.search(r"let\s+cr3\s*:\s*u64\s*;", helper):
@@ -1006,6 +1048,21 @@ def _if_guard_unconditionally_returns_err(
     if closing is None:
         return False
     return body[closing + 1:].lstrip().startswith(";")
+
+
+
+def _if_guard_unconditionally_returns(
+    source: str, condition_pattern: str
+) -> bool:
+    """Require a matching if guard to leave its function immediately."""
+    matching_bodies = [
+        body
+        for condition, body in _rust_if_condition_blocks(source)
+        if re.search(condition_pattern, condition)
+    ]
+    if len(matching_bodies) != 1:
+        return False
+    return re.match(r"\s*return\b", matching_bodies[0]) is not None
 
 
 def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
