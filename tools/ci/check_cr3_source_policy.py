@@ -470,7 +470,11 @@ def _walk_package(root: Path, relative_package: str) -> tuple[list[Path], list[s
 
 
 def _resolved_local_dependency_errors(root: Path, metadata: dict) -> list[str]:
-    """Reject unscanned local crates in the resolved dependency closure."""
+    """Reject unscanned local crates; registry package source files are not scanned.
+
+    Registry nodes remain in the traversal so local path packages nested beneath
+    them cannot escape the explicit source-package allowlist.
+    """
     errors: list[str] = []
     packages = metadata.get("packages")
     resolve = metadata.get("resolve")
