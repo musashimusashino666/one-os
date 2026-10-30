@@ -49,9 +49,9 @@ A design target is not proof of implementation.
 
 1. Keep one canonical source for each requirement or claim.
 2. Keep Markdown prose and table rows within 88 characters.
-Prefer headings and lists over wide tables.
-Exempt fenced code, inline code that cannot be split,
-and unbreakable URLs only.
+   Prefer headings and lists over wide tables.
+   Exempt fenced code, inline code that cannot be split,
+   and unbreakable URLs only.
 3. Vision describes intent; specifications define contracts.
 4. Implementation status cites source and exact verification evidence.
 5. Security claims state assumptions, scope, and exclusions.
