@@ -47,6 +47,10 @@ EXPECTED_MACRO_RULES = {
     "kernel/src/paging/editor.rs": 1,
     "kernel/src/interrupts.rs": 4,
 }
+ASM_SITE_INVENTORY_PATH = Path(__file__).with_name("asm_site_inventory.json")
+EXPECTED_ASM_SITE_INVENTORY = json.loads(
+    ASM_SITE_INVENTORY_PATH.read_text(encoding="utf-8")
+)["sites"]
 SOURCE_PACKAGES = ("kernel", "crates/oneos-core")
 ALLOWED_LOCAL_DEPENDENCY_MANIFESTS = {
     "crates/oneos-core/Cargo.toml",
@@ -337,6 +341,110 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                     )
     return errors
 
+
+def _fnv1a64_utf8(value: str) -> str:
+    """Stable compact digest for an assembly site's normalized source context."""
+    result = 0xCBF29CE484222325
+    prime = 0x100000001B3
+    mask = (1 << 64) - 1
+    for byte in value.encode("utf-8"):
+        result ^= byte
+        result = (result * prime) & mask
+    return f"{result:016x}"
+
+
+def _inventory_function_spans(
+    source: str, code: str
+) -> list[tuple[str, int, int]]:
+    """Return the same balanced Rust function spans used by the CR3 checker."""
+    pattern = re.compile(r"\bfn\s+(?P<name>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\b")
+    spans: list[tuple[str, int, int]] = []
+    for match in pattern.finditer(code):
+        cursor = match.end()
+        parentheses = brackets = angles = 0
+        body_start: int | None = None
+        while cursor < len(code):
+            character = code[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "<":
+                angles += 1
+            elif character == ">" and (cursor == 0 or code[cursor - 1] != "-"):
+                angles = max(0, angles - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0 and angles == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0 and angles == 0:
+                break
+            cursor += 1
+
+        if body_start is None:
+            continue
+        depth = 1
+        cursor = body_start + 1
+        while cursor < len(code) and depth:
+            if code[cursor] == "{":
+                depth += 1
+            elif code[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth:
+            continue
+        name = match.group("name")
+        spans.append((name[2:] if name.startswith("r#") else name, body_start, cursor - 1))
+    return spans
+
+
+def _assembly_site_identities(source: str) -> list[str]:
+    """Identify each asm!/global_asm! by owner, template, and local code context.
+
+    The masked context excludes comments and string contents and is bounded to
+    120 source characters on either side. The template has its own digest, so
+    changing assembly text is independent of surrounding Rust formatting.
+    """
+    code = mask_rust_comments_and_literals(source)
+    function_spans = _inventory_function_spans(source, code)
+    identities: list[str] = []
+    for invocation in rust_macro_invocations(source, {"asm", "global_asm"}):
+        if invocation.closing is None:
+            identities.append(f"{invocation.name}|<malformed>|<malformed>|<malformed>")
+            continue
+        owners = [
+            span
+            for span in function_spans
+            if span[1] < invocation.start < span[2]
+        ]
+        owner = min(owners, key=lambda span: span[2] - span[1]) if owners else None
+        owner_name = owner[0] if owner else "<module>"
+        owner_start = owner[1] + 1 if owner else 0
+        owner_end = owner[2] if owner else len(code)
+        body = source[invocation.opening + 1 : invocation.closing]
+        templates = [
+            re.sub(r"\s+", " ", literal.value).strip()
+            for literal in rust_string_literals(body)
+        ]
+        template = "\x1e".join(templates)
+        before = re.sub(
+            r"\s+", "", code[max(owner_start, invocation.start - 120) : invocation.start]
+        )
+        after = re.sub(
+            r"\s+", "",
+            code[invocation.closing + 1 : min(owner_end, invocation.closing + 1 + 120)],
+        )
+        context = before + "\x1f" + after
+        identities.append(
+            f"{invocation.name}|{owner_name}|"
+            f"{_fnv1a64_utf8(template)}|{_fnv1a64_utf8(context)}"
+        )
+    return sorted(identities)
+
+
 def source_policy_errors(relative_path: str, source: str) -> list[str]:
     """Apply simple deny rules and the explicit call-site count allowlist."""
     path = Path(relative_path).as_posix()
@@ -346,6 +454,14 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     global_count = _macro_count(source, "global_asm")
     naked_count = _macro_count(source, "naked_asm")
     include_count = _macro_count(source, "include")
+
+    actual_sites = _assembly_site_identities(source)
+    expected_sites = EXPECTED_ASM_SITE_INVENTORY.get(path, [])
+    if actual_sites != expected_sites:
+        errors.append(
+            f"{path}: assembly macro site identity inventory differs from the reviewed "
+            "manifest; added, removed, relocated, re-owned, or modified sites are denied"
+        )
 
     expected_asm = EXPECTED_ASM_COUNTS.get(path, 0)
     if asm_count != expected_asm:
