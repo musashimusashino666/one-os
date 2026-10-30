@@ -8,7 +8,11 @@ import re
 import sys
 from pathlib import Path
 
-from rust_lexer import mask_rust_comments_and_literals, rust_macro_invocations
+from rust_lexer import (
+    mask_rust_comments_and_literals,
+    rust_macro_invocations,
+    rust_string_literals,
+)
 
 FUNCTION_NAMES = ("activate_supervisor_kernel_root", "switch_address_space")
 FUNCTION_NAME = "activate_supervisor_kernel_root"
@@ -492,7 +496,6 @@ def _asm_blocks_writing_control_register(
     checked. Rust's asm! templates are string literals; the macro body is
     captured separately so options and operands can be validated as a whole.
     """
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     instruction_pattern = re.compile(
         rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE
     )
@@ -501,7 +504,7 @@ def _asm_blocks_writing_control_register(
         if invocation.closing is None:
             continue
         body = source[invocation.opening + 1 : invocation.closing]
-        templates = string_pattern.findall(body)
+        templates = [literal.value for literal in rust_string_literals(body)]
         if any(instruction_pattern.search(template) for template in templates):
             blocks.append(body)
     return blocks
@@ -533,10 +536,7 @@ def _asm_operand_bindings(
     declarations are rejected conservatively so they cannot shift positional
     placeholders past an operand the checker did not understand.
     """
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
-    body = string_pattern.sub(" ", block)
-    body = re.sub(r"//[^\n]*", "", body)
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+    body = mask_rust_comments_and_literals(block)
     positional: list[tuple[str, str | None, str | None]] = []
     named: dict[str, tuple[str, str | None, str | None]] = {}
 
@@ -624,11 +624,11 @@ def _cr3_template_sources(
     block: str,
 ) -> list[tuple[str, str | None, int | None]]:
     """Return each CR3 source token and its exact template-placeholder binding."""
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     sources: list[tuple[str, str | None, int | None]] = []
     next_positional_index = 0
 
-    for template in string_pattern.findall(block):
+    for literal in rust_string_literals(block):
+        template = literal.value
         placeholders, next_positional_index = _template_placeholders(
             template, next_positional_index
         )
@@ -768,7 +768,6 @@ def _asm_blocks_writing_control_register_with_locations(
     source: str, register: str
 ) -> list[tuple[str, int]]:
     """Find asm! blocks writing a control register and retain source offsets."""
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     instruction_patterns = (
         re.compile(rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE),
         re.compile(rf"\bmov(?:q)?\s+[^,\n]+,\s*%{re.escape(register)}\b", re.IGNORECASE),
@@ -778,7 +777,7 @@ def _asm_blocks_writing_control_register_with_locations(
         if invocation.closing is None:
             continue
         body = source[invocation.opening + 1 : invocation.closing]
-        templates = string_pattern.findall(body)
+        templates = [literal.value for literal in rust_string_literals(body)]
         candidates = [*templates, "".join(templates)]
         if any(pattern.search(template) for template in candidates for pattern in instruction_patterns):
             blocks.append((body, invocation.start))
