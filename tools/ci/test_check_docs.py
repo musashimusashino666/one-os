@@ -10,6 +10,7 @@ FENCE = BACKTICK * 3
 from check_docs import (
     _document_inline_code_ranges,
     _extract_links,
+    _markdown_table_lines,
     _indented_code_lines,
     _inline_code_ranges,
     _line_length_is_exempt,
@@ -227,6 +228,24 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("existing.md", 4)])
         self.assertEqual(problems, [])
 
+    def test_inline_and_reference_images_are_separated_from_clickable_links(self):
+        text = (
+            "![inline](assets/logo.png)\n"
+            "![reference][docs-image]\n"
+            "[docs-image]: docs/README.md\n"
+            "[clickable](docs/README.md)\n"
+        )
+        images = []
+        links, problems = _extract_links(
+            text, "README.md", image_targets=images
+        )
+        self.assertEqual(links, [("docs/README.md", 4)])
+        self.assertEqual(
+            images,
+            [("assets/logo.png", 1), ("docs/README.md", 2)],
+        )
+        self.assertEqual(problems, [])
+
     def test_unmatched_brackets_are_paired_in_linear_pass(self):
         self.assertEqual(_matching_bracket_pairs("[" * 100_000), {})
         self.assertEqual(
@@ -377,6 +396,22 @@ class LineLengthTests(unittest.TestCase):
 
 
 
+    def test_one_column_table_without_edge_pipe_rows_are_never_line_exempt(self):
+        lines = [
+            "| URL |\n",
+            "| --- |\n",
+            "| https://example.test/" + "x" * 100 + " |\n",
+        ]
+        table_lines = _markdown_table_lines(lines, set())
+        self.assertEqual(table_lines, {0, 1, 2})
+        self.assertFalse(
+            _line_length_is_exempt(
+                lines[2].rstrip("\n"), is_table_row=2 in table_lines
+            )
+        )
+
+
+
 class RepositoryValidationTests(unittest.TestCase):
     def make_repo(self, root: Path):
         (root / "docs").mkdir()
@@ -505,6 +540,27 @@ class RepositoryValidationTests(unittest.TestCase):
                 any(
                     "missing internal link target" in problem.message
                     and "foo" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_single_column_table_url_row_fails_line_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            table = (
+                "\n| URL |\n"
+                "| --- |\n"
+                "| https://example.test/" + "x" * 100 + " |\n"
+            )
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(table)
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and problem.line > 0
+                    and "characters (limit 88)" in problem.message
                     for problem in problems
                 )
             )
@@ -732,6 +788,49 @@ class RepositoryValidationTests(unittest.TestCase):
                 )
             problems = validate_repository(root)
             self.assertFalse(any("missing heading anchor" in p.message for p in problems))
+
+
+    def test_image_to_required_target_does_not_satisfy_navigation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            readme = root / "README.md"
+            contents = readme.read_text(encoding="utf-8")
+            contents = contents.replace(
+                "[docs](docs/README.md)",
+                "![docs](docs/README.md)",
+                1,
+            )
+            readme.write_text(contents, encoding="utf-8")
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "README.md"
+                    and "required navigation link is missing: docs/README.md" in problem.message
+                    for problem in problems
+                )
+            )
+            self.assertFalse(
+                any(
+                    "missing internal link target: docs/README.md" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_missing_image_target_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\n![missing asset](assets/missing.png)\n")
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "README.md"
+                    and "missing internal link target: assets/missing.png" in problem.message
+                    for problem in problems
+                )
+            )
 
 
 
