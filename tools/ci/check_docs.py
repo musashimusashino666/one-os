@@ -930,7 +930,7 @@ def _parse_inline_destination(
     while index < len(text):
         char = text[index]
         if _is_escaped(text, index):
-            index += 2
+            index += 1
             continue
         if char.isspace():
             if depth:
@@ -981,7 +981,7 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
     while index < len(text):
         char = text[index]
         if _is_escaped(text, index):
-            index += 2
+            index += 1
             continue
         if char.isspace():
             if depth:
