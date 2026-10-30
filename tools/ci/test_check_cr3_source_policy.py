@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 
 from check_cr3_source_policy import (
     EXPECTED_ASM_COUNTS,
+    EXPECTED_ASM_SITE_INVENTORY,
+    _assembly_site_identities,
     _assembly_macro_bodies,
     _assembler_directive_errors,
     _cargo_target_directory_overlaps_source_tree,
@@ -24,6 +26,47 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         self.assertEqual(
             EXPECTED_ASM_COUNTS["kernel/src/paging/editor/acceptance.rs"],
             1,
+        )
+        self.assertEqual(
+            set(EXPECTED_ASM_SITE_INVENTORY),
+            set(EXPECTED_ASM_COUNTS),
+        )
+        for path, count in EXPECTED_ASM_COUNTS.items():
+            self.assertEqual(
+                len(EXPECTED_ASM_SITE_INVENTORY[path]),
+                count + (4 if path == "kernel/src/main.rs" else 0),
+                path,
+            )
+
+    def test_assembly_site_identity_detects_relocation_with_unchanged_count(self):
+        original = """
+            fn reviewed_owner() {
+                let before = 1;
+                asm!("nop");
+                let after = 2;
+            }
+        """
+        relocated = """
+            fn reviewed_owner() {
+                let after = 2;
+                asm!("nop");
+                let before = 1;
+            }
+        """
+        original_sites = _assembly_site_identities(original)
+        relocated_sites = _assembly_site_identities(relocated)
+        self.assertEqual(len(original_sites), 1)
+        self.assertEqual(len(relocated_sites), 1)
+        self.assertNotEqual(original_sites, relocated_sites)
+
+    def test_assembly_site_identity_pins_owning_function(self):
+        original = 'fn first() { asm!("nop"); } fn second() {}'
+        relocated = 'fn first() {} fn second() { asm!("nop"); }'
+        self.assertEqual(len(_assembly_site_identities(original)), 1)
+        self.assertEqual(len(_assembly_site_identities(relocated)), 1)
+        self.assertNotEqual(
+            _assembly_site_identities(original),
+            _assembly_site_identities(relocated),
         )
 
     def test_new_assembly_call_outside_allowlist_fails_closed(self):
