@@ -16,7 +16,7 @@ CI scans Rust source under **kernel/** and **crates/oneos-core/**, excluding onl
 
 The checked-in allowlist pins the current asm! call-site count per source file. global_asm! is allowed only at four reviewed sites in kernel/src/main.rs. naked_asm! is not allowed. The current macro_rules! definition count is also pinned for the two files that define local declarative macros. Adding, relocating, or removing sites fails CI until the allowlist and review are updated together.
 
-The kernel package's only permitted local path dependency is ../crates/oneos-core; patch/replace tables and unreviewed custom Cargo targets are rejected. The only target rustflag permitted by .cargo/config.toml is -C relocation-model=pic. Compiler/linker wrappers, environment overrides, and alternate native/build-script inputs are rejected.
+The kernel package's resolved Cargo dependency closure is inspected with `cargo metadata --all-features --locked`; local path/workspace packages are allowed only when their resolved manifest is in the explicit source inventory or the reviewed `crates/oneos-core` package. This catches `workspace = true` dependencies and transitive local path crates instead of comparing manifest strings. Patch/replace tables and unreviewed custom Cargo targets are rejected. The only target rustflag permitted by `.cargo/config.toml` is `-C relocation-model=pic`. Compiler/linker wrappers, environment overrides, and alternate native/build-script inputs are rejected.
 
 ## Alias and source-loading deny rules
 
@@ -26,13 +26,13 @@ The inventory does not attempt general Rust namespace resolution or macro expans
 - include!, #[macro_use], macro metavariable forwarding, and concat! are rejected.
 - `#[path = "..."]` and `#[cfg_attr(..., path = "...")]` module redirection attributes are rejected in every inventoried Rust source file; they could otherwise load code from outside the scanned package trees.
 - Declarations that shadow core, std, alloc, or bootloader_api are rejected.
-- Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings so instructions or assembler directives cannot be obscured. Unrelated Rust strings, including binary-format markers, remain valid.
+- Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings. Cooked and raw Rust template strings are decoded, then every statement is checked after newline, carriage-return, semicolon, and tab separators; an allowlist-external directive is rejected regardless of its position in the template. Unrelated Rust strings, including binary-format markers, remain valid.
 
 The macro-call count check is intentionally literal and conservative. It may reject harmless edits to comments or string literals that contain assembly-macro spellings; those changes require explicit review rather than silently changing the counted inventory.
 
 ## Assembler directive policy
 
-String literals beginning with a dot are rejected unless they are a non-emitting .global symbol export or a local .L...: label. In particular, .reloc, .byte, .insn, section switches, include directives, and assembler macro directives are not allowed in the source inventory. This is a default-deny policy: unknown directive forms must not be assumed harmless.
+Every decoded assembler statement is checked. Statements beginning with a dot are rejected unless they are a non-emitting `.global` symbol export or a local `.L...:` label. In particular, `.reloc`, `.byte`, `.insn`, section switches, include directives, and assembler macro directives are not allowed in the source inventory. Indirect x86 `jmp` and `call` forms (AT&T `*operand` and Intel register/memory operands) are rejected because the source gate cannot prove their targets. Direct symbol calls and direct local-label branches remain permitted. This is a default-deny policy: unknown directive or control-flow forms must not be assumed harmless.
 
 ## CR3 root and optimized assembly checks
 
