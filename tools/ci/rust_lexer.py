@@ -188,7 +188,7 @@ def rust_macro_invocations(
 
     names = "|".join(re.escape(name) for name in sorted(macro_names, key=len, reverse=True))
     pattern = re.compile(
-        rf"(?<![#\w])(?P<name>{names})\b\s*!\s*"
+        rf"(?<![\w])(?:r#)?(?P<name>{names})\b\s*!\s*"
         r"(?P<delimiter>[\(\[\{])"
     )
     code = mask_rust_comments_and_literals(source)
