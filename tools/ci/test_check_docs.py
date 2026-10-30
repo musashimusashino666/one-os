@@ -89,6 +89,26 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
+    def test_quote_marker_does_not_close_plain_fence(self):
+        links, problems = _extract_links(
+            FENCE + "md\n> " + FENCE + "\n[example](missing-file.md)\n"
+            + FENCE + "\n[actual](existing.md)",
+            "README.md",
+        )
+        self.assertEqual(links, [("existing.md", 5)])
+        self.assertEqual(problems, [])
+
+    def test_nested_quote_is_not_a_closing_outer_fence(self):
+        links, problems = _extract_links(
+            "> " + FENCE + "md\n> > " + FENCE + "\n"
+            + "> [example](missing-file.md)\n> " + FENCE
+            + "\n[actual](existing.md)",
+            "README.md",
+        )
+        self.assertEqual(links, [("existing.md", 5)])
+        self.assertEqual(problems, [])
+
+
 class AnchorTests(unittest.TestCase):
     def test_github_style_heading_anchors_and_duplicates(self):
         anchors = _markdown_anchors("# Hello, World!\n\n## Hello, World!\n\n## " + BACKTICK + "Code" + BACKTICK + " & More\n")
