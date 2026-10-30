@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_lexer import mask_rust_comments_and_literals, rust_macro_invocations
+
 FUNCTION_NAMES = ("activate_supervisor_kernel_root", "switch_address_space")
 FUNCTION_NAME = "activate_supervisor_kernel_root"
 TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
@@ -483,21 +485,22 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 def _asm_blocks_writing_control_register(
     source: str, register: str
 ) -> list[str]:
-    """Find asm! blocks whose string templates write the named control register.
+    """Find asm! blocks writing a control register using comment-aware tokens.
 
     Match the instruction independently of its operand placeholder style, so
     both positional ("mov cr3, {}") and named ("mov cr3, {root}") operands are
     checked. Rust's asm! templates are string literals; the macro body is
     captured separately so options and operands can be validated as a whole.
     """
-    macro_pattern = re.compile(r"\basm!\s*\((?P<body>.*?)\);", re.DOTALL)
     string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     instruction_pattern = re.compile(
         rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE
     )
     blocks: list[str] = []
-    for match in macro_pattern.finditer(source):
-        body = match.group("body")
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
         templates = string_pattern.findall(body)
         if any(instruction_pattern.search(template) for template in templates):
             blocks.append(body)
@@ -756,88 +759,29 @@ def _cr3_source_is_validated_active_reload(
     return operand == ("in", "reg", "cr3")
 
 
-def _skip_rust_literal_or_comment(source: str, index: int) -> int | None:
-    """Return the end of a literal/comment beginning at index, else None."""
-    if source.startswith("//", index):
-        newline = source.find("\n", index + 2)
-        return len(source) if newline < 0 else newline + 1
-
-    if source.startswith("/*", index):
-        depth = 1
-        cursor = index + 2
-        while cursor < len(source) and depth:
-            if source.startswith("/*", cursor):
-                depth += 1
-                cursor += 2
-            elif source.startswith("*/", cursor):
-                depth -= 1
-                cursor += 2
-            else:
-                cursor += 1
-        return cursor
-
-    if source[index] == "r":
-        raw = re.match(r'r(?P<hashes>#{0,})"', source[index:])
-        if raw is not None:
-            terminator = '"' + raw.group("hashes")
-            end = source.find(terminator, index + raw.end())
-            return len(source) if end < 0 else end + len(terminator)
-
-    if source[index] == '"':
-        cursor = index + 1
-        while cursor < len(source):
-            if source[cursor] == "\\":
-                cursor += 2
-            elif source[cursor] == '"':
-                return cursor + 1
-            else:
-                cursor += 1
-        return len(source)
-
-    # Recognize Rust character literals exactly; do not mistake lifetimes
-    # such as 'static for a quoted span and accidentally skip live source code.
-    if source[index] == "'":
-        char_literal = re.match(
-            r"'(?:\\(?:['\"\\nrt0]|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\})|[^'\\\r\n])'",
-            source[index:],
-        )
-        if char_literal is not None:
-            return index + char_literal.end()
-
-    return None
-
 def _rust_code_without_literals_or_comments(source: str) -> str:
-    """Mask comments and literals while preserving source offsets and newlines."""
-    masked = list(source)
-    cursor = 0
-    while cursor < len(source):
-        skipped = _skip_rust_literal_or_comment(source, cursor)
-        if skipped is None:
-            cursor += 1
-            continue
-        for index in range(cursor, skipped):
-            if source[index] not in "\r\n":
-                masked[index] = " "
-        cursor = skipped
-    return "".join(masked)
+    """Mask Rust comments/literals through the shared comment-aware lexer."""
+    return mask_rust_comments_and_literals(source)
+
 
 def _asm_blocks_writing_control_register_with_locations(
     source: str, register: str
 ) -> list[tuple[str, int]]:
-    """Find direct asm! blocks writing a control register and retain source offsets."""
-    macro_pattern = re.compile(r"\basm!\s*\((?P<body>.*?)\);", re.DOTALL)
+    """Find asm! blocks writing a control register and retain source offsets."""
     string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     instruction_patterns = (
         re.compile(rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE),
         re.compile(rf"\bmov(?:q)?\s+[^,\n]+,\s*%{re.escape(register)}\b", re.IGNORECASE),
     )
     blocks: list[tuple[str, int]] = []
-    for match in macro_pattern.finditer(source):
-        body = match.group("body")
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
         templates = string_pattern.findall(body)
         candidates = [*templates, "".join(templates)]
         if any(pattern.search(template) for template in candidates for pattern in instruction_patterns):
-            blocks.append((body, match.start()))
+            blocks.append((body, invocation.start))
     return blocks
 
 
