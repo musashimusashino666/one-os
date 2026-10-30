@@ -79,6 +79,12 @@ jobs:
       - name: Test CR3 assembly validator
         run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_assembly.py'
 
+      - name: Test CR3 source policy
+        run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_source_policy.py'
+
+      - name: Validate CR3 source inventory
+        run: python3 tools/ci/check_cr3_source_policy.py --root .
+
       - name: Inspect optimized CR3 switch assembly
         shell: bash
         run: |
@@ -208,6 +214,8 @@ jobs:
           grep -Fq "ONE OS W^X RUNTIME CONFLICT EVENTS: 0x0000000000000000" "$log"
           grep -Fq "ONE OS W^X RUNTIME AUDIT OBSERVED NO CONFLICTS IN DECLARED SCOPE" "$log"
           grep -Fq "ONE OS W^X RUNTIME ACTIVE ROOT:" "$log"
+          grep -Fq "ONE OS KERNEL W^X PREFLIGHT LATE-FAILURE NO-MUTATION PASS" "$log"
+          grep -Fq "ONE OS KERNEL W^X DIRECT-MAP PREFLIGHT PASS" "$log"
           grep -Fq "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS" "$log"
           grep -Fq "ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS" "$log"
           grep -Fq "ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS" "$log"
@@ -246,6 +254,8 @@ jobs:
               raise SystemExit("W^X sibling frame is not in the executable page's 2 MiB physical region")
           markers = [
               "ONE OS W^X SIBLING PRE-DEMOTION LARGE PAGE PASS",
+              "ONE OS KERNEL W^X PREFLIGHT LATE-FAILURE NO-MUTATION PASS",
+              "ONE OS KERNEL W^X DIRECT-MAP PREFLIGHT PASS",
               "ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS",
               "ONE OS W^X DIRECT-MAP WRITE PROTECTION PASS",
               "ONE OS W^X LARGE-PAGE DEMOTION VERIFIED PASS",

@@ -856,6 +856,333 @@ pub fn verify_mapping_smoke_test(boot_info: &BootInfo) -> Result<(), PagingError
 /// shared into later roots. Executable extents are derived from the validated ELF
 /// program headers and page-table translations, never from a VA == PA assumption.
 pub fn enforce_kernel_executable_alias_wx(boot_info: &BootInfo) -> Result<usize, PagingError> {
+    #[cfg(feature = "test-wx-runtime-audit")]
+    verify_preflight_failure_is_non_mutating(boot_info)?;
+
+    enforce_kernel_executable_alias_wx_inner(boot_info, None, None)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValidatedPageTranslation {
+    physical_address: u64,
+    page_size: u64,
+    writable: bool,
+    user_accessible: bool,
+    executable: bool,
+}
+
+fn executable_load_page_range(
+    kernel_image_offset: u64,
+    virtual_address: u64,
+    memory_size: u64,
+) -> Result<(u64, u64), PagingError> {
+    let load_start = kernel_image_offset
+        .checked_add(virtual_address)
+        .ok_or(PagingError::InvalidKernelLoadMapping)?;
+    let load_end = load_start
+        .checked_add(memory_size)
+        .filter(|end| *end > load_start)
+        .ok_or(PagingError::InvalidKernelLoadMapping)?;
+    if !canonical_range_stays_in_one_half(load_start, load_end) {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    Ok((
+        load_start & !(PAGE_SIZE - 1),
+        (load_end - 1) & !(PAGE_SIZE - 1),
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExecutableLoadSegmentPages {
+    first_page: u64,
+    last_page: u64,
+    writable: bool,
+}
+
+struct ExecutableLoadSegmentInventory {
+    entries: [Option<ExecutableLoadSegmentPages>; MAX_ELF64_PROGRAM_HEADERS],
+    len: usize,
+}
+
+impl ExecutableLoadSegmentInventory {
+    fn iter(&self) -> impl Iterator<Item = &ExecutableLoadSegmentPages> {
+        self.entries[..self.len].iter().filter_map(Option::as_ref)
+    }
+}
+
+fn executable_load_segment_pages(
+    boot_info: &BootInfo,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<ExecutableLoadSegmentInventory, PagingError> {
+    let mut elf_header = [0u8; ELF64_HEADER_SIZE];
+    read_kernel_elf_bytes(
+        boot_info,
+        0,
+        &mut elf_header,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let (program_header_offset, program_header_size) =
+        elf64_program_header_table_range(&elf_header, boot_info.kernel_len)
+            .map_err(|_| PagingError::InvalidKernelElf)?;
+    let mut program_header_buffer = [0u8; MAX_ELF64_PROGRAM_HEADERS * ELF64_PROGRAM_HEADER_SIZE];
+    let program_headers = &mut program_header_buffer[..program_header_size];
+    read_kernel_elf_bytes(
+        boot_info,
+        program_header_offset,
+        program_headers,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let load_image = parse_elf64_load_segments(&elf_header, program_headers, boot_info.kernel_len)
+        .map_err(|_| PagingError::InvalidKernelElf)?;
+
+    let mut segments = [None; MAX_ELF64_PROGRAM_HEADERS];
+    let mut len = 0usize;
+    for segment in load_image.load_segments() {
+        if !segment.executable() || segment.memory_size == 0 {
+            continue;
+        }
+        let (first_page, last_page) = executable_load_page_range(
+            boot_info.kernel_image_offset,
+            segment.virtual_address,
+            segment.memory_size,
+        )?;
+        if len >= segments.len() {
+            return Err(PagingError::InvalidKernelElf);
+        }
+        segments[len] = Some(ExecutableLoadSegmentPages {
+            first_page,
+            last_page,
+            writable: segment.writable(),
+        });
+        len += 1;
+    }
+    Ok(ExecutableLoadSegmentInventory {
+        entries: segments,
+        len,
+    })
+}
+
+fn validate_executable_load_virtual_page(
+    virtual_page: u64,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<ValidatedPageTranslation, PagingError> {
+    let translation =
+        translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
+            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+    if translation.page_size != PAGE_SIZE
+        || translation.physical_address & (PAGE_SIZE - 1) != 0
+        || !is_kernel_backed_page(regions, translation.physical_address)
+        || translation.user_accessible
+        || translation.writable
+        || !translation.executable
+    {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    Ok(ValidatedPageTranslation {
+        physical_address: translation.physical_address,
+        page_size: translation.page_size,
+        writable: translation.writable,
+        user_accessible: translation.user_accessible,
+        executable: translation.executable,
+    })
+}
+
+fn physical_offset_alias(
+    physical_memory_offset: u64,
+    physical_page: u64,
+) -> Result<u64, PagingError> {
+    physical_memory_offset
+        .checked_add(physical_page)
+        .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
+        .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)
+}
+
+fn validate_executable_page_aliases(
+    boot_info: &BootInfo,
+    virtual_page: u64,
+    physical_memory_offset: u64,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<(ValidatedPageTranslation, u64, ValidatedPageTranslation), PagingError> {
+    let executable = validate_executable_load_virtual_page(
+        virtual_page,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let direct_alias = physical_offset_alias(physical_memory_offset, executable.physical_address)?;
+    // This walk is read-only during preflight. Use the active-root editor,
+    // not a bootloader-only walker: the same helper also runs in the later
+    // mutation pass, where earlier pages may already have published
+    // allocator-owned demotion tables that must remain traversable.
+    let mut direct_editor =
+        KernelPageTableEditor::new_with_recursive_index(boot_info, direct_alias, recursive_index)?;
+    let direct = translate_with_editor(&mut direct_editor, root_table_physical, direct_alias)
+        .map_err(PagingError::Translation)?;
+
+    if direct.physical_address != executable.physical_address
+        || !translation_preserves_page_offset(direct_alias, direct)
+        || direct.user_accessible
+    {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    Ok((
+        executable,
+        direct_alias,
+        ValidatedPageTranslation {
+            physical_address: direct.physical_address,
+            page_size: direct.page_size,
+            writable: direct.writable,
+            user_accessible: direct.user_accessible,
+            executable: direct.executable,
+        },
+    ))
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WxExecutableAliasSnapshot {
+    page_count: usize,
+    executable_mapping_digest: u64,
+    direct_alias_digest: u64,
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+fn mix_wx_snapshot_word(hash: &mut u64, word: u64) {
+    let mixed = *hash ^ word;
+    let multiplied = mixed.wrapping_mul(0x100000001b3);
+    *hash = multiplied ^ (multiplied >> 32);
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+fn wx_executable_alias_snapshot(
+    boot_info: &BootInfo,
+) -> Result<WxExecutableAliasSnapshot, PagingError> {
+    let recursive_index = match boot_info.recursive_index {
+        Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
+        Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
+        Optional::None => return Err(PagingError::RecursiveMappingUnavailable),
+    };
+    let regions: &[MemoryRegion] = &boot_info.memory_regions;
+    let root_table_physical = active_root_table_physical();
+    if root_table_physical == 0
+        || root_table_physical & (PAGE_SIZE - 1) != 0
+        || !is_bootloader_owned_page(regions, root_table_physical)
+        || !validate_recursive_mapping_entry(recursive_index, root_table_physical)
+    {
+        return Err(PagingError::InvalidRootTable);
+    }
+    let physical_memory_offset = match boot_info.physical_memory_offset {
+        Optional::Some(offset) => offset,
+        Optional::None => return Err(PagingError::PhysicalMemoryOffsetUnavailable),
+    };
+    let executable_segments =
+        executable_load_segment_pages(boot_info, root_table_physical, recursive_index, regions)?;
+
+    let mut snapshot = WxExecutableAliasSnapshot {
+        page_count: 0,
+        executable_mapping_digest: 0xcbf29ce484222325,
+        direct_alias_digest: 0x84222325cbf29ce4,
+    };
+    for segment in executable_segments.iter() {
+        if segment.writable {
+            return Err(PagingError::InvalidKernelCodeMapping);
+        }
+        let mut virtual_page = segment.first_page;
+        loop {
+            let (translation, direct_alias, direct_translation) = validate_executable_page_aliases(
+                boot_info,
+                virtual_page,
+                physical_memory_offset,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )?;
+
+            for word in [
+                virtual_page,
+                translation.physical_address,
+                translation.page_size,
+                translation.writable as u64,
+                translation.user_accessible as u64,
+                translation.executable as u64,
+            ] {
+                mix_wx_snapshot_word(&mut snapshot.executable_mapping_digest, word);
+            }
+            for word in [
+                direct_alias,
+                direct_translation.physical_address,
+                direct_translation.page_size,
+                direct_translation.writable as u64,
+                direct_translation.user_accessible as u64,
+                direct_translation.executable as u64,
+            ] {
+                mix_wx_snapshot_word(&mut snapshot.direct_alias_digest, word);
+            }
+            snapshot.page_count = snapshot
+                .page_count
+                .checked_add(1)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+
+            if virtual_page == segment.last_page {
+                break;
+            }
+            virtual_page = virtual_page
+                .checked_add(PAGE_SIZE)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        }
+    }
+
+    if snapshot.page_count == 0 {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+    Ok(snapshot)
+}
+
+#[cfg(feature = "test-wx-runtime-audit")]
+fn verify_preflight_failure_is_non_mutating(boot_info: &BootInfo) -> Result<(), PagingError> {
+    let before = wx_executable_alias_snapshot(boot_info)?;
+    let mut pages_verified_before_injected_failure = 0usize;
+    let injected = enforce_kernel_executable_alias_wx_inner(
+        boot_info,
+        Some(1),
+        Some(&mut pages_verified_before_injected_failure),
+    );
+    // Injection occurs at the beginning of the next executable page's
+    // validation, before its translation is read. Require exactly one earlier
+    // page to have passed all checks so an unrelated failure cannot satisfy
+    // this late-failure/no-mutation acceptance check.
+    if pages_verified_before_injected_failure != 1
+        || !matches!(injected, Err(PagingError::InvalidKernelLoadMapping))
+    {
+        return Err(PagingError::WxAuditFailed);
+    }
+    let after = wx_executable_alias_snapshot(boot_info)?;
+    if before != after {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    crate::serial_write(b"ONE OS KERNEL W^X PREFLIGHT LATE-FAILURE NO-MUTATION PASS\n");
+    Ok(())
+}
+
+fn enforce_kernel_executable_alias_wx_inner(
+    boot_info: &BootInfo,
+    inject_preflight_failure_after_pages: Option<usize>,
+    mut injected_failure_verified_pages: Option<&mut usize>,
+) -> Result<usize, PagingError> {
     let recursive_index = match boot_info.recursive_index {
         Optional::Some(index) if is_safe_recursive_mapping_index(index) => index,
         Optional::Some(_) => return Err(PagingError::InvalidRecursiveIndex),
@@ -882,80 +1209,92 @@ pub fn enforce_kernel_executable_alias_wx(boot_info: &BootInfo) -> Result<usize,
         });
     }
 
-    let mut elf_header = [0u8; ELF64_HEADER_SIZE];
-    read_kernel_elf_bytes(
-        boot_info,
-        0,
-        &mut elf_header,
-        root_table_physical,
-        recursive_index,
-        regions,
-    )?;
-    let (program_header_offset, program_header_size) =
-        elf64_program_header_table_range(&elf_header, boot_info.kernel_len)
-            .map_err(|_| PagingError::InvalidKernelElf)?;
-    let mut program_header_buffer = [0u8; MAX_ELF64_PROGRAM_HEADERS * ELF64_PROGRAM_HEADER_SIZE];
-    let program_headers = &mut program_header_buffer[..program_header_size];
-    read_kernel_elf_bytes(
-        boot_info,
-        program_header_offset,
-        program_headers,
-        root_table_physical,
-        recursive_index,
-        regions,
-    )?;
-    let load_image = parse_elf64_load_segments(&elf_header, program_headers, boot_info.kernel_len)
-        .map_err(|_| PagingError::InvalidKernelElf)?;
+    let executable_segments =
+        executable_load_segment_pages(boot_info, root_table_physical, recursive_index, regions)?;
 
-    let mut executable_pages_checked = 0usize;
-    for segment in load_image.load_segments() {
-        if !segment.executable() || segment.memory_size == 0 {
-            continue;
-        }
-        // A writable/executable PT_LOAD page cannot be repaired by downgrading
-        // only the direct-map alias; reject it rather than claiming W^X success.
-        if segment.writable() {
+    // Preflight the entire executable PT_LOAD set and every corresponding
+    // physical-memory-offset alias before changing the first permission bit.
+    // This prevents a late malformed/missing translation from leaving an
+    // early prefix of executable pages transitioned while the boot continues.
+    let mut executable_pages_preflighted = 0usize;
+    for segment in executable_segments.iter() {
+        if segment.writable {
             return Err(PagingError::InvalidKernelCodeMapping);
         }
-        let load_start = boot_info
-            .kernel_image_offset
-            .checked_add(segment.virtual_address)
-            .ok_or(PagingError::InvalidKernelLoadMapping)?;
-        let load_end = load_start
-            .checked_add(segment.memory_size)
-            .filter(|end| *end > load_start)
-            .ok_or(PagingError::InvalidKernelLoadMapping)?;
-        if !canonical_range_stays_in_one_half(load_start, load_end) {
-            return Err(PagingError::InvalidKernelLoadMapping);
-        }
-
-        let first_page = load_start & !(PAGE_SIZE - 1);
-        let last_page = (load_end - 1) & !(PAGE_SIZE - 1);
+        let first_page = segment.first_page;
+        let last_page = segment.last_page;
         let mut virtual_page = first_page;
         loop {
-            let translation = translate_virtual_address(
-                virtual_page,
-                root_table_physical,
-                recursive_index,
-                regions,
-            )
-            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
-            if translation.page_size != PAGE_SIZE
-                || translation.physical_address & (PAGE_SIZE - 1) != 0
-                || !is_kernel_backed_page(regions, translation.physical_address)
-                || translation.user_accessible
-                || translation.writable
-                || !translation.executable
+            // Inject at the beginning of the next page's validation, before its
+            // translation is inspected. The observer proves the requested
+            // number of preceding pages passed both virtual and direct-alias
+            // validation. If no next page exists, the injection never fires and
+            // the acceptance test fails closed.
+            if inject_preflight_failure_after_pages
+                .is_some_and(|limit| limit > 0 && executable_pages_preflighted >= limit)
             {
+                if let Some(observed_pages) = injected_failure_verified_pages.as_deref_mut() {
+                    *observed_pages = executable_pages_preflighted;
+                }
                 return Err(PagingError::InvalidKernelLoadMapping);
             }
 
-            let direct_alias = physical_memory_offset
-                .checked_add(translation.physical_address)
-                .filter(|address| {
-                    is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0
-                })
-                .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)?;
+            validate_executable_page_aliases(
+                boot_info,
+                virtual_page,
+                physical_memory_offset,
+                root_table_physical,
+                recursive_index,
+                regions,
+            )?;
+
+            executable_pages_preflighted = executable_pages_preflighted
+                .checked_add(1)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+
+            if virtual_page == last_page {
+                break;
+            }
+            virtual_page = virtual_page
+                .checked_add(PAGE_SIZE)
+                .ok_or(PagingError::InvalidKernelLoadMapping)?;
+        }
+    }
+
+    if executable_pages_preflighted == 0 {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    // The injected failure must be reached inside the preflight loop. If the
+    // scan completes first, there was no later page to inject into; fail closed
+    // here instead of entering the permission-changing pass without exercising
+    // the intended late-failure/no-mutation path.
+    if inject_preflight_failure_after_pages.is_some() {
+        return Err(PagingError::WxAuditFailed);
+    }
+
+    crate::serial_write(b"ONE OS KERNEL W^X DIRECT-MAP PREFLIGHT PASS\n");
+
+    let mut executable_pages_checked = 0usize;
+    for segment in executable_segments.iter() {
+        // A writable/executable PT_LOAD page cannot be repaired by downgrading
+        // only the direct-map alias; reject it rather than claiming W^X success.
+        if segment.writable {
+            return Err(PagingError::InvalidKernelCodeMapping);
+        }
+        let first_page = segment.first_page;
+        let last_page = segment.last_page;
+        let mut virtual_page = first_page;
+        loop {
+            let (translation, direct_alias, _direct_translation) =
+                validate_executable_page_aliases(
+                    boot_info,
+                    virtual_page,
+                    physical_memory_offset,
+                    root_table_physical,
+                    recursive_index,
+                    regions,
+                )?;
             restrict_physical_offset_alias_read_only_nx(
                 boot_info,
                 root_table_physical,

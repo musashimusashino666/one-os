@@ -1,11 +1,16 @@
 """Regression tests for optimized CR3/PGE assembly validation."""
 
 import unittest
+from pathlib import Path
 
 from check_cr3_assembly import (
+    _asm_blocks_writing_control_register,
+    _asm_blocks_writing_control_register_with_locations,
+    _cr3_template_sources,
     _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
+    validate_cr3_writer_contract,
     validate_cr4_asm_pge_order,
     validate_function_body,
 )
@@ -111,6 +116,47 @@ class ActivationAssemblyTests(unittest.TestCase):
             ]
         )
         self.assertTrue(valid, message)
+
+    def test_rejects_loop_family_branch_that_bypasses_pge_clear(self):
+        # LOOP-family instructions have a taken edge that must be analyzed.
+        # The target skips the CR4.PGE-clear write and reaches CR3 directly.
+        for branch in ("loop", "loope", "loopz", "loopne", "loopnz"):
+            with self.subTest(branch=branch):
+                valid, message = validate_function_body(
+                    [
+                        "movq %cr4, %rbx",
+                        "movq %rbx, %rax",
+                        "andq $-129, %rax",
+                        "movq %rax, %r11",
+                        f"{branch} .Lwrite_cr3",
+                        "movq %r11, %cr4",
+                        ".Lwrite_cr3:",
+                        "movq %r12, %cr3",
+                        "movq %rbx, %r10",
+                        "movq %r10, %cr4",
+                        "retq",
+                    ]
+                )
+                self.assertFalse(valid)
+                self.assertIn("not dominated by a PGE-cleared CR4 write", message)
+
+    def test_rejects_calls_while_cr4_pge_clear_sequence_is_active(self):
+        valid, message = validate_function_body(
+            [
+                "movq %cr4, %rbx",
+                "movq %rbx, %rax",
+                "andq $-129, %rax",
+                "movq %rax, %r11",
+                "movq %r11, %cr4",
+                "callq helper_that_may_change_cr4",
+                "movq %r12, %cr3",
+                "movq %rbx, %r10",
+                "movq %r10, %cr4",
+                "retq",
+            ]
+        )
+        self.assertFalse(valid)
+        self.assertIn("call is not permitted", message)
 
     def test_tracks_cr4_value_saved_around_cpuid_with_xchg(self):
         # LLVM may preserve RBX across CPUID by exchanging it with RDI.
@@ -362,6 +408,9 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_source_restores_original_cr4_value(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
@@ -371,8 +420,43 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertTrue(valid, message)
 
+    def test_source_accepts_renamed_cr4_snapshot_chain(self):
+        source = """
+            let cr4_at_switch: u64;
+            asm!("mov {}, cr4", out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            let pge_disabled_snapshot = cr4_at_switch & !CR4_PGE;
+            asm!("mov cr4, {}", in(reg) pge_disabled_snapshot,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertTrue(valid, message)
+
+    def test_source_rejects_restore_from_different_cr4_snapshot(self):
+        source = """
+            let cr4_at_switch: u64;
+            let unrelated_cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov {}, cr4", out(reg) unrelated_cr4,
+                 options(nomem, nostack, preserves_flags));
+            let pge_disabled_snapshot = cr4_at_switch & !CR4_PGE;
+            asm!("mov cr4, {}", in(reg) pge_disabled_snapshot,
+                 options(nomem, nostack, preserves_flags));
+            asm!("mov cr4, {}", in(reg) unrelated_cr4,
+                 options(nomem, nostack, preserves_flags));
+        """
+        valid, message = validate_cr4_asm_pge_order(source)
+        self.assertFalse(valid)
+        self.assertIn("exact CR4 snapshot", message)
+
     def test_source_rejects_restoring_masked_cr4_value(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
@@ -381,7 +465,7 @@ class ActivationAssemblyTests(unittest.TestCase):
         """
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertFalse(valid)
-        self.assertIn("restore the original cr4 value", message)
+        self.assertIn("exact CR4 snapshot", message)
 
     def test_local_tlb_flush_may_reload_only_the_checked_active_cr3(self):
         source = """
@@ -396,7 +480,7 @@ class ActivationAssemblyTests(unittest.TestCase):
                     options(nomem, nostack, preserves_flags)
                 );
                 if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
-                    return;
+                    return Err(AddressSpaceError::InvalidKernelRoot);
                 }
                 asm!(
                     "mov cr3, {}",
@@ -436,6 +520,91 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr3_asm_memory_order(source)
         self.assertFalse(valid)
         self.assertIn("the template operand must bind directly to in(reg) root_physical, or to the checked active CR3", message)
+
+    def test_local_tlb_flush_rejects_nested_active_cr3_guard(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                if unrelated_condition {
+                    if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+                        return Err(AddressSpaceError::InvalidKernelRoot);
+                    }
+                }
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("checked active CR3", message)
+
+    def test_local_tlb_flush_rejects_weakened_active_cr3_guard(self):
+        conditions = (
+            "unrelated_condition && cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical",
+            "!(cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical)",
+        )
+        for condition in conditions:
+            with self.subTest(condition=condition):
+                source = f"""
+                    pub(super) fn switch_address_space_flush_local_tlb(
+                        expected_root_physical: u64,
+                    ) {{
+                        validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                        let cr3: u64;
+                        asm!("mov {{}}, cr3", out(reg) cr3);
+                        if {condition} {{
+                            return Err(AddressSpaceError::InvalidKernelRoot);
+                        }}
+                        asm!("mov cr3, {{}}", in(reg) cr3);
+                    }}
+
+                    /// Performs the validated hardware CR3 transition.
+                """
+                valid, message = validate_cr3_asm_memory_order(source)
+                self.assertFalse(valid)
+                self.assertIn("checked active CR3", message)
+
+    def test_local_tlb_flush_rejects_active_cr3_check_after_write(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+                // This is too late: the active CR3 has already been reloaded.
+                if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+                    return Err(AddressSpaceError::InvalidKernelRoot);
+                }
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("checked active CR3", message)
 
     def test_cr3_inline_asm_must_retain_memory_ordering(self):
         source = '''
@@ -561,10 +730,13 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_cr4_named_operand_template_is_supported(self):
         source = """
-            let cr4_without_pge = cr4 & !CR4_PGE;
+            let cr4_at_switch: u64;
+            asm!("mov {snapshot}, cr4", snapshot = out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            let cr4_without_pge = cr4_at_switch & !CR4_PGE;
             asm!("mov cr4, {value}", value = in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
-            asm!("mov cr4, {value}", value = in(reg) cr4,
+            asm!("mov cr4, {value}", value = in(reg) cr4_at_switch,
                  options(nomem, nostack, preserves_flags));
         """
         valid, message = validate_cr4_asm_pge_order(source)
@@ -572,6 +744,9 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_cr4_source_validator_checks_every_switch_sequence(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
@@ -585,6 +760,136 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertFalse(valid)
         self.assertIn("sequence 2 must restore the original cr4 value", message)
+
+
+
+
+
+class Cr3WriterContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[2]
+        cls.source_path = root / "kernel/src/address_space.rs"
+        cls.source = cls.source_path.read_text(encoding="utf-8")
+
+    def test_current_writer_contract_passes(self):
+        valid, message = validate_cr3_writer_contract(self.source)
+        self.assertTrue(valid, message)
+
+    def test_extra_writer_outside_reviewed_functions_fails(self):
+        extra_writer = """
+fn unreviewed_cr3_writer(root_physical: u64) {
+    unsafe {
+        asm!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));
+    }
+}
+"""
+        valid, message = validate_cr3_writer_contract(self.source + extra_writer)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
+        self.assertIn("unreviewed function", message)
+
+    def test_comment_separated_cr3_asm_cannot_hide_an_extra_writer(self):
+        invocations = (
+            'asm/* block comment */!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm// line comment\n!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm!/* after bang */("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm/* outer /* nested */ inner */!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm/* comment */!(r#"mov cr3, {}"#, in(reg) root_physical, options(nostack, preserves_flags));',
+            'r#asm/* comment */!(r#"mov cr3, {}"#, in(reg) root_physical, options(nostack, preserves_flags));',
+        )
+        for invocation in invocations:
+            with self.subTest(invocation=invocation):
+                extra_writer = f"""
+fn unreviewed_cr3_writer(root_physical: u64) {{
+    unsafe {{ {invocation} }}
+}}
+"""
+                self.assertEqual(
+                    len(_asm_blocks_writing_control_register(extra_writer, "cr3")),
+                    1,
+                )
+                self.assertEqual(
+                    len(_asm_blocks_writing_control_register_with_locations(extra_writer, "cr3")),
+                    1,
+                )
+                if 'r#"' in invocation:
+                    self.assertEqual(
+                        _cr3_template_sources(invocation)[0][0],
+                        "{}",
+                    )
+                valid, message = validate_cr3_writer_contract(self.source + extra_writer)
+                self.assertFalse(valid)
+                self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
+                self.assertIn("unreviewed function", message)
+
+    def test_renamed_writer_function_fails_closed(self):
+        changed = self.source.replace(
+            "fn switch_address_space(",
+            "fn switch_address_space_renamed(",
+            1,
+        )
+        valid, message = validate_cr3_writer_contract(changed)
+        self.assertFalse(valid)
+        self.assertIn("switch_address_space", message)
+
+    def test_cr3_switch_guards_must_return_an_error_when_rejected(self):
+        function_start = self.source.index("fn switch_address_space(")
+        rejection = "        return Err(AddressSpaceError::InvalidKernelRoot);"
+        rejection_start = self.source.index(rejection, function_start)
+        replacements = (
+            (
+                "removed",
+                "        let _ = AddressSpaceError::InvalidKernelRoot;",
+            ),
+            (
+                "nested under another condition",
+                "        if allow_user_mappings {\\n"
+                "            return Err(AddressSpaceError::InvalidKernelRoot);\\n"
+                "        }",
+            ),
+            (
+                "conditionally compiled",
+                '        #[cfg(feature = "test-cr3-switch-guard")]\\n'
+                "        return Err(AddressSpaceError::InvalidKernelRoot);",
+            ),
+        )
+
+        for case, replacement in replacements:
+            with self.subTest(case=case):
+                changed = (
+                    self.source[:rejection_start]
+                    + replacement
+                    + self.source[rejection_start + len(rejection):]
+                )
+                valid, message = validate_cr3_writer_contract(changed)
+                self.assertFalse(valid)
+                self.assertIn(
+                    "switch_address_space guard for target-root initialization must have "
+                    "an unconditional return Err(...) rejection",
+                    message,
+                )
+                self.assertIn(
+                    "switch_address_space guard for target root differs from current root "
+                    "must have an unconditional return Err(...) rejection",
+                    message,
+                )
+                self.assertIn(
+                    "switch_address_space guard for hardware active root matches the current "
+                    "handle must have an unconditional return Err(...) rejection",
+                    message,
+                )
+
+    def test_removing_root_registration_validation_fails(self):
+        changed = self.source.replace(
+            "validate_registered_root_for_activation(root_physical)",
+            "validate_registered_root_for_activation(unreviewed_root)",
+            1,
+        )
+        self.assertNotEqual(changed, self.source)
+        valid, message = validate_cr3_writer_contract(changed)
+        self.assertFalse(valid)
+        self.assertIn("root-validation step", message)
 
 
 if __name__ == "__main__":

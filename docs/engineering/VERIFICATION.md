@@ -34,7 +34,9 @@ Tests should verify both the positive path and the denial path. Depending on the
 - Malformed or overlapping memory maps fail before allocation.
 - Allocator capacity exhaustion fails predictably and reserved regions are not allocated.
 - Invalid page-table roots, entries, address widths, and ownership tokens are rejected.
+- The CR3 source inventory, unsupported-form deny rules, and optimized-assembly contract are specified in [CR3 Write-Site Inventory](../specs/CR3_WRITE_INVENTORY.md). The gate rejects incomplete or ambiguous source coverage rather than treating it as safe; it does not prove all bootloader-created mappings are expected.
 - W^X audit reports incomplete scope distinctly from a complete clean audit.
+- The dedicated W^X QEMU profile requires `ONE OS KERNEL W^X DIRECT-MAP PREFLIGHT PASS` before `ONE OS KERNEL W^X DIRECT-MAP TRANSITION PASS`. The preflight validates every executable PT_LOAD page and its physical-offset alias before the first permission mutation; it does not classify all bootloader mappings or establish transactional W^X across all aliases. The runtime-audit profile also injects a deterministic failure before the next page's translation after one page passes preflight, verifies the first executable page's direct-map translation and effective permissions remain unchanged, and requires `ONE OS KERNEL W^X PREFLIGHT LATE-FAILURE NO-MUTATION PASS`.
 - The W^X audit revalidates the active CR3 and exact registered-root set at completion; additions, removals, replacements, or duplicate roots fail closed.
 - Root-registry removal rejects active or still-allocated roots; the dedicated QEMU profile verifies a rejected live-root removal leaves that root in a complete subsequent inventory.
 - A test-only missing registry entry for an allocated inactive target is passed directly to the shared admission guard and rejected; this does not test the CR3-switch call paths. The entry is restored before the complete follow-up audit.

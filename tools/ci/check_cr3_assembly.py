@@ -8,12 +8,19 @@ import re
 import sys
 from pathlib import Path
 
+from rust_lexer import (
+    mask_rust_comments_and_literals,
+    rust_macro_invocations,
+    rust_string_literals,
+)
+
 FUNCTION_NAMES = ("activate_supervisor_kernel_root", "switch_address_space")
 FUNCTION_NAME = "activate_supervisor_kernel_root"
 TYPE_RE = re.compile(r"^\s*\.type\s+([^,\s]+)\s*,\s*@function\b")
 FUNCTION_END_RE = re.compile(r"^\s*\.Lfunc_end\d+\s*:")
 SIZE_RE_TEMPLATE = r"^\s*\.size\s+{}\s*,"
 INSTRUCTION_RE = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9.]*)(?:\s+(.+?))?\s*$")
+LOOP_BRANCHES = {"loop", "loope", "loopz", "loopne", "loopnz"}
 GPR_RE = re.compile(
     r"^(?:r(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+[dwb]?|"
     r"e(?:ax|bx|cx|dx|si|di|bp|sp)|(?:si|di|bp|sp)|[abcd][lhx]|[sd]il|bpl|spl)$",
@@ -252,19 +259,29 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     if not instructions:
         return False, "activation routine contains no instructions"
 
-    # Build the CFG and analyze both edges of each conditional branch. This is
-    # deliberately conservative: any reachable CR3 write must satisfy the
-    # protocol, even if another path through the function is safe.
+    # Build the CFG for every supported direct branch. LOOP/LOOPE/LOOPNE
+    # have a taken edge and a fallthrough edge just like conditional jumps;
+    # treating them as ordinary instructions would hide paths that bypass
+    # the PGE-clear write. Unknown/out-of-function branch targets fail closed.
     successors: list[list[int]] = [[] for _ in instructions]
     for index, (_, mnemonic, operands) in enumerate(instructions):
         fallthrough = index + 1 if index + 1 < len(instructions) else None
-        target = labels.get(operands[-1].strip()) if mnemonic.startswith("j") and operands else None
-        if mnemonic.startswith("jmp"):
-            if target is not None:
-                successors[index].append(target)
-        elif mnemonic.startswith("j"):
-            if target is not None:
-                successors[index].append(target)
+        is_loop_branch = mnemonic in LOOP_BRANCHES
+        is_conditional_jump = mnemonic.startswith("j") and not mnemonic.startswith("jmp")
+        is_unconditional_jump = mnemonic.startswith("jmp")
+        target = (
+            labels.get(operands[-1].strip())
+            if (is_loop_branch or is_conditional_jump or is_unconditional_jump) and operands
+            else None
+        )
+        if is_unconditional_jump:
+            if target is None:
+                return False, f"unresolved or non-local jump target at instruction {index}: {instructions[index][0].strip()}"
+            successors[index].append(target)
+        elif is_loop_branch or is_conditional_jump:
+            if target is None:
+                return False, f"unresolved or non-local conditional branch target at instruction {index}: {instructions[index][0].strip()}"
+            successors[index].append(target)
             if fallthrough is not None and fallthrough not in successors[index]:
                 successors[index].append(fallthrough)
         elif mnemonic.startswith(("ret", "iret", "ud2", "hlt")):
@@ -306,6 +323,11 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         if mnemonic == "rdmsr":
             state[reg_index["rax"]] = NONE
             state[reg_index["rdx"]] = NONE
+            return tuple(state), stage
+
+        if mnemonic in LOOP_BRANCHES:
+            # LOOP-family instructions implicitly decrement RCX.
+            state[reg_index["rcx"]] = NONE
             return tuple(state), stage
 
         clear_destination = _pge_clear_destination(raw_line)
@@ -400,6 +422,7 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
     saw_restore_write = False
     saw_completed_switch = False
     unsafe_cr3_path: str | None = None
+    unsafe_call_path: str | None = None
     incomplete_exit: tuple[int, str] | None = None
 
     from collections import deque
@@ -420,6 +443,19 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 
         raw_line, mnemonic, operands = instructions[index]
         pair = _source_destination(operands) if mnemonic.startswith("mov") else None
+
+        # A call is an interprocedural CR4 side-effect boundary. Do not permit
+        # it while an original CR4 snapshot is live or while the PGE/CR3
+        # transition is incomplete; callees are not part of this local CFG.
+        if mnemonic.startswith("call") and (
+            stage in (1, 2, 4)
+            or (stage == 0 and (ORIGINAL in tags or CLEARED in tags))
+        ) and unsafe_call_path is None:
+            unsafe_call_path = (
+                "call is not permitted while CR4 provenance or the "
+                f"PGE/CR3 transition is active (stage={stage}, instruction {index}: "
+                f"{raw_line.strip()})"
+            )
 
         # Reject each unsafe CR3 edge immediately. Do not return success merely
         # because some other path completed the protocol.
@@ -468,6 +504,8 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
         return False, "no actual CR3 write instruction found in activation routine"
     if unsafe_cr3_path is not None:
         return False, unsafe_cr3_path
+    if unsafe_call_path is not None:
+        return False, unsafe_call_path
     if incomplete_exit is not None:
         stage, location = incomplete_exit
         if stage == 2:
@@ -483,22 +521,22 @@ def validate_function_body(body: list[str]) -> tuple[bool, str]:
 def _asm_blocks_writing_control_register(
     source: str, register: str
 ) -> list[str]:
-    """Find asm! blocks whose string templates write the named control register.
+    """Find asm! blocks writing a control register using comment-aware tokens.
 
     Match the instruction independently of its operand placeholder style, so
     both positional ("mov cr3, {}") and named ("mov cr3, {root}") operands are
     checked. Rust's asm! templates are string literals; the macro body is
     captured separately so options and operands can be validated as a whole.
     """
-    macro_pattern = re.compile(r"\basm!\s*\((?P<body>.*?)\);", re.DOTALL)
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     instruction_pattern = re.compile(
         rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE
     )
     blocks: list[str] = []
-    for match in macro_pattern.finditer(source):
-        body = match.group("body")
-        templates = string_pattern.findall(body)
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
+        templates = [literal.value for literal in rust_string_literals(body)]
         if any(instruction_pattern.search(template) for template in templates):
             blocks.append(body)
     return blocks
@@ -530,10 +568,7 @@ def _asm_operand_bindings(
     declarations are rejected conservatively so they cannot shift positional
     placeholders past an operand the checker did not understand.
     """
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
-    body = string_pattern.sub(" ", block)
-    body = re.sub(r"//[^\n]*", "", body)
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+    body = mask_rust_comments_and_literals(block)
     positional: list[tuple[str, str | None, str | None]] = []
     named: dict[str, tuple[str, str | None, str | None]] = {}
 
@@ -621,11 +656,11 @@ def _cr3_template_sources(
     block: str,
 ) -> list[tuple[str, str | None, int | None]]:
     """Return each CR3 source token and its exact template-placeholder binding."""
-    string_pattern = re.compile(r'"((?:\\.|[^"\\])*)"')
     sources: list[tuple[str, str | None, int | None]] = []
     next_positional_index = 0
 
-    for template in string_pattern.findall(block):
+    for literal in rust_string_literals(block):
+        template = literal.value
         placeholders, next_positional_index = _template_placeholders(
             template, next_positional_index
         )
@@ -718,7 +753,21 @@ def _cr3_source_is_validated_active_reload(
     # asm block must physically occur within its source span. This prevents the
     # exception from weakening validation of an unrelated root switch.
     helper_writes = _asm_blocks_writing_control_register(helper, "cr3")
-    if len(helper_writes) != 1 or source.find(block, start, end) < 0:
+    write_offset = helper.find(block)
+    if len(helper_writes) != 1 or write_offset < 0 or source.find(block, start, end) < 0:
+        return False
+
+    # The active-root comparison must guard the CR3 write, not merely appear
+    # somewhere in the function after the hardware state has already changed.
+    pre_write = _rust_code_without_literals_or_comments(helper[:write_offset])
+    function_body_open = pre_write.find("{")
+    if function_body_open < 0:
+        return False
+    pre_write_body = pre_write[function_body_open + 1 :]
+    if not _if_guard_unconditionally_returns(
+        pre_write_body,
+        "cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical",
+    ):
         return False
 
     if not re.search(r"let\s+cr3\s*:\s*u64\s*;", helper):
@@ -756,6 +805,691 @@ def _cr3_source_is_validated_active_reload(
     return operand == ("in", "reg", "cr3")
 
 
+def _rust_code_without_literals_or_comments(source: str) -> str:
+    """Mask Rust comments/literals through the shared comment-aware lexer."""
+    return mask_rust_comments_and_literals(source)
+
+
+def _asm_blocks_writing_control_register_with_locations(
+    source: str, register: str
+) -> list[tuple[str, int]]:
+    """Find asm! blocks writing a control register and retain source offsets."""
+    instruction_patterns = (
+        re.compile(rf"\bmov(?:q)?\s+{re.escape(register)}\s*,", re.IGNORECASE),
+        re.compile(rf"\bmov(?:q)?\s+[^,\n]+,\s*%{re.escape(register)}\b", re.IGNORECASE),
+    )
+    blocks: list[tuple[str, int]] = []
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
+        templates = [literal.value for literal in rust_string_literals(body)]
+        candidates = [*templates, "".join(templates)]
+        if any(pattern.search(template) for template in candidates for pattern in instruction_patterns):
+            blocks.append((body, invocation.start))
+    return blocks
+
+
+def _normalize_rust_identifier(identifier: str) -> str:
+    """Normalize a Rust raw identifier while preserving ordinary identifiers."""
+    return identifier[2:] if identifier.startswith("r#") else identifier
+
+
+def _rust_function_body_spans(source: str) -> list[tuple[str, int, int]]:
+    """Return function names and balanced body spans in comment/literal-masked Rust."""
+    code = _rust_code_without_literals_or_comments(source)
+    pattern = re.compile(r"\bfn\s+(?P<name>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\b")
+    spans: list[tuple[str, int, int]] = []
+
+    for match in pattern.finditer(code):
+        cursor = match.end()
+        parentheses = brackets = angles = 0
+        body_start: int | None = None
+        while cursor < len(code):
+            character = code[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "<":
+                angles += 1
+            elif character == ">" and (cursor == 0 or code[cursor - 1] != "-"):
+                angles = max(0, angles - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0 and angles == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0 and angles == 0:
+                break
+            cursor += 1
+
+        if body_start is None:
+            continue
+
+        depth = 1
+        cursor = body_start + 1
+        while cursor < len(code) and depth:
+            if code[cursor] == "{":
+                depth += 1
+            elif code[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth:
+            continue
+        spans.append(
+            (_normalize_rust_identifier(match.group("name")), body_start, cursor - 1)
+        )
+
+    return spans
+
+def _brace_depth_at(source: str, offset: int) -> int:
+    """Return structural Rust brace depth in already-masked source before offset."""
+    depth = 0
+    for character in source[:offset]:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+def _result_call_has_error_handling(code: str, call_start: int) -> bool:
+    """Require a Result-returning call to propagate or explicitly return its error.
+
+    Supported forms are a direct `?`, an `if let Err(error) = call { ... }`
+    with `return Err(error)`, or a local result binding that is checked by an
+    `if let Err(error) = binding { ... return Err(...); }` block before CR3.
+    """
+    opening = code.find("(", call_start)
+    if opening < 0:
+        return False
+
+    depth = 0
+    closing = None
+    for index in range(opening, len(code)):
+        if code[index] == "(":
+            depth += 1
+        elif code[index] == ")":
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        return False
+
+    suffix = code[closing + 1:]
+    if re.match(r"\s*(?:\.\s*map_err\s*\([^;]*\))?\s*\?\s*;", suffix):
+        return True
+
+    # Explicit handling where the Result is inspected directly in the condition.
+    error_binding = re.search(
+        r"\bif\s+let\s+Err\s*\(\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*=\s*$",
+        code[:call_start],
+    )
+    if error_binding is not None:
+        block_start = closing + 1
+        while block_start < len(code) and code[block_start].isspace():
+            block_start += 1
+        if block_start >= len(code) or code[block_start] != "{":
+            return False
+        block_end = _balanced_block_end(code, block_start)
+        if block_end is None:
+            return False
+        body = code[block_start + 1:block_end]
+        return_match = re.search(
+            rf"\breturn\s+Err\s*\(\s*{re.escape(error_binding.group('name'))}\s*\)\s*;",
+            body,
+        )
+        return return_match is not None and _brace_depth_at(body, return_match.start()) == 0
+
+    # Explicit handling where the Result is first bound to a local variable.
+    result_binding = re.search(
+        r"\blet\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*$",
+        code[:call_start],
+    )
+    if result_binding is None:
+        return False
+    semicolon = re.match(r"\s*;", suffix)
+    if semicolon is None:
+        return False
+    remainder = suffix[semicolon.end():]
+    error_check = re.search(
+        rf"\bif\s+let\s+Err\s*\(\s*(?P<error>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*=\s*"
+        rf"{re.escape(result_binding.group('name'))}\s*\{{",
+        remainder,
+    )
+    if error_check is None:
+        return False
+    block_start = error_check.end() - 1
+    block_end = _balanced_block_end(remainder, block_start)
+    if block_end is None:
+        return False
+    body = remainder[block_start + 1:block_end]
+    return_match = re.search(r"\breturn\s+Err\s*\(", body)
+    return return_match is not None and _brace_depth_at(body, return_match.start()) == 0
+
+def _balanced_block_end(code: str, opening: int) -> int | None:
+    """Return the closing brace offset for a block in comment/literal-masked Rust."""
+    if opening >= len(code) or code[opening] != "{":
+        return None
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+def _rust_if_condition_blocks(source: str) -> list[tuple[str, str]]:
+    """Return condition/body pairs for Rust if blocks in masked Rust source."""
+    blocks: list[tuple[str, str]] = []
+    for match in re.finditer(r"\bif\b", source):
+        condition_start = match.end()
+        parentheses = brackets = 0
+        body_start: int | None = None
+        for cursor in range(condition_start, len(source)):
+            character = source[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0:
+                break
+
+        if body_start is None:
+            continue
+        body_end = _balanced_block_end(source, body_start)
+        if body_end is None:
+            continue
+        blocks.append(
+            (
+                source[condition_start:body_start],
+                source[body_start + 1:body_end],
+            )
+        )
+    return blocks
+
+
+def _if_guard_unconditionally_returns_err(
+    source: str, condition_pattern: str
+) -> bool:
+    """Require a matching if condition to reject through a top-level return Err."""
+    matching_bodies = [
+        body
+        for condition, body in _rust_if_condition_blocks(source)
+        if re.search(condition_pattern, condition)
+    ]
+    if len(matching_bodies) != 1:
+        return False
+
+    body = matching_bodies[0]
+    return_match = re.match(r"\s*return\s+Err\s*\(", body)
+    if return_match is None:
+        return False
+
+    opening = body.find("(", return_match.start(), return_match.end())
+    depth = 0
+    closing: int | None = None
+    for index in range(opening, len(body)):
+        if body[index] == "(":
+            depth += 1
+        elif body[index] == ")":
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        return False
+    return body[closing + 1:].lstrip().startswith(";")
+
+
+
+def _if_guard_unconditionally_returns(
+    source: str, condition_expression: str
+) -> bool:
+    """Require a unique top-level OR guard containing an exact invalid predicate."""
+    expected = re.sub(r"\s+", "", condition_expression)
+    matching_bodies: list[str] = []
+
+    def strip_outer_parentheses(expression: str) -> str:
+        while expression.startswith("(") and expression.endswith(")"):
+            depth = 0
+            encloses_all = True
+            for index, character in enumerate(expression):
+                if character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0 and index != len(expression) - 1:
+                        encloses_all = False
+                        break
+            if depth != 0 or not encloses_all:
+                break
+            expression = expression[1:-1]
+        return expression
+
+    def has_top_level_invalid_or_term(condition: str) -> bool:
+        compact = re.sub(r"\s+", "", condition)
+        terms: list[str] = []
+        depth = 0
+        start = 0
+        index = 0
+        while index < len(compact):
+            character = compact[index]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth < 0:
+                    return False
+            elif (
+                character == "|"
+                and index + 1 < len(compact)
+                and compact[index + 1] == "|"
+                and depth == 0
+            ):
+                terms.append(compact[start:index])
+                index += 1
+                start = index + 1
+            index += 1
+        if depth != 0:
+            return False
+        terms.append(compact[start:])
+        return any(strip_outer_parentheses(term) == expected for term in terms)
+
+    for match in re.finditer(r"\bif\b", source):
+        # A nested guard can be skipped entirely on another path. The checked
+        # active-root predicate must therefore be a direct function-level guard.
+        if _brace_depth_at(source, match.start()) != 0:
+            continue
+        cursor = match.end()
+        parentheses = brackets = 0
+        body_start: int | None = None
+        while cursor < len(source):
+            character = source[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0:
+                break
+            cursor += 1
+        if body_start is None:
+            continue
+        condition = source[match.end():body_start]
+        if not has_top_level_invalid_or_term(condition):
+            continue
+        body_end = _balanced_block_end(source, body_start)
+        if body_end is None:
+            continue
+        matching_bodies.append(source[body_start + 1:body_end])
+
+    if len(matching_bodies) != 1:
+        return False
+    return re.match(r"\s*return\s+Err\s*\(", matching_bodies[0]) is not None
+
+
+def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
+    """Pin the three CR3 writes to their reviewed functions and root provenance."""
+    expected_roles = {
+        "switch_address_space_flush_local_tlb": "checked active-root reload",
+        "switch_address_space": "validated target-root switch",
+        "activate_supervisor_kernel_root": "initialized registered-root activation",
+    }
+    code = _rust_code_without_literals_or_comments(source)
+    spans = _rust_function_body_spans(source)
+    spans_by_name: dict[str, list[tuple[int, int]]] = {}
+    for name, body_start, body_end in spans:
+        if name in expected_roles:
+            spans_by_name.setdefault(name, []).append((body_start, body_end))
+
+    errors: list[str] = []
+    signature_contracts = (
+        (
+            r"\bfn\s+switch_address_space_flush_local_tlb\s*\(\s*"
+            r"expected_root_physical\s*:\s*u64\s*,?\s*\)",
+            "switch_address_space_flush_local_tlb must accept only the expected "
+            "physical root value for its checked active-root reload",
+        ),
+        (
+            r"\bfn\s+switch_address_space\s*\(\s*current\s*:\s*"
+            r"ActiveAddressSpaceRoot\s*,\s*next\s*:\s*AddressSpaceRoot\s*,",
+            "switch_address_space must receive active and owned address-space root handles",
+        ),
+        (
+            r"\bfn\s+activate_supervisor_kernel_root\s*\(\s*"
+            r"boot_info\s*:\s*&\s*BootInfo\s*,?\s*\)",
+            "activate_supervisor_kernel_root must retain the reviewed BootInfo-only entry point",
+        ),
+    )
+    for pattern, diagnostic in signature_contracts:
+        if re.search(pattern, code) is None:
+            errors.append(diagnostic)
+
+    for name in expected_roles:
+        if len(spans_by_name.get(name, [])) != 1:
+            errors.append(
+                f"expected exactly one reviewed CR3 writer function {name!r}; "
+                "refusing an incomplete CR3-writer contract"
+            )
+
+    writers = _asm_blocks_writing_control_register_with_locations(source, "cr3")
+    if len(writers) != len(expected_roles):
+        errors.append(
+            f"expected exactly {len(expected_roles)} CR3-writing asm blocks, found "
+            f"{len(writers)}; refusing an incomplete CR3-writer contract"
+        )
+
+    writes_by_function: dict[str, list[tuple[str, int]]] = {
+        name: [] for name in expected_roles
+    }
+    for block, start in writers:
+        owners = [
+            (name, body_start, body_end)
+            for name, body_start, body_end in spans
+            if body_start < start < body_end
+        ]
+        if not owners:
+            line = code.count("\n", 0, start) + 1
+            errors.append(
+                f"line {line}: CR3 write is outside the reviewed writer functions; "
+                "refusing an incomplete CR3-writer contract"
+            )
+            continue
+        # Use the innermost function when source contains a nested function item.
+        name, body_start, body_end = min(
+            owners, key=lambda owner: owner[2] - owner[1]
+        )
+        if name not in expected_roles:
+            line = code.count("\n", 0, start) + 1
+            errors.append(
+                f"line {line}: CR3 write belongs to unreviewed function {name!r}; "
+                "refusing an incomplete CR3-writer contract"
+            )
+            continue
+        writes_by_function[name].append((block, start))
+
+    for name, role in expected_roles.items():
+        function_writes = writes_by_function[name]
+        if len(function_writes) != 1:
+            errors.append(
+                f"reviewed function {name!r} ({role}) must contain exactly one "
+                f"CR3 write, found {len(function_writes)}"
+            )
+            continue
+
+        block, write_start = function_writes[0]
+        body_start, body_end = spans_by_name[name][0]
+        function_code = code[body_start + 1 : body_end]
+        write_offset = write_start - body_start - 1
+        prefix = function_code[:write_offset]
+        if _brace_depth_at(function_code, write_offset) != 1:
+            errors.append(
+                f"reviewed function {name!r} CR3 write is not in its direct unsafe block"
+            )
+
+        sources = _cr3_template_sources(block)
+        if not sources:
+            errors.append(
+                f"reviewed function {name!r} has an unparseable CR3 source operand"
+            )
+            continue
+
+        if name == "switch_address_space_flush_local_tlb":
+            if re.search(r"\blet\s+(?:mut\s+)?expected_root_physical\b", function_code):
+                errors.append(
+                    "switch_address_space_flush_local_tlb must not shadow its "
+                    "expected_root_physical parameter"
+                )
+            cr3_declarations = list(
+                re.finditer(r"\blet\b[^;]*\bcr3\b[^;]*;", function_code)
+            )
+            if len(cr3_declarations) != 1 or re.fullmatch(
+                r"\s*let\s+cr3\s*:\s*u64\s*;",
+                cr3_declarations[0].group(0) if cr3_declarations else "",
+            ) is None:
+                errors.append(
+                    "switch_address_space_flush_local_tlb must reload the CR3 value "
+                    "read from the hardware, without shadowing it"
+                )
+            for _source_token, placeholder_key, positional_index in sources:
+                if not _cr3_source_is_validated_active_reload(
+                    source, block, placeholder_key, positional_index
+                ):
+                    errors.append(
+                        "switch_address_space_flush_local_tlb must reload the "
+                        "currently active CR3 only after validating it against "
+                        "expected_root_physical"
+                    )
+                    break
+
+            state_validation_pattern = r"validate_kernel_root_activation_state\s*\("
+            state_validation_matches = list(
+                re.finditer(state_validation_pattern, prefix)
+            )
+            if len(state_validation_matches) != 1:
+                errors.append(
+                    "switch_address_space_flush_local_tlb must validate kernel "
+                    "root activation state exactly once before its CR3 write"
+                )
+            elif _brace_depth_at(prefix, state_validation_matches[0].start()) != 0:
+                errors.append(
+                    "switch_address_space_flush_local_tlb must perform kernel "
+                    "root activation state validation directly before its CR3 write"
+                )
+            elif not _result_call_has_error_handling(
+                prefix, state_validation_matches[0].start()
+            ):
+                errors.append(
+                    "switch_address_space_flush_local_tlb must propagate or "
+                    "explicitly handle errors from validate_kernel_root_activation_state "
+                    "before its CR3 write"
+                )
+            continue
+
+        for source_token, placeholder_key, positional_index in sources:
+            if not _cr3_source_is_validated_root(
+                block, placeholder_key, positional_index
+            ):
+                errors.append(
+                    f"reviewed function {name!r} writes CR3 from {source_token!r}; "
+                    "its operand must bind directly to the reviewed root_physical"
+                )
+                break
+
+        let_binding_pattern = re.compile(
+            r"\blet\s+(?P<binding>[^=;]+?)\s*="
+        )
+        declarations = [
+            match
+            for match in let_binding_pattern.finditer(function_code)
+            if re.search(r"\broot_physical\b", match.group("binding"))
+        ]
+        if len(declarations) != 1:
+            errors.append(
+                f"reviewed function {name!r} must have exactly one root_physical "
+                "binding with no shadowed or reassigned source"
+            )
+            continue
+
+        if name == "switch_address_space":
+            binding_pattern = re.compile(
+                r"\blet\s+root_physical\s*=\s*next\s*\.\s*"
+                r"physical_address\s*\(\s*\)\s*;"
+            )
+            if re.search(r"\blet\s+(?:mut\s+)?next\b", function_code):
+                errors.append(
+                    "switch_address_space must use its validated next-root handle "
+                    "without shadowing the next parameter"
+                )
+            current_binding = re.compile(
+                r"\blet\s+current_physical\s*=\s*current\s*\.\s*"
+                r"physical_address\s*\(\s*\)\s*;"
+            )
+            current_bindings = [
+                match
+                for match in let_binding_pattern.finditer(function_code)
+                if re.search(r"\bcurrent_physical\b", match.group("binding"))
+            ]
+            if len(current_bindings) != 1 or current_binding.search(prefix) is None:
+                errors.append(
+                    "switch_address_space must derive current_physical exactly once "
+                    "from the current root handle"
+                )
+            required_guard_rejections = (
+                (
+                    "target-root initialization",
+                    r"!\s*next\s*\.\s*is_initialized\s*\(\s*\)",
+                ),
+                (
+                    "target root differs from current root",
+                    r"root_physical\s*==\s*current_physical",
+                ),
+                (
+                    "target physical-address width",
+                    r"next\s*\.\s*physical_address_bits\s*\(\s*\)\s*!=\s*physical_address_bits",
+                ),
+                (
+                    "hardware active root matches the current handle",
+                    r"active_root_table_physical\s*\(\s*\)\s*!=\s*current_physical",
+                ),
+            )
+            for guard_name, guard_pattern in required_guard_rejections:
+                if not _if_guard_unconditionally_returns_err(function_code, guard_pattern):
+                    errors.append(
+                        f"switch_address_space guard for {guard_name} must have "
+                        "an unconditional return Err(...) rejection"
+                    )
+
+            ordered_contract = (
+                r"validate_runtime_root_context\s*\(\s*boot_info\s*,\s*&\s*current\s*\)",
+                current_binding.pattern,
+                binding_pattern.pattern,
+                r"validate_registered_root_for_activation\s*\(\s*root_physical\s*\)",
+                r"!\s*next\s*\.\s*is_initialized\s*\(\s*\)",
+                r"root_physical\s*==\s*current_physical",
+                r"next\s*\.\s*physical_address_bits\s*\(\s*\)\s*!=\s*physical_address_bits",
+                r"active_root_table_physical\s*\(\s*\)\s*!=\s*current_physical",
+                r"verify_initialized_entries\s*\(\s*&\s*mut\s+editor\s*,\s*"
+                r"root_physical\s*,\s*current_physical\s*,",
+            )
+            result_contracts = (
+                (
+                    r"validate_runtime_root_context\s*\(\s*boot_info\s*,\s*&\s*current\s*\)",
+                    "validate_runtime_root_context",
+                ),
+                (
+                    r"validate_registered_root_for_activation\s*\(\s*root_physical\s*\)",
+                    "validate_registered_root_for_activation",
+                ),
+                (
+                    r"verify_initialized_entries\s*\(\s*&\s*mut\s+editor\s*,\s*"
+                    r"root_physical\s*,\s*current_physical\s*,",
+                    "verify_initialized_entries",
+                ),
+            )
+        else:
+            binding_pattern = re.compile(
+                r"\blet\s+root_physical\s*=\s*root\s*\.\s*"
+                r"physical_address\s*\(\s*\)\s*;"
+            )
+            root_handle_bindings = [
+                match
+                for match in let_binding_pattern.finditer(function_code)
+                if re.fullmatch(r"(?:mut\s+)?root", match.group("binding").strip())
+            ]
+            if (
+                len(root_handle_bindings) != 1
+                or root_handle_bindings[0].group("binding").strip() != "mut root"
+            ):
+                errors.append(
+                    "activate_supervisor_kernel_root must use one owned mutable "
+                    "AddressSpaceRoot handle without shadowing it"
+                )
+            ordered_contract = (
+                r"let\s+frame\s*=\s*super\s*::\s*memory\s*::\s*allocate_frame\s*\(\s*\)",
+                r"let\s+mut\s+root\s*=\s*match\s+AddressSpaceRoot\s*::\s*"
+                r"try_from_frame\s*\(\s*frame\s*,\s*physical_address_bits\s*\)",
+                binding_pattern.pattern,
+                r"register_address_space_root\s*\(\s*root_physical\s*\)",
+                r"root\s*\.\s*initialize_from_kernel_root\s*\(",
+                r"verify_initialized_entries\s*\(\s*&\s*mut\s+editor\s*,\s*"
+                r"root_physical\s*,\s*kernel_root_physical\s*,",
+                r"validate_registered_root_for_activation\s*\(\s*root_physical\s*\)",
+            )
+            result_contracts = (
+                (
+                    r"root\s*\.\s*initialize_from_kernel_root\s*\(",
+                    "AddressSpaceRoot::initialize_from_kernel_root",
+                ),
+                (
+                    r"verify_initialized_entries\s*\(\s*&\s*mut\s+editor\s*,\s*"
+                    r"root_physical\s*,\s*kernel_root_physical\s*,",
+                    "verify_initialized_entries",
+                ),
+                (
+                    r"validate_registered_root_for_activation\s*\(\s*root_physical\s*\)",
+                    "validate_registered_root_for_activation",
+                ),
+            )
+
+        for call_pattern, call_name in result_contracts:
+            for call_match in re.finditer(call_pattern, prefix):
+                if not _result_call_has_error_handling(prefix, call_match.start()):
+                    errors.append(
+                        f"reviewed function {name!r} must propagate or explicitly "
+                        f"handle errors from {call_name} before its CR3 write"
+                    )
+                    break
+
+        binding = binding_pattern.search(prefix)
+        if binding is None:
+            errors.append(
+                f"reviewed function {name!r} must derive root_physical directly "
+                "from its validated root handle before writing CR3"
+            )
+            continue
+
+        previous_end = -1
+        for contract_pattern in ordered_contract:
+            match = re.search(contract_pattern, prefix)
+            if (
+                match is None
+                or match.start() < previous_end
+                or _brace_depth_at(prefix, match.start()) != 0
+            ):
+                errors.append(
+                    f"reviewed function {name!r} is missing, nested, or has reordered "
+                    f"root-validation step {contract_pattern!r} before its CR3 write"
+                )
+                break
+            previous_end = match.end()
+
+    if errors:
+        return False, "; ".join(errors)
+    return True, (
+        "the three CR3 writes are pinned to the reviewed flush, switch, and "
+        "initial-activation functions with explicit root-provenance checks"
+    )
+
 def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
     """Ensure CR3 asm preserves ordering and writes a validated root value."""
     blocks = _asm_blocks_writing_control_register(source, "cr3")
@@ -788,28 +1522,131 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
     )
 
 
-def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
-    """Ensure every source-level CR3 switch clears PGE and restores original CR4."""
-    blocks = _asm_blocks_writing_control_register(source, "cr4")
-    if len(blocks) < 2 or len(blocks) % 2 != 0:
-        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
-    if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
-        return False, "cr4_without_pge must be derived from cr4 with CR4_PGE cleared"
+def _asm_blocks_reading_control_register_with_locations(
+    source: str, register: str
+) -> list[tuple[str, int]]:
+    """Find asm! blocks which copy a control register into an output operand."""
+    pattern = re.compile(
+        rf"\bmov(?:q)?\s+\{{\s*(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*)?(?:\s*:[^{{}}]+)?\s*\}}\s*,\s*{re.escape(register)}\b",
+        re.IGNORECASE,
+    )
+    blocks: list[tuple[str, int]] = []
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
+        templates = [literal.value for literal in rust_string_literals(body)]
+        if any(pattern.search(template) for template in templates):
+            blocks.append((body, invocation.start))
+    return blocks
 
-    for pair_index in range(0, len(blocks), 2):
-        disable_block = blocks[pair_index]
-        restore_block = blocks[pair_index + 1]
+
+def _asm_register_bindings(block: str, operand_kind: str) -> list[str]:
+    """Return simple register-expression names for asm! input/output operands."""
+    if operand_kind not in {"in", "out"}:
+        raise ValueError(f"unsupported asm! operand kind: {operand_kind}")
+    code = mask_rust_comments_and_literals(block)
+    pattern = re.compile(
+        rf"\b{operand_kind}\s*\(\s*reg\s*\)\s*"
+        r"(?P<binding>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\b"
+    )
+    return [
+        match.group("binding").removeprefix("r#")
+        for match in pattern.finditer(code)
+    ]
+
+
+def _rust_function_owner_at(
+    source: str, offset: int
+) -> tuple[str, int, int] | None:
+    owners = [
+        (name, start, end)
+        for name, start, end in _rust_function_body_spans(source)
+        if start < offset < end
+    ]
+    return min(owners, key=lambda item: item[2] - item[1]) if owners else None
+
+
+def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
+    """Ensure each CR3 switch restores the exact CR4 snapshot it disabled."""
+    writes = _asm_blocks_writing_control_register_with_locations(source, "cr4")
+    if len(writes) < 2 or len(writes) % 2 != 0:
+        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
+
+    reads = _asm_blocks_reading_control_register_with_locations(source, "cr4")
+    if not reads:
+        return False, "each CR4 restore must be tied to a value read from CR4"
+
+    code = _rust_code_without_literals_or_comments(source)
+    derivation_pattern = re.compile(
+        r"\blet\s+(?P<cleared>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"(?P<original>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*&\s*!CR4_PGE\b"
+    )
+
+    for pair_index in range(0, len(writes), 2):
+        disable_block, disable_start = writes[pair_index]
+        restore_block, restore_start = writes[pair_index + 1]
         switch_number = pair_index // 2 + 1
-        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4_without_pge\b", disable_block):
+
+        disable_inputs = _asm_register_bindings(disable_block, "in")
+        restore_inputs = _asm_register_bindings(restore_block, "in")
+        if len(disable_inputs) != 1 or len(restore_inputs) != 1:
             return False, (
-                f"CR3 switch sequence {switch_number} must first write the "
-                "PGE-cleared cr4_without_pge value"
+                f"CR3 switch sequence {switch_number} must use one explicit CR4 "
+                "input for PGE clear and one for restoration"
             )
-        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4\b", restore_block):
+
+        cleared_value = disable_inputs[0]
+        original_value = restore_inputs[0]
+        disable_owner = _rust_function_owner_at(source, disable_start)
+        restore_owner = _rust_function_owner_at(source, restore_start)
+        if disable_owner != restore_owner:
             return False, (
-                f"CR3 switch sequence {switch_number} must restore the original cr4 value"
+                f"CR3 switch sequence {switch_number} must clear and restore CR4 "
+                "within the same function"
             )
-    return True, f"all {len(blocks) // 2} source CR3 switch sequences clear PGE and restore original CR4"
+
+        function_start = disable_owner[1] if disable_owner else 0
+        function_end = disable_owner[2] if disable_owner else len(code)
+        function_code = code[function_start:function_end]
+        derivations = [
+            match
+            for match in derivation_pattern.finditer(function_code)
+            if match.group("cleared").removeprefix("r#") == cleared_value
+            and match.group("original").removeprefix("r#") == original_value
+        ]
+        if len(derivations) != 1:
+            return False, (
+                f"CR3 switch sequence {switch_number} must restore the original cr4 "
+                "value from the exact CR4 snapshot used to derive the PGE-cleared value"
+            )
+
+        derivation_start = function_start + derivations[0].start()
+        read_offsets = [
+            read_start
+            for read_block, read_start in reads
+            if _rust_function_owner_at(source, read_start) == disable_owner
+            and _asm_register_bindings(read_block, "out") == [original_value]
+            and read_start < derivation_start
+        ]
+        if not read_offsets:
+            return False, (
+                f"CR3 switch sequence {switch_number} must derive and restore CR4 "
+                "from a value explicitly read from CR4 in the same function"
+            )
+
+        # The binding chain must be ordered: CR4 read -> PGE mask -> CR4 clear
+        # -> CR3 write (checked elsewhere) -> restore from the original snapshot.
+        if not (max(read_offsets) < derivation_start < disable_start < restore_start):
+            return False, (
+                f"CR3 switch sequence {switch_number} has an out-of-order CR4 "
+                "read, PGE clear, or restoration"
+            )
+
+    return True, (
+        f"all {len(writes) // 2} source CR3 switch sequences clear PGE and restore "
+        "the exact CR4 snapshot used to derive the cleared value"
+    )
 
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
@@ -876,6 +1713,12 @@ def main() -> int:
     except OSError as error:
         print(f"FAIL: cannot read {args.source}: {error}", file=sys.stderr)
         return 1
+
+    valid, message = validate_cr3_writer_contract(source)
+    if not valid:
+        print(f"FAIL: {args.source}: {message}", file=sys.stderr)
+        return 1
+    print(f"PASS: {args.source}: {message}")
 
     valid, message = validate_cr3_asm_memory_order(source)
     if not valid:

@@ -1553,7 +1553,7 @@ pub fn activate_supervisor_kernel_root(
     };
 
     let cr0: u64;
-    let cr4: u64;
+    let cr4_initial: u64;
     let efer_low: u32;
     let efer_high: u32;
     let rflags: u64;
@@ -1563,7 +1563,7 @@ pub fn activate_supervisor_kernel_root(
     // boundary rather than assumed from earlier initialization.
     unsafe {
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
-        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr4", out(reg) cr4_initial, options(nomem, nostack, preserves_flags));
         asm!("mov {}, rsp", out(reg) stack_pointer, options(nomem, nostack, preserves_flags));
         asm!("pushfq", "pop {}", out(reg) rflags, options(preserves_flags));
         asm!(
@@ -1575,8 +1575,23 @@ pub fn activate_supervisor_kernel_root(
         );
     }
     let efer = (u64::from(efer_high) << 32) | u64::from(efer_low);
-    validate_kernel_root_activation_state(cr0, cr4, efer, rflags)
+    validate_kernel_root_activation_state(cr0, cr4_initial, efer, rflags)
         .map_err(AddressSpaceError::PagingPrecondition)?;
+
+    // The early CR4 snapshot validates preconditions before allocating a new
+    // root. Do not keep that snapshot live across helper calls: a callee could
+    // otherwise change CR4 behind the saved value. The exact CR4 used for the
+    // hardware transition is re-read and validated at the final switch boundary.
+    // SAFETY: the snapshot is no longer needed after the precondition check.
+    // Explicitly clear its register so the optimized call sequence carries no
+    // stale CR4 provenance across interprocedural control flow.
+    unsafe {
+        asm!(
+            "xor {snapshot:e}, {snapshot:e}",
+            snapshot = inout(reg) cr4_initial => _,
+            options(nomem, nostack)
+        );
+    }
 
     let code_address = activate_supervisor_kernel_root as *const () as usize as u64;
     let boot_info_address = boot_info as *const BootInfo as usize as u64;
@@ -1726,12 +1741,54 @@ pub fn activate_supervisor_kernel_root(
         return Err(error);
     }
 
+    // Re-read all paging controls at the actual hardware transition boundary.
+    // Every fallible helper and every potential direct call has completed, so
+    // no callee can invalidate this snapshot before CR4/CR3 are updated.
+    let cr0_at_switch: u64;
+    let cr4_at_switch: u64;
+    let efer_low_at_switch: u32;
+    let efer_high_at_switch: u32;
+    let rflags_at_switch: u64;
+    unsafe {
+        asm!(
+            "mov {}, cr0",
+            out(reg) cr0_at_switch,
+            options(nomem, nostack, preserves_flags)
+        );
+        asm!(
+            "mov {}, cr4",
+            out(reg) cr4_at_switch,
+            options(nomem, nostack, preserves_flags)
+        );
+        asm!(
+            "pushfq",
+            "pop {}",
+            out(reg) rflags_at_switch,
+            options(preserves_flags)
+        );
+        asm!(
+            "rdmsr",
+            in("ecx") EFER_MSR,
+            out("eax") efer_low_at_switch,
+            out("edx") efer_high_at_switch,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    let efer_at_switch = (u64::from(efer_high_at_switch) << 32) | u64::from(efer_low_at_switch);
+    validate_kernel_root_activation_state(
+        cr0_at_switch,
+        cr4_at_switch,
+        efer_at_switch,
+        rflags_at_switch,
+    )
+    .map_err(AddressSpaceError::PagingPrecondition)?;
+
     // Always make the PGE-disabled state explicit before writing CR3.
     // This keeps the switch contract uniform even when PGE was already clear:
     // CR4.PGE is cleared, CR3 is written, and the original CR4 is restored on
     // every successful switch path. PCID is rejected above because its tagged
     // TLB behavior is outside this bootstrap contract.
-    let cr4_without_pge = cr4 & !CR4_PGE;
+    let cr4_without_pge = cr4_at_switch & !CR4_PGE;
     // SAFETY: PGE may be toggled by the privileged kernel; disabling it
     // flushes global translations before the root switch. Writing the same
     // value when PGE was already clear is harmless and simplifies verification.
@@ -1760,7 +1817,7 @@ pub fn activate_supervisor_kernel_root(
     unsafe {
         asm!(
             "mov cr4, {}",
-            in(reg) cr4,
+            in(reg) cr4_at_switch,
             options(nomem, nostack, preserves_flags)
         );
     }
