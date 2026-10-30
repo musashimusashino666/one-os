@@ -449,43 +449,57 @@ def _mask_html_blocks_and_comments(text: str) -> str:
     return "".join(output)
 
 def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
-    """Find matched inline-code spans across the complete text."""
-    ranges: list[tuple[int, int]] = []
+    """Find matched inline-code spans in linear time.
+
+    Delimiter runs are indexed once by length. A matching run closes the
+    earliest opener of that length; runs inside a matched span are skipped,
+    as required by Markdown code-span parsing.
+    """
+    runs: list[tuple[int, int, int]] = []
     index = 0
+    backslash_count = 0
+
     while index < len(text):
-        if text[index] != BACKTICK or _is_escaped(text, index):
+        char = text[index]
+        if char == "\\":
+            backslash_count += 1
+            index += 1
+            continue
+        if char != BACKTICK:
+            backslash_count = 0
+            index += 1
+            continue
+        if backslash_count % 2:
+            # An escaped backtick is not part of a delimiter run. Any
+            # following adjacent backticks are considered independently.
+            backslash_count = 0
             index += 1
             continue
 
-        run_end = index + 1
-        while run_end < len(text) and text[run_end] == BACKTICK:
-            run_end += 1
-        run_length = run_end - index
+        start = index
+        while index < len(text) and text[index] == BACKTICK:
+            index += 1
+        runs.append((start, index, index - start))
+        backslash_count = 0
 
-        search = run_end
-        closing: tuple[int, int] | None = None
-        while search < len(text):
-            candidate = text.find(BACKTICK, search)
-            if candidate < 0:
-                break
-            if _is_escaped(text, candidate):
-                search = candidate + 1
-                continue
-            candidate_end = candidate + 1
-            while candidate_end < len(text) and text[candidate_end] == BACKTICK:
-                candidate_end += 1
-            if candidate_end - candidate == run_length:
-                closing = (candidate, candidate_end)
-                break
-            search = candidate_end
+    next_same: list[int | None] = [None] * len(runs)
+    next_by_length: dict[int, int] = {}
+    for run_index in range(len(runs) - 1, -1, -1):
+        run_length = runs[run_index][2]
+        next_same[run_index] = next_by_length.get(run_length)
+        next_by_length[run_length] = run_index
 
-        if closing is None:
-            index = run_end
+    ranges: list[tuple[int, int]] = []
+    run_index = 0
+    while run_index < len(runs):
+        closing_index = next_same[run_index]
+        if closing_index is None:
+            run_index += 1
             continue
-        ranges.append((index, closing[1]))
-        index = closing[1]
-    return ranges
+        ranges.append((runs[run_index][0], runs[closing_index][1]))
+        run_index = closing_index + 1
 
+    return ranges
 
 def _document_inline_code_ranges(
     text: str, fenced_lines: set[int] | None = None
@@ -965,30 +979,32 @@ def _strip_heading_markup(heading: str) -> str:
     heading = re.sub(r"!?\[([^\]]*)\]\[[^]]*\]", r"\1", heading)
     heading = re.sub(r"<[^>]+>", "", heading)
     heading = re.sub(r"\\([\\*_{}\[\]()#+\-.!_>])", r"\1", heading).replace("\\" + BACKTICK, BACKTICK)
-    heading = heading.replace("*", "").replace("_", "").replace("~", "")
+    # Remove paired Markdown emphasis delimiters, but retain intraword
+    # underscores such as the literal underscore in "foo_bar".
+    heading = re.sub(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", heading)
     return heading.strip()
 
 
 def _slugify_heading(heading: str) -> str:
+    """Generate the GitHub-style base slug for a parsed heading."""
     heading = _strip_heading_markup(heading).lower()
     output: list[str] = []
     for char in heading:
         category = unicodedata.category(char)
-        if char.isspace():
+        if char == " ":
             output.append("-")
-        elif category.startswith(("P", "S")) and char != "-":
-            # GitHub's heading slugger drops punctuation and symbols,
-            # including emoji, after whitespace has already become a hyphen.
+        elif char in {"-", "_"}:
+            # GitHub preserves existing hyphens (including repeats) and
+            # underscores; only other punctuation and symbols are removed.
+            output.append(char)
+        elif category.startswith(("P", "S", "C", "Z")):
             continue
         else:
             output.append(char)
-    slug = "".join(output)
-    # Preserve edge hyphens introduced by spaces around removed symbols.
-    return re.sub(r"-+", "-", slug)
-
+    return "".join(output)
 
 def _html_anchor_targets(text: str) -> set[str]:
-    """Collect HTML id/name anchors without reading comments or code examples."""
+    """Collect HTML id anchors and legacy a[name] anchors outside code."""
     lines = text.splitlines(keepends=True)
     fenced, _ = _markdown_block_regions(lines)
     output = list(text)
@@ -1012,10 +1028,13 @@ def _html_anchor_targets(text: str) -> set[str]:
             self.targets: set[str] = set()
 
         def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            if tag.lower() != "a":
-                return
-            for name, value in attrs:
-                if name.lower() in {"id", "name"} and value:
+            tag_name = tag.lower()
+            for attribute, value in attrs:
+                attribute_name = attribute.lower()
+                if value and (
+                    attribute_name == "id"
+                    or (tag_name == "a" and attribute_name == "name")
+                ):
                     self.targets.add(value)
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -1028,7 +1047,6 @@ def _html_anchor_targets(text: str) -> set[str]:
     parser.feed("".join(output))
     parser.close()
     return parser.targets
-
 
 def _markdown_anchors(text: str) -> set[str]:
     html_masked = _mask_html_blocks_and_comments(text)
@@ -1058,18 +1076,11 @@ def _markdown_anchors(text: str) -> set[str]:
         contexts.append((quote_depth, list_context))
 
     anchors: set[str] = _html_anchor_targets(text)
-    counts: dict[str, int] = {}
+    occurrences: dict[str, int] = {}
 
     for index, line in enumerate(normalized):
         if index in ignored:
             continue
-
-        explicit_ids = re.findall(
-            r"<a\s+[^>]*?(?:id|name)\s*=\s*[\"']([^\"']+)[\"']",
-            line,
-            re.IGNORECASE,
-        )
-        anchors.update(explicit_ids)
 
         atx = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         if atx:
@@ -1087,9 +1098,11 @@ def _markdown_anchors(text: str) -> set[str]:
 
         if heading:
             base = _slugify_heading(heading)
-            count = counts.get(base, 0)
-            slug = base if count == 0 else f"{base}-{count}"
-            counts[base] = count + 1
+            slug = base
+            while slug in occurrences:
+                occurrences[base] = occurrences.get(base, 0) + 1
+                slug = f"{base}-{occurrences[base]}"
+            occurrences[slug] = 0
             anchors.add(slug)
 
     return anchors
