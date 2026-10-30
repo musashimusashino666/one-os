@@ -94,54 +94,9 @@ They do not constitute Ring 3 isolation or kernel-enforced authority.
 
 ## Open work
 
-### Product validation
-
-- [#83](https://github.com/musashimusashino666/one-os/issues/83):
-  validate the initial product thesis and comparators.
-
-### Memory protection
-
-- [#26](https://github.com/musashimusashino666/one-os/issues/26):
-  parent memory-protection gate.
-- [#46](https://github.com/musashimusashino666/one-os/issues/46):
-  authoritative physical-alias inventory.
-- [#80](https://github.com/musashimusashino666/one-os/issues/80):
-  complete boot-mapping classification.
-- [#81](https://github.com/musashimusashino666/one-os/issues/81):
-  transactional frame-wide W^X enforcement.
-
-### Process isolation and authority
-
-- [#23](https://github.com/musashimusashino666/one-os/issues/23):
-  safe user-page initialization and publication.
-- [#24](https://github.com/musashimusashino666/one-os/issues/24):
-  parent process-isolation milestone.
-- [#77](https://github.com/musashimusashino666/one-os/issues/77):
-  Ring 3 and independent address spaces.
-- [#78](https://github.com/musashimusashino666/one-os/issues/78):
-  kernel-enforced capabilities.
-- [#87](https://github.com/musashimusashino666/one-os/issues/87):
-  normative IPC specification.
-- [#79](https://github.com/musashimusashino666/one-os/issues/79):
-  kernel IPC implementation.
-
-### Concurrency and release
-
-- [#25](https://github.com/musashimusashino666/one-os/issues/25):
-  SMP, preemption, and remote TLB shootdown.
-- [#84](https://github.com/musashimusashino666/one-os/issues/84):
-  production integrity and release readiness.
-
-### Project governance
-
-- [#85](https://github.com/musashimusashino666/one-os/issues/85):
-  private vulnerability reporting and response policy.
-- [#86](https://github.com/musashimusashino666/one-os/issues/86):
-  automated documentation integrity checks.
-- [#88](https://github.com/musashimusashino666/one-os/issues/88):
-  issue labels and milestone taxonomy.
-- [#89](https://github.com/musashimusashino666/one-os/issues/89):
-  maintainability review for large implementation modules.
+Remaining blockers, issue links, and execution order are maintained in
+[Roadmap](ROADMAP.md). This status snapshot intentionally avoids duplicating
+the project tracker.
 
 ## Verification evidence
 
