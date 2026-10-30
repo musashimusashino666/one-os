@@ -16,7 +16,12 @@ import subprocess
 import sys
 import tomllib
 
-from rust_lexer import mask_rust_comments_and_literals, rust_macro_invocations
+from rust_lexer import (
+    mask_rust_comments_and_literals,
+    rust_macro_argument_ranges,
+    rust_macro_invocations,
+    rust_string_literals,
+)
 
 # Counts are reviewed source call-site inventory, not inferred semantic proofs.
 # Any new site or moved site must be reviewed and explicitly approved here.
@@ -237,6 +242,49 @@ def _is_indirect_control_transfer(statement: str) -> bool:
     return register.fullmatch(operand) is not None
 
 
+_ASM_OPERAND_PREFIX_RE = re.compile(
+    r"^(?:(?:r#)?[A-Za-z_]\w*\s*=\s*)?"
+    r"(?:inlateout|lateout|inout|in|out|const|sym|options|clobber_abi)\b"
+)
+
+
+def _assembly_template_argument_error(body: str) -> str | None:
+    """Require each assembly template to be a literal, never a macro expansion."""
+    code = mask_rust_comments_and_literals(body)
+    ranges = rust_macro_argument_ranges(body)
+    if not ranges:
+        return "assembly macro arguments could not be safely separated"
+
+    template_count = 0
+    for index, (start, end) in enumerate(ranges):
+        argument_code = code[start:end].strip()
+        literals = rust_string_literals(body[start:end])
+
+        if not argument_code and len(literals) == 1:
+            template_count += 1
+            continue
+        if (
+            not argument_code
+            and not literals
+            and template_count > 0
+            and index == len(ranges) - 1
+        ):
+            # A final empty segment is the ordinary optional trailing comma.
+            break
+        if _ASM_OPERAND_PREFIX_RE.match(argument_code):
+            if template_count == 0:
+                return "assembly macro must start with a direct string-literal template"
+            break
+        return (
+            "assembly template arguments must be direct string literals; "
+            "macro expansion or computed template expressions are denied"
+        )
+
+    if template_count == 0:
+        return "assembly macro must contain at least one direct string-literal template"
+    return None
+
+
 def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
     path = Path(relative_path).as_posix()
     errors: list[str] = []
@@ -244,6 +292,9 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
     errors.extend(f"{path}: {error}" for error in delimiter_errors)
 
     for body_start, body in bodies:
+        template_error = _assembly_template_argument_error(body)
+        if template_error is not None:
+            errors.append(f"{path}: {template_error}")
         for match_start, value, escape_error in _rust_string_literals(body):
             line = source.count("\n", 0, body_start + match_start) + 1
             if escape_error is not None:
