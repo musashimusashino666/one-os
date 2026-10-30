@@ -141,31 +141,95 @@ def _container_content(
     return content, quote_depth, tuple(stack), opened_list_item
 
 
-def _fenced_code_lines(lines: list[str]) -> set[int]:
-    """Return zero-based fenced-code lines, including list/blockquote containers."""
+def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | None] | None:
+    """Return the CommonMark HTML-block kind and its terminator."""
+    stripped = content.lstrip(" ")
+    if len(content) - len(stripped) > 3:
+        return None
+
+    if re.match(r"^<(?:pre|script|style|textarea)(?=[ \t/>]|$)", stripped, re.IGNORECASE):
+        return "terminator", r"</(?:pre|script|style|textarea)\s*>"
+    if stripped.startswith("<!--"):
+        return "terminator", "-->"
+    if stripped.startswith("<?"):
+        return "terminator", r"\?>"
+    if re.match(r"^<![A-Z]", stripped):
+        return "terminator", ">"
+    if stripped.startswith("<![CDATA["):
+        return "terminator", r"\]\]>"
+
+    block_tags = (
+        "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
+        "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|"
+        "footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|"
+        "iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|"
+        "optgroup|option|p|param|search|section|summary|table|tbody|td|"
+        "tfoot|th|thead|title|tr|track|ul"
+    )
+    if re.match(rf"^</?(?:{block_tags})(?=[ \t/>])", stripped, re.IGNORECASE):
+        return "blank", None
+
+    complete_tag = re.compile(
+        r"^</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*?)?[ \t]*/?>[ \t]*$"
+    )
+    if previous_blank and complete_tag.fullmatch(stripped):
+        return "blank", None
+    return None
+
+
+def _markdown_block_regions(lines: list[str]) -> tuple[set[int], set[int]]:
+    """Return fenced-code and raw-HTML block line indexes.
+
+    The recognizer covers the seven CommonMark HTML block classes and tracks
+    inline HTML comments so apparent fences inside comments are not Markdown
+    code fences. Block parsing takes precedence over inline syntax.
+    """
+    text = "".join(lines)
+    inline_ranges = _inline_code_ranges(text) if "<!--" in text and BACKTICK in text else []
+    range_index = 0
+
+    def is_inline_code(position: int) -> bool:
+        nonlocal range_index
+        while range_index < len(inline_ranges) and inline_ranges[range_index][1] <= position:
+            range_index += 1
+        return (
+            range_index < len(inline_ranges)
+            and inline_ranges[range_index][0] <= position < inline_ranges[range_index][1]
+        )
+
     fenced: set[int] = set()
+    html_lines: set[int] = set()
     list_stacks: dict[int, list[int]] = {}
     marker: str | None = None
     marker_length = 0
-    quote_depth = 0
-    marker_list_context: tuple[int, ...] = ()
+    fence_quote_depth = 0
+    fence_list_context: tuple[int, ...] = ()
+    html_kind: str | None = None
+    html_terminator: str | None = None
+    html_quote_depth = 0
+    html_list_context: tuple[int, ...] = ()
+    comment_open = False
+    previous_blank = True
+    line_offset = 0
 
     for index, line in enumerate(lines):
+        raw_line = line.rstrip("\r\n")
+
         if marker is not None:
-            container_line, current_quote_depth, list_context, _ = _container_content(
+            container_line, quote_depth, list_context, _ = _container_content(
                 line,
                 list_stacks,
-                max_quote_depth=quote_depth,
+                max_quote_depth=fence_quote_depth,
                 allow_list_marker=False,
             )
             if (
-                current_quote_depth < quote_depth
-                or list_context[:len(marker_list_context)] != marker_list_context
+                quote_depth < fence_quote_depth
+                or list_context[:len(fence_list_context)] != fence_list_context
             ):
                 marker = None
                 marker_length = 0
-                quote_depth = 0
-                marker_list_context = ()
+                fence_quote_depth = 0
+                fence_list_context = ()
             else:
                 fenced.add(index)
                 close = re.match(
@@ -175,32 +239,215 @@ def _fenced_code_lines(lines: list[str]) -> set[int]:
                 if close:
                     marker = None
                     marker_length = 0
-                    quote_depth = 0
-                    marker_list_context = ()
+                    fence_quote_depth = 0
+                    fence_list_context = ()
+                previous_blank = False
+                line_offset += len(line)
                 continue
 
-        container_line, current_quote_depth, list_context, _ = _container_content(
+        if html_kind is not None:
+            container_line, quote_depth, list_context, _ = _container_content(
+                line,
+                list_stacks,
+                max_quote_depth=html_quote_depth,
+                allow_list_marker=False,
+            )
+            if (
+                quote_depth < html_quote_depth
+                or list_context[:len(html_list_context)] != html_list_context
+            ):
+                html_kind = None
+                html_terminator = None
+                html_quote_depth = 0
+                html_list_context = ()
+            else:
+                if html_kind == "blank" and not container_line.strip():
+                    html_kind = None
+                    html_terminator = None
+                    html_quote_depth = 0
+                    html_list_context = ()
+                    previous_blank = True
+                    line_offset += len(line)
+                    continue
+
+                html_lines.add(index)
+                if html_terminator and (
+                    re.search(html_terminator, container_line, re.IGNORECASE)
+                    if html_terminator.startswith("</")
+                    else html_terminator in container_line
+                ):
+                    html_kind = None
+                    html_terminator = None
+                    html_quote_depth = 0
+                    html_list_context = ()
+                previous_blank = False
+                line_offset += len(line)
+                continue
+
+        container_line, quote_depth, list_context, _ = _container_content(
             line, list_stacks
         )
+
+        if comment_open:
+            closing = container_line.find("-->")
+            if closing < 0:
+                previous_blank = False
+                line_offset += len(line)
+                continue
+            comment_open = False
+            # The comment occupied the start of this line. A fence or block
+            # cannot begin after its closing delimiter on the same line.
+            previous_blank = False
+            line_offset += len(line)
+            continue
+
         stripped = container_line.lstrip(" ")
         indent = len(container_line) - len(stripped)
-        match = (
+        fence_match = (
             re.match(rf"({re.escape(BACKTICK)}{{3,}}|~{{3,}})(.*)$", stripped)
             if indent <= 3
             else None
         )
-
-        if match:
-            candidate = match.group(1)
-            info = match.group(2)
+        if fence_match:
+            candidate = fence_match.group(1)
+            info = fence_match.group(2)
             if candidate[0] != BACKTICK or BACKTICK not in info:
                 marker = candidate[0]
                 marker_length = len(candidate)
-                quote_depth = current_quote_depth
-                marker_list_context = list_context
+                fence_quote_depth = quote_depth
+                fence_list_context = list_context
                 fenced.add(index)
+                previous_blank = False
+                line_offset += len(line)
+                continue
 
-    return fenced
+        html_start = _html_block_start(container_line, previous_blank)
+        if html_start is not None:
+            kind, terminator = html_start
+            html_lines.add(index)
+            if kind == "blank":
+                html_kind = kind
+                html_terminator = None
+                html_quote_depth = quote_depth
+                html_list_context = list_context
+            else:
+                end_found = (
+                    re.search(terminator, container_line, re.IGNORECASE) is not None
+                    if terminator.startswith("</")
+                    else terminator in container_line
+                )
+                if not end_found:
+                    html_kind = kind
+                    html_terminator = terminator
+                    html_quote_depth = quote_depth
+                    html_list_context = list_context
+            previous_blank = False
+            line_offset += len(line)
+            continue
+
+        # Track inline comments as well as block comments. Backticks inside an
+        # inline code span do not start an HTML comment.
+        search_from = 0
+        content_offset = raw_line.find(container_line)
+        if content_offset < 0:
+            content_offset = max(0, len(raw_line) - len(container_line))
+        while True:
+            opening = container_line.find("<!--", search_from)
+            if opening < 0:
+                break
+            absolute_opening = line_offset + content_offset + opening
+            if _is_escaped(raw_line, content_offset + opening) or is_inline_code(absolute_opening):
+                search_from = opening + 4
+                continue
+            closing = container_line.find("-->", opening + 4)
+            if closing < 0:
+                comment_open = True
+                break
+            search_from = closing + 3
+
+        previous_blank = not container_line.strip()
+        line_offset += len(line)
+
+    return fenced, html_lines
+
+
+def _fenced_code_lines(lines: list[str]) -> set[int]:
+    """Return zero-based fenced-code lines, including list/blockquote containers."""
+    return _markdown_block_regions(lines)[0]
+
+
+def _html_block_lines(lines: list[str]) -> set[int]:
+    """Return zero-based lines belonging to CommonMark raw HTML blocks."""
+    return _markdown_block_regions(lines)[1]
+
+
+def _mask_html_blocks_and_comments(text: str) -> str:
+    """Mask raw HTML blocks/comments while preserving offsets and newlines."""
+    lines = text.splitlines(keepends=True)
+    fenced, html_lines = _markdown_block_regions(lines)
+    ignored = fenced | html_lines
+    output = list(text)
+
+    offsets: list[int] = []
+    offset = 0
+    for index, line in enumerate(lines):
+        offsets.append(offset)
+        if index in html_lines:
+            for position in range(offset, offset + len(line)):
+                if output[position] not in "\r\n":
+                    output[position] = " "
+        offset += len(line)
+
+    inline_ranges = _document_inline_code_ranges(text, ignored)
+    range_index = 0
+    in_comment = False
+    offset = 0
+
+    for line_number, line in enumerate(lines):
+        if line_number in ignored:
+            offset += len(line)
+            continue
+
+        position = 0
+        while position < len(line):
+            absolute = offset + position
+            while range_index < len(inline_ranges) and inline_ranges[range_index][1] <= absolute:
+                range_index += 1
+            inside_code = (
+                range_index < len(inline_ranges)
+                and inline_ranges[range_index][0] <= absolute < inline_ranges[range_index][1]
+            )
+
+            if in_comment:
+                if line.startswith("-->", position):
+                    for index in range(position, position + 3):
+                        if output[absolute + index - position] not in "\r\n":
+                            output[absolute + index - position] = " "
+                    position += 3
+                    in_comment = False
+                else:
+                    if output[absolute] not in "\r\n":
+                        output[absolute] = " "
+                    position += 1
+                continue
+
+            if (
+                not inside_code
+                and line.startswith("<!--", position)
+                and not _is_escaped(line, position)
+            ):
+                in_comment = True
+                for index in range(position, position + 4):
+                    if output[offset + index] not in "\r\n":
+                        output[offset + index] = " "
+                position += 4
+                continue
+
+            position += 1
+
+        offset += len(line)
+
+    return "".join(output)
 
 def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
     """Find matched inline-code spans across the complete text."""
@@ -421,22 +668,18 @@ def _mask_inline_code(text: str) -> str:
 
     return "".join(output)
 
-def _find_closing_bracket(text: str, start: int) -> int | None:
-    depth = 0
-    index = start
-    while index < len(text):
-        char = text[index]
-        if _is_escaped(text, index):
-            index += 1
+def _matching_bracket_pairs(text: str) -> dict[int, int]:
+    """Pair nested square brackets in one left-to-right pass."""
+    stack: list[int] = []
+    pairs: dict[int, int] = {}
+    for index, char in enumerate(text):
+        if char not in "[]" or _is_escaped(text, index):
             continue
         if char == "[":
-            depth += 1
-        elif char == "]":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return None
+            stack.append(index)
+        elif stack:
+            pairs[stack.pop()] = index
+    return pairs
 
 
 def _parse_inline_destination(text: str, open_paren: int) -> tuple[str | None, int, str | None]:
@@ -447,7 +690,7 @@ def _parse_inline_destination(text: str, open_paren: int) -> tuple[str | None, i
     if index >= len(text):
         return None, len(text), "link destination is not closed"
     if text[index] == ")":
-        return None, index + 1, "link destination is empty"
+        return "", index + 1, None
 
     if text[index] == "<":
         start = index + 1
@@ -488,8 +731,6 @@ def _parse_inline_destination(text: str, open_paren: int) -> tuple[str | None, i
         elif char == ")":
             if depth == 0:
                 target = text[start:index]
-                if not target:
-                    return None, index + 1, "link destination is empty"
                 return target, index + 1, None
             depth -= 1
         elif char.isspace() and depth == 0:
@@ -544,12 +785,13 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
     """
     original_lines = text.splitlines(keepends=True)
     fenced = _fenced_code_lines(original_lines)
-    masked = _mask_inline_code(text)
+    html_masked = _mask_html_blocks_and_comments(text)
+    masked = _mask_inline_code(html_masked)
     masked_lines = masked.splitlines(keepends=True)
 
     links: list[tuple[str, int]] = []
     problems: list[DocProblem] = []
-    definitions: dict[str, tuple[str, int]] = {}
+    definitions: dict[str, tuple[str | None, int]] = {}
     definition_lines: set[int] = set()
 
     list_stacks: dict[int, list[int]] = {}
@@ -632,7 +874,7 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
                     f"malformed Markdown reference definition: [{label}]",
                 )
             )
-            definitions[label] = ("", line_number)
+            definitions[label] = (None, line_number)
             continue
 
         definitions[label] = (_unescape_destination(target), line_number)
@@ -652,20 +894,27 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
             scannable_lines.append(line)
     content = "".join(scannable_lines)
 
+    bracket_pairs = _matching_bracket_pairs(content)
     index = 0
+    line_number = 1
+
+    def advance_to(next_index: int) -> None:
+        nonlocal index, line_number
+        line_number += content.count("\n", index, next_index)
+        index = next_index
+
     while index < len(content):
         if content[index] != "[" or _is_escaped(content, index):
-            index += 1
+            advance_to(index + 1)
             continue
 
-        close_bracket = _find_closing_bracket(content, index)
+        close_bracket = bracket_pairs.get(index)
         if close_bracket is None:
-            index += 1
+            advance_to(index + 1)
             continue
 
         visible_label = content[index + 1:close_bracket]
         next_index = close_bracket + 1
-        line_number = content.count("\n", 0, index) + 1
 
         if next_index < len(content) and content[next_index] == "(":
             target, end, error = _parse_inline_destination(content, next_index)
@@ -673,13 +922,13 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
                 problems.append(DocProblem(path, line_number, error))
             elif target is not None:
                 links.append((_unescape_destination(target), line_number))
-            index = max(end, next_index + 1)
+            advance_to(max(end, next_index + 1))
             continue
 
         reference_label: str | None = None
         end = close_bracket + 1
         if next_index < len(content) and content[next_index] == "[":
-            close_reference = _find_closing_bracket(content, next_index)
+            close_reference = bracket_pairs.get(next_index)
             if close_reference is not None:
                 explicit_label = content[next_index + 1:close_reference]
                 reference_label = explicit_label if explicit_label else visible_label
@@ -700,12 +949,12 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
                         f"undefined Markdown reference: [{reference_label}]",
                     )
                 )
-            elif definition[0]:
+            elif definition[0] is not None:
                 links.append((definition[0], line_number))
-            index = end
+            advance_to(end)
             continue
 
-        index = close_bracket + 1
+        advance_to(close_bracket + 1)
 
     return links, problems
 
@@ -736,7 +985,9 @@ def _slugify_heading(heading: str) -> str:
 
 
 def _markdown_anchors(text: str) -> set[str]:
-    lines = text.splitlines()
+    html_masked = _mask_html_blocks_and_comments(text)
+    masked = _mask_inline_code(html_masked)
+    lines = masked.splitlines()
     fenced = _fenced_code_lines(lines)
     list_stacks: dict[int, list[int]] = {}
     normalized: list[str] = []
@@ -834,12 +1085,13 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
             continue
         file_contents[relative] = content
         lines = content.splitlines(keepends=True)
-        fenced = _fenced_code_lines(lines)
-        table_lines = _markdown_table_lines(lines, fenced)
-        inline_code_by_line = _line_inline_code_ranges(content, fenced)
+        fenced, html_blocks = _markdown_block_regions(lines)
+        ignored_blocks = fenced | html_blocks
+        table_lines = _markdown_table_lines(lines, ignored_blocks)
+        inline_code_by_line = _line_inline_code_ranges(content, ignored_blocks)
         for index, raw_line in enumerate(lines):
             line = raw_line.rstrip("\r\n")
-            if index in fenced or len(line) <= max_line_length:
+            if index in ignored_blocks or len(line) <= max_line_length:
                 continue
             # Inline code spans can cross line boundaries in CommonMark.
             # Table rows are never exempt, regardless of optional edge pipes.
