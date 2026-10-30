@@ -12,6 +12,9 @@ from check_docs import (
     _line_length_is_exempt,
     _markdown_anchors,
     _resolve_target,
+    _unescape_destination,
+    _markdown_table_lines,
+    _fenced_code_lines,
     validate_repository,
 )
 
@@ -109,6 +112,12 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
+    def test_backslash_escape_for_colon_is_removed_from_destination(self):
+        self.assertEqual(_unescape_destination(r"foo\:bar.md"), "foo:bar.md")
+        self.assertEqual(_unescape_destination(r"foo\!bar\?baz.md"), "foo!bar?baz.md")
+
+
+
 class AnchorTests(unittest.TestCase):
     def test_github_style_heading_anchors_and_duplicates(self):
         anchors = _markdown_anchors("# Hello, World!\n\n## Hello, World!\n\n## " + BACKTICK + "Code" + BACKTICK + " & More\n")
@@ -141,6 +150,23 @@ class LineLengthTests(unittest.TestCase):
 
     def test_pipe_delimited_table_without_leading_pipe_is_not_exempt(self):
         self.assertFalse(_line_length_is_exempt("cell | " + BACKTICK + "x" * 90 + BACKTICK + " | value"))
+
+
+    def test_two_column_table_without_edge_pipes_is_detected(self):
+        lines = [
+            "Name | Description\n",
+            "--- | ---\n",
+            "Docs | https://example.test/" + "x" * 100 + "\n",
+        ]
+        table_lines = _markdown_table_lines(lines, set())
+        self.assertEqual(table_lines, {0, 1, 2})
+        self.assertTrue(_line_length_is_exempt(lines[2].rstrip("\n")))
+        self.assertFalse(
+            _line_length_is_exempt(
+                lines[2].rstrip("\n"), is_table_row=2 in table_lines
+            )
+        )
+
 
 
 class RepositoryValidationTests(unittest.TestCase):
@@ -258,6 +284,42 @@ class RepositoryValidationTests(unittest.TestCase):
             (root / "README.md").write_text("[escape](../../outside.md)\n", encoding="utf-8")
             problems = validate_repository(root)
             self.assertTrue(any("escapes repository root" in p.message for p in problems))
+
+    def test_escaped_colon_filename_is_resolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "foo:bar.md").write_text("# Colon\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("[colon](docs/foo\\:bar.md)\n")
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    "missing internal link target" in problem.message
+                    and "foo" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_single_pipe_two_column_table_url_row_fails_line_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            table = (
+                "\nName | Description\n"
+                "--- | ---\n"
+                "Docs | https://example.test/" + "x" * 100 + "\n"
+            )
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(table)
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and "characters (limit 88)" in problem.message
+                    for problem in problems
+                )
+            )
 
     def test_code_fence_does_not_trigger_line_or_link_checks(self):
         with tempfile.TemporaryDirectory() as directory:
