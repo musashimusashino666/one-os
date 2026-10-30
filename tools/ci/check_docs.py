@@ -381,7 +381,7 @@ def _unescape_destination(target: str) -> str:
 
 
 def _normalize_reference_label(label: str) -> str:
-    label = re.sub(r"\\([\\`!"#$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~])", r"\1", label)
+    label = re.sub(r"\\([\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e])", r"\1", label)
     return " ".join(label.casefold().split())
 
 
