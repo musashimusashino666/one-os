@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import posixpath
 import re
+import string
 import sys
 import unicodedata
 from pathlib import Path
@@ -242,14 +243,85 @@ def _line_inline_code_ranges(text: str, fenced_lines: set[int]) -> dict[int, lis
     return result
 
 
+def _split_gfm_table_cells(line: str) -> tuple[list[str], int] | None:
+    """Split a GFM table row, returning cells and its blockquote depth."""
+    content, quote_depth = _blockquote_content(line.rstrip("\r\n"))
+    separators = [
+        index for index, char in enumerate(content)
+        if char == "|" and not _is_escaped(content, index)
+    ]
+    if not separators:
+        return None
+
+    cells: list[str] = []
+    start = 0
+    for separator in separators:
+        cells.append(content[start:separator].strip())
+        start = separator + 1
+    cells.append(content[start:].strip())
+
+    # GFM permits both optional leading and trailing pipes.
+    if content[:separators[0]].strip() == "":
+        cells.pop(0)
+    if content[separators[-1] + 1:].strip() == "":
+        cells.pop()
+    return cells, quote_depth
+
+
+def _markdown_table_lines(lines: list[str], fenced_lines: set[int]) -> set[int]:
+    """Identify GFM table headers, delimiters, and contiguous body rows.
+
+    A table is recognized from the header/delimiter pair, not from a count of
+    leading/trailing pipe characters. This includes two-column tables written
+    without either optional edge pipe.
+    """
+    table_lines: set[int] = set()
+    index = 0
+    delimiter_cell = re.compile(r":?-{3,}:?$")
+
+    while index + 1 < len(lines):
+        if index in fenced_lines or index + 1 in fenced_lines:
+            index += 1
+            continue
+        header = _split_gfm_table_cells(lines[index])
+        delimiter = _split_gfm_table_cells(lines[index + 1])
+        if header is None or delimiter is None:
+            index += 1
+            continue
+
+        header_cells, header_quote_depth = header
+        delimiter_cells, delimiter_quote_depth = delimiter
+        if (
+            header_quote_depth != delimiter_quote_depth
+            or len(header_cells) < 2
+            or len(header_cells) != len(delimiter_cells)
+            or not all(delimiter_cell.fullmatch(cell) for cell in delimiter_cells)
+        ):
+            index += 1
+            continue
+
+        table_lines.update((index, index + 1))
+        row = index + 2
+        while row < len(lines) and row not in fenced_lines:
+            candidate = _split_gfm_table_cells(lines[row])
+            if candidate is None or candidate[1] != header_quote_depth:
+                break
+            table_lines.add(row)
+            row += 1
+        index = row
+
+    return table_lines
+
+
 def _line_length_is_exempt(
     line: str,
     max_line_length: int = DEFAULT_MAX_LINE_LENGTH,
     code_ranges: list[tuple[int, int]] | None = None,
+    is_table_row: bool = False,
 ) -> bool:
     """Allow atomic inline-code/URL spans only when residual prose fits."""
-    if line.count("|") >= 2:
-        return False  # Wide Markdown table rows must be rewritten, not exempted.
+    if is_table_row:
+        return False  # GFM table rows must always obey the line-length limit.
 
     spans = list(code_ranges) if code_ranges is not None else _inline_code_ranges(line)
     spans.extend((match.start(), match.end()) for match in re.finditer(r"https?://\S+", line))
@@ -267,7 +339,6 @@ def _line_length_is_exempt(
     for start, end in reversed(merged):
         reduced = reduced[:start] + "x" + reduced[end:]
     return len(reduced) <= max_line_length
-
 
 def _mask_inline_code(text: str) -> str:
     """Mask fenced and inline code while preserving offsets and newlines."""
@@ -383,8 +454,21 @@ def _parse_inline_destination(text: str, open_paren: int) -> tuple[str | None, i
 
 
 def _unescape_destination(target: str) -> str:
-    return re.sub(r"\\([\\*{}\[\]()#+\-.!_>])", r"\1", target).replace("\\" + BACKTICK, BACKTICK)
-
+    """Apply CommonMark backslash escapes for every ASCII punctuation mark."""
+    output: list[str] = []
+    index = 0
+    while index < len(target):
+        if (
+            target[index] == "\\"
+            and index + 1 < len(target)
+            and target[index + 1] in string.punctuation
+        ):
+            output.append(target[index + 1])
+            index += 2
+        else:
+            output.append(target[index])
+            index += 1
+    return "".join(output)
 
 def _normalize_reference_label(label: str) -> str:
     label = re.sub(r"\\([\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e])", r"\1", label)
@@ -613,14 +697,19 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
         file_contents[relative] = content
         lines = content.splitlines(keepends=True)
         fenced = _fenced_code_lines(lines)
+        table_lines = _markdown_table_lines(lines, fenced)
         inline_code_by_line = _line_inline_code_ranges(content, fenced)
         for index, raw_line in enumerate(lines):
             line = raw_line.rstrip("\r\n")
             if index in fenced or len(line) <= max_line_length:
                 continue
             # Inline code spans can cross line boundaries in CommonMark.
+            # Table rows are never exempt, regardless of optional edge pipes.
             if not _line_length_is_exempt(
-                line, max_line_length, inline_code_by_line.get(index, [])
+                line,
+                max_line_length,
+                inline_code_by_line.get(index, []),
+                is_table_row=index in table_lines,
             ):
                 problems.append(
                     DocProblem(
