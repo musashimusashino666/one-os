@@ -760,8 +760,12 @@ def _cr3_source_is_validated_active_reload(
     # The active-root comparison must guard the CR3 write, not merely appear
     # somewhere in the function after the hardware state has already changed.
     pre_write = _rust_code_without_literals_or_comments(helper[:write_offset])
+    function_body_open = pre_write.find("{")
+    if function_body_open < 0:
+        return False
+    pre_write_body = pre_write[function_body_open + 1 :]
     if not _if_guard_unconditionally_returns(
-        pre_write,
+        pre_write_body,
         r"cr3\s*&\s*PHYSICAL_ADDRESS_MASK\s*!=\s*expected_root_physical",
     ):
         return False
