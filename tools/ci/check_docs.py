@@ -1131,7 +1131,7 @@ def _extract_links(
         r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
-    normalized_content = "".join(normalized_lines)
+    normalized_content = "\n".join(normalized_lines)
     line_offsets = [0]
     for normalized_line in normalized_lines:
         line_offsets.append(line_offsets[-1] + len(normalized_line) + 1)
