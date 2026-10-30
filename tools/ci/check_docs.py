@@ -389,6 +389,7 @@ def _mask_html_blocks_and_comments(text: str) -> str:
     lines = text.splitlines(keepends=True)
     fenced, html_lines = _markdown_block_regions(lines)
     ignored = fenced | html_lines
+    ignored |= _indented_code_lines(lines, ignored)
     output = list(text)
 
     offset = 0
@@ -529,7 +530,7 @@ def _indented_code_lines(
     in_code_block = False
     atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
     thematic_pattern = re.compile(
-        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
     for index, raw_line in enumerate(lines):
@@ -588,7 +589,7 @@ def _document_inline_code_ranges(
     atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
     setext_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
     thematic_pattern = re.compile(
-        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
     def flush() -> None:
@@ -1189,7 +1190,7 @@ def _markdown_anchors(text: str) -> set[str]:
     atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
     underline_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
     thematic_pattern = re.compile(
-        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
     for index, line in enumerate(normalized):
