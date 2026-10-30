@@ -239,12 +239,16 @@ global_asm!(
 
 #[cfg(feature = "test-nx-protection")]
 unsafe fn oneos_vm_test_nx_execute(target: u64) {
-    // SAFETY: the dedicated NX acceptance path passes the address of its
-    // deliberately non-executable test page after arming the exact #PF guard.
+    // SAFETY: this helper is called only by the dedicated NX acceptance path,
+    // after it arms the page-fault handler for this exact target RIP and the
+    // one-instruction recovery label. The target page is deliberately mapped NX.
     let entry: unsafe extern "C" fn() =
         unsafe { core::mem::transmute::<usize, unsafe extern "C" fn()>(target as usize) };
-    // SAFETY: this indirect call is the operation under test; #PF recovery
-    // redirects the saved RIP to the assembly continuation below.
+    // SAFETY: this indirect call is intentionally expected to fault during
+    // instruction fetch, before any target instruction executes. The #PF handler
+    // verifies CR2 and RIP, then redirects saved RIP to the adjacent ret label.
+    // That ret consumes this call's already-pushed return address and resumes
+    // the caller. This helper must not be used with an executable or arbitrary page.
     unsafe { entry() };
 }
 
