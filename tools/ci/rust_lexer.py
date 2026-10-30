@@ -174,6 +174,32 @@ def mask_rust_comments_and_literals(source: str) -> str:
     return "".join(masked)
 
 
+def rust_macro_argument_ranges(source: str) -> list[tuple[int, int]]:
+    """Split a macro token-tree body at top-level commas, preserving offsets."""
+    code = mask_rust_comments_and_literals(source)
+    ranges: list[tuple[int, int]] = []
+    stack: list[str] = []
+    closing_for = {"(": ")", "[": "]", "{": "}"}
+    closing_to = set(closing_for.values())
+    start = 0
+
+    for index, character in enumerate(code):
+        if character in closing_for:
+            stack.append(closing_for[character])
+        elif character in closing_to:
+            if not stack or character != stack[-1]:
+                return []
+            stack.pop()
+        elif character == "," and not stack:
+            ranges.append((start, index))
+            start = index + 1
+
+    if stack:
+        return []
+    ranges.append((start, len(source)))
+    return ranges
+
+
 def rust_macro_invocations(
     source: str, macro_names: set[str]
 ) -> list[RustMacroInvocation]:
