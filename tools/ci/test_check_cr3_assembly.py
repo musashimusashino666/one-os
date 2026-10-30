@@ -483,6 +483,36 @@ class ActivationAssemblyTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("the template operand must bind directly to in(reg) root_physical, or to the checked active CR3", message)
 
+    def test_local_tlb_flush_rejects_nested_active_cr3_guard(self):
+        source = """
+            pub(super) fn switch_address_space_flush_local_tlb(
+                expected_root_physical: u64,
+            ) {
+                validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                let cr3: u64;
+                asm!(
+                    "mov {}, cr3",
+                    out(reg) cr3,
+                    options(nomem, nostack, preserves_flags)
+                );
+                if unrelated_condition {
+                    if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
+                        return Err(AddressSpaceError::InvalidKernelRoot);
+                    }
+                }
+                asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3,
+                    options(nostack, preserves_flags)
+                );
+            }
+
+            /// Performs the validated hardware CR3 transition.
+        """
+        valid, message = validate_cr3_asm_memory_order(source)
+        self.assertFalse(valid)
+        self.assertIn("checked active CR3", message)
+
     def test_local_tlb_flush_rejects_active_cr3_check_after_write(self):
         source = """
             pub(super) fn switch_address_space_flush_local_tlb(
