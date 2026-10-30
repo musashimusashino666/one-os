@@ -1054,12 +1054,42 @@ def _if_guard_unconditionally_returns_err(
 def _if_guard_unconditionally_returns(
     source: str, condition_pattern: str
 ) -> bool:
-    """Require a matching if guard to leave its function immediately."""
-    matching_bodies = [
-        body
-        for condition, body in _rust_if_condition_blocks(source)
-        if re.search(condition_pattern, condition)
-    ]
+    """Require a unique top-level if guard that immediately returns."""
+    matching_bodies: list[str] = []
+    for match in re.finditer(r"\bif\b", source):
+        # A nested guard can be skipped entirely on another path. The checked
+        # active-root predicate must therefore be a direct function-level guard.
+        if _brace_depth_at(source, match.start()) != 0:
+            continue
+        cursor = match.end()
+        parentheses = brackets = 0
+        body_start: int | None = None
+        while cursor < len(source):
+            character = source[cursor]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses = max(0, parentheses - 1)
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets = max(0, brackets - 1)
+            elif character == "{" and parentheses == 0 and brackets == 0:
+                body_start = cursor
+                break
+            elif character == ";" and parentheses == 0 and brackets == 0:
+                break
+            cursor += 1
+        if body_start is None:
+            continue
+        condition = source[match.end():body_start]
+        if not re.search(condition_pattern, condition):
+            continue
+        body_end = _balanced_block_end(source, body_start)
+        if body_end is None:
+            continue
+        matching_bodies.append(source[body_start + 1:body_end])
+
     if len(matching_bodies) != 1:
         return False
     return re.match(r"\s*return\b", matching_bodies[0]) is not None
