@@ -169,6 +169,51 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             self.assertIn("hidden-crate", joined)
             self.assertIn("nested-crate", joined)
 
+    def test_registry_nodes_are_traversed_for_unscanned_local_transitives(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            kernel_id = "kernel 0.1.0 (path+file:///kernel)"
+            core_id = "oneos-core 0.1.0 (path+file:///core)"
+            registry_id = "third-party 1.2.3 (registry+https://example.invalid/index)"
+            local_id = "hidden 0.1.0 (path+file:///hidden)"
+            metadata = {
+                "packages": [
+                    {
+                        "id": kernel_id,
+                        "manifest_path": str(root / "kernel" / "Cargo.toml"),
+                        "source": None,
+                    },
+                    {
+                        "id": core_id,
+                        "manifest_path": str(root / "crates" / "oneos-core" / "Cargo.toml"),
+                        "source": None,
+                    },
+                    {
+                        "id": registry_id,
+                        "manifest_path": str(root / ".cargo" / "registry" / "third-party" / "Cargo.toml"),
+                        "source": "registry+https://example.invalid/index",
+                    },
+                    {
+                        "id": local_id,
+                        "manifest_path": str(root / "crates" / "hidden" / "Cargo.toml"),
+                        "source": None,
+                    },
+                ],
+                "resolve": {
+                    "nodes": [
+                        {"id": kernel_id, "deps": [{"pkg": core_id}, {"pkg": registry_id}]},
+                        {"id": core_id, "deps": []},
+                        {"id": registry_id, "deps": [{"pkg": local_id}]},
+                        {"id": local_id, "deps": []},
+                    ]
+                },
+            }
+            errors = _resolved_local_dependency_errors(root, metadata)
+            self.assertTrue(any("crates/hidden/Cargo.toml" in error for error in errors), errors)
+
     def test_resolved_workspace_dependency_graph_allows_reviewed_core_path(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory
