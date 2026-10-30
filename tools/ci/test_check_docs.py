@@ -9,6 +9,7 @@ FENCE = BACKTICK * 3
 
 from check_docs import (
     _extract_links,
+    _inline_code_ranges,
     _line_length_is_exempt,
     _markdown_anchors,
     _resolve_target,
@@ -623,6 +624,86 @@ class RepositoryValidationTests(unittest.TestCase):
                     for problem in problems
                 )
             )
+
+
+class GitHubCompatibilityTests(unittest.TestCase):
+    def test_heading_slug_preserves_underscores(self):
+        anchors = _markdown_anchors("# foo_bar\n")
+        self.assertIn("foo_bar", anchors)
+        self.assertNotIn("foobar", anchors)
+
+    def test_heading_slug_preserves_repeated_hyphens(self):
+        anchors = _markdown_anchors("# foo--bar\n")
+        self.assertIn("foo--bar", anchors)
+        self.assertNotIn("foo-bar", anchors)
+
+    def test_duplicate_heading_slug_skips_existing_literal_suffix(self):
+        anchors = _markdown_anchors("# foo\n# foo\n# foo-1\n")
+        self.assertIn("foo", anchors)
+        self.assertIn("foo-1", anchors)
+        self.assertIn("foo-1-1", anchors)
+
+    def test_html_id_is_collected_from_any_element(self):
+        anchors = _markdown_anchors(
+            '<div id="overview"></div>\n'
+            '<h2 id="details">Details</h2>\n'
+        )
+        self.assertIn("overview", anchors)
+        self.assertIn("details", anchors)
+
+    def test_legacy_name_is_collected_only_from_anchor_elements(self):
+        anchors = _markdown_anchors(
+            '<a name="legacy-anchor"></a>\n'
+            '<div name="not-an-anchor"></div>\n'
+        )
+        self.assertIn("legacy-anchor", anchors)
+        self.assertNotIn("not-an-anchor", anchors)
+
+    def test_repository_link_to_non_anchor_html_id_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            RepositoryValidationTests().make_repo(root)
+            (root / "docs" / "guide.md").write_text(
+                '<div id="overview"></div>\n<h2 id="details">Details</h2>\n',
+                encoding="utf-8",
+            )
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[overview](docs/guide.md#overview)\n"
+                    "[details](docs/guide.md#details)\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    "missing heading anchor" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_varied_unmatched_backtick_runs_are_processed_without_rescanning(self):
+        class FindCountingText(str):
+            def __new__(cls, value: str):
+                instance = super().__new__(cls, value)
+                instance.find_calls = 0
+                return instance
+
+            def find(self, *args, **kwargs):
+                self.find_calls += 1
+                return super().find(*args, **kwargs)
+
+        text = FindCountingText(
+            "".join(BACKTICK * run_length + "x" for run_length in range(1, 350))
+        )
+        self.assertEqual(_inline_code_ranges(text), [])
+        self.assertEqual(text.find_calls, 0)
+
+    def test_inline_code_matcher_pairs_exact_run_lengths(self):
+        text = BACKTICK + "one " + BACKTICK * 2 + "two" + BACKTICK + " three " + BACKTICK * 2
+        ranges = _inline_code_ranges(text)
+        closing = text.index(BACKTICK, text.index("two") + 3)
+        self.assertEqual(ranges, [(0, closing + 1)])
+
+
 
 if __name__ == "__main__":
     unittest.main()
