@@ -2,7 +2,7 @@
 
 ## Purpose and invariant
 
-The source gate pins the reviewed CR3 writer functions and rejects new or relocated assembly-macro sites unless their inventory is explicitly updated and reviewed. Rust source traversal excludes only the exact output directory reported by `cargo metadata`; a source module named `target` at any other path remains part of the inventory. The three reviewed writers are in **kernel/src/address_space.rs**:
+The source gate pins the reviewed CR3 writer functions and rejects new or relocated assembly-macro sites unless their inventory is explicitly updated and reviewed. Rust source traversal excludes only the exact output directory reported by `cargo metadata`; a source module named `target` at any other path remains part of the inventory. If Cargo's output directory is configured inside an inventoried `src/` tree, the gate fails closed instead of excluding that path. The three reviewed writers are in **kernel/src/address_space.rs**:
 
 - activate_supervisor_kernel_root
 - switch_address_space
