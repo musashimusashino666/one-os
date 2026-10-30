@@ -458,9 +458,12 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     actual_sites = _assembly_site_identities(source)
     expected_sites = EXPECTED_ASM_SITE_INVENTORY.get(path, [])
     if actual_sites != expected_sites:
+        missing_sites = [site for site in expected_sites if site not in actual_sites]
+        unexpected_sites = [site for site in actual_sites if site not in expected_sites]
         errors.append(
             f"{path}: assembly macro site identity inventory differs from the reviewed "
-            "manifest; added, removed, relocated, re-owned, or modified sites are denied"
+            "manifest; added, removed, relocated, re-owned, or modified sites are denied "
+            f"(missing={missing_sites[:3]!r}, unexpected={unexpected_sites[:3]!r})"
         )
 
     expected_asm = EXPECTED_ASM_COUNTS.get(path, 0)
