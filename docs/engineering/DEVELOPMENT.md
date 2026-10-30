@@ -29,6 +29,21 @@ cargo clippy --locked -p oneos-xtask --all-targets -- -D warnings
 cargo check --locked -p one-os-kernel --target x86_64-unknown-none
 ```
 
+## Documentation integrity
+
+Run the deterministic documentation checks from the repository root:
+
+```sh
+python3 -m unittest discover -s tools/ci -p 'test_check_docs.py'
+python3 tools/ci/check_docs.py --root .
+```
+
+The validator checks repository-relative Markdown links and heading anchors,
+the canonical README navigation, and the 88-character line policy. It does
+not access external URLs or modify documentation. Fenced code is excluded.
+Inline code and unbreakable URLs are atomic only when the remaining prose
+fits; wide Markdown table rows are never exempt.
+
 ## Build a BIOS image
 
 ```sh
