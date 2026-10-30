@@ -341,6 +341,15 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             self.assertIn("kernel/src/target/mod.rs", found)
             self.assertNotIn("kernel/target/debug/build/generated.rs", found)
 
+            source_errors = source_policy_errors(
+                "kernel/src/target/mod.rs",
+                source_module.read_text(encoding="utf-8"),
+            )
+            self.assertTrue(
+                any("asm! site count is 1" in error for error in source_errors),
+                source_errors,
+            )
+
     def test_path_module_source_redirection_is_denied(self):
         sources = (
             '#[path = "../../outside.rs"] mod outside;',
