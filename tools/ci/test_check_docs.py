@@ -36,6 +36,11 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("path(draft).md", 1)])
         self.assertEqual(problems, [])
 
+    def test_escaped_closing_parenthesis_adjacent_to_link_close_is_preserved(self):
+        links, problems = _extract_links(r"[guide](guide\\))", "README.md")
+        self.assertEqual(links, [("guide)", 1)])
+        self.assertEqual(problems, [])
+
     def test_link_syntax_inside_inline_code_is_ignored(self):
         links, problems = _extract_links(BACKTICK + "[not a link](missing.md)" + BACKTICK, "README.md")
         self.assertEqual(links, [])
@@ -65,6 +70,14 @@ class LinkParsingTests(unittest.TestCase):
                 links, problems = _extract_links(source, "README.md")
                 self.assertEqual(len(links), 1)
                 self.assertEqual(problems, [])
+
+    def test_escaped_quotes_inside_quoted_link_title_are_accepted(self):
+        links, problems = _extract_links(
+            r'[guide](guide.md "a \"quoted\" title")',
+            "README.md",
+        )
+        self.assertEqual(links, [("guide.md", 1)])
+        self.assertEqual(problems, [])
 
     def test_malformed_unclosed_destination_is_reported(self):
         links, problems = _extract_links("[broken](docs/guide.md", "README.md")
