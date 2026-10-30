@@ -94,8 +94,8 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             '"nop\\t.byte 0x0f, 0x22, 0xd8"',
             '"nop .byte 0x0f, 0x22, 0xd8"',
             '"nop\\r\\n.byte 0x0f, 0x22, 0xd8"',
-            'r#"nop
-.byte 0x0f, 0x22, 0xd8"#',
+            """r#"nop
+.byte 0x0f, 0x22, 0xd8"#""",
         )
         for template in templates:
             with self.subTest(template=template):
