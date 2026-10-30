@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from html.parser import HTMLParser
 import posixpath
 import re
 import string
@@ -489,7 +490,7 @@ def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
 def _document_inline_code_ranges(
     text: str, fenced_lines: set[int] | None = None
 ) -> list[tuple[int, int]]:
-    """Find inline-code spans in contiguous non-fenced document sections."""
+    """Find inline-code spans within paragraphs, never across blank lines."""
     lines = text.splitlines(keepends=True)
     fenced = fenced_lines if fenced_lines is not None else _fenced_code_lines(lines)
     ranges: list[tuple[int, int]] = []
@@ -509,7 +510,9 @@ def _document_inline_code_ranges(
         segment_parts = []
 
     for index, line in enumerate(lines):
-        if index in fenced:
+        if index in fenced or not line.strip():
+            # CommonMark parses inline syntax per paragraph. Blank lines
+            # therefore terminate a backtick-search region just like fences.
             flush()
         else:
             if segment_start is None:
@@ -973,13 +976,58 @@ def _slugify_heading(heading: str) -> str:
         category = unicodedata.category(char)
         if char.isspace():
             output.append("-")
-        elif category.startswith("P") and char != "-":
+        elif category.startswith(("P", "S")) and char != "-":
+            # GitHub's heading slugger drops punctuation and symbols,
+            # including emoji, after whitespace has already become a hyphen.
             continue
         else:
             output.append(char)
     slug = "".join(output)
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    return slug
+    # Preserve edge hyphens introduced by spaces around removed symbols.
+    return re.sub(r"-+", "-", slug)
+
+
+def _html_anchor_targets(text: str) -> set[str]:
+    """Collect HTML id/name anchors without reading comments or code examples."""
+    lines = text.splitlines(keepends=True)
+    fenced, _ = _markdown_block_regions(lines)
+    output = list(text)
+
+    offset = 0
+    for index, line in enumerate(lines):
+        if index in fenced:
+            for position in range(offset, offset + len(line)):
+                if output[position] not in "\r\n":
+                    output[position] = " "
+        offset += len(line)
+
+    for start, end in _document_inline_code_ranges(text, fenced):
+        for position in range(start, end):
+            if output[position] not in "\r\n":
+                output[position] = " "
+
+    class AnchorCollector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.targets: set[str] = set()
+
+        def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag.lower() != "a":
+                return
+            for name, value in attrs:
+                if name.lower() in {"id", "name"} and value:
+                    self.targets.add(value)
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._record(tag, attrs)
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._record(tag, attrs)
+
+    parser = AnchorCollector()
+    parser.feed("".join(output))
+    parser.close()
+    return parser.targets
 
 
 def _markdown_anchors(text: str) -> set[str]:
@@ -1009,7 +1057,7 @@ def _markdown_anchors(text: str) -> set[str]:
         normalized.append(content)
         contexts.append((quote_depth, list_context))
 
-    anchors: set[str] = set()
+    anchors: set[str] = _html_anchor_targets(text)
     counts: dict[str, int] = {}
 
     for index, line in enumerate(normalized):
@@ -1017,7 +1065,7 @@ def _markdown_anchors(text: str) -> set[str]:
             continue
 
         explicit_ids = re.findall(
-            r"<a\s+[^>]*?id\s*=\s*[\"']([^\"']+)[\"']",
+            r"<a\s+[^>]*?(?:id|name)\s*=\s*[\"']([^\"']+)[\"']",
             line,
             re.IGNORECASE,
         )
