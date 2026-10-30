@@ -13,6 +13,7 @@ from check_docs import (
     _indented_code_lines,
     _inline_code_ranges,
     _line_length_is_exempt,
+    _markdown_block_regions,
     _markdown_anchors,
     _resolve_target,
     _unescape_destination,
@@ -253,6 +254,12 @@ class AnchorTests(unittest.TestCase):
         self.assertNotIn("hidden-heading", anchors)
         self.assertNotIn("hidden-html", anchors)
         self.assertIn("visible-heading", anchors)
+
+    def test_setext_paragraph_lines_are_not_code_blocks(self):
+        lines = ["Some\n", "Heading\n", "-------\n"]
+        fenced, html = _markdown_block_regions(lines)
+        self.assertEqual(fenced | html, set())
+        self.assertEqual(_indented_code_lines(lines, fenced | html), set())
 
     def test_multiline_setext_heading_uses_all_text_lines(self):
         anchors = _markdown_anchors(
