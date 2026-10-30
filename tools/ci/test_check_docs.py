@@ -15,6 +15,7 @@ from check_docs import (
     _unescape_destination,
     _markdown_table_lines,
     _fenced_code_lines,
+    _matching_bracket_pairs,
     validate_repository,
 )
 
@@ -149,6 +150,45 @@ class LinkParsingTests(unittest.TestCase):
         )
         self.assertEqual(problems, [])
 
+    def test_html_comments_hide_links_and_reference_definitions(self):
+        text = (
+            "<!--\n"
+            "[docs]: docs/README.md\n"
+            "[broken](missing.md)\n"
+            "# hidden heading\n"
+            "-->\n"
+            "[docs]\n"
+            "[visible](existing.md)"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 7)])
+        self.assertEqual(problems, [])
+
+    def test_inline_html_comment_preserves_links_after_comment(self):
+        text = (
+            "[first](first.md) <!-- [hidden](missing.md) --> "
+            "[second](second.md)"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("first.md", 1), ("second.md", 1)])
+        self.assertEqual(problems, [])
+
+    def test_empty_inline_and_reference_destinations_are_valid(self):
+        text = "[self]()\n[empty]: <>\n[reference][empty]"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("", 1), ("", 3)])
+        self.assertEqual(problems, [])
+
+    def test_unmatched_brackets_are_paired_in_linear_pass(self):
+        self.assertEqual(_matching_bracket_pairs("[" * 100_000), {})
+        self.assertEqual(
+            _matching_bracket_pairs("[outer [inner]] \\[escaped]"),
+            {7: 13, 0: 14},
+        )
+        links, problems = _extract_links("[" * 10_000, "README.md")
+        self.assertEqual(links, [])
+        self.assertEqual(problems, [])
+
 class AnchorTests(unittest.TestCase):
     def test_github_style_heading_anchors_and_duplicates(self):
         anchors = _markdown_anchors("# Hello, World!\n\n## Hello, World!\n\n## " + BACKTICK + "Code" + BACKTICK + " & More\n")
@@ -174,6 +214,36 @@ class AnchorTests(unittest.TestCase):
         )
         self.assertIn("introduction", anchors)
         self.assertIn("quoted-setext-heading", anchors)
+
+    def test_raw_html_blocks_do_not_create_markdown_links_or_anchors(self):
+        text = (
+            "<div>\n"
+            "[hidden](missing.md)\n"
+            "# hidden heading\n"
+            "</div>\n\n"
+            "[visible](existing.md)\n"
+            "# visible heading\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        anchors = _markdown_anchors(text)
+        self.assertEqual(links, [("existing.md", 6)])
+        self.assertEqual(problems, [])
+        self.assertNotIn("hidden-heading", anchors)
+        self.assertIn("visible-heading", anchors)
+
+    def test_html_block_classes_are_excluded_from_markdown_parsing(self):
+        documents = (
+            "<script>\n[hidden](missing.md)\n</script>\n\n[visible](ok.md)",
+            "<?processor\n[hidden](missing.md)\n?>\n\n[visible](ok.md)",
+            "<![CDATA[\n[hidden](missing.md)\n]]>\n\n[visible](ok.md)",
+            "<!DOCTYPE html\n[hidden](missing.md)\n>\n\n[visible](ok.md)",
+            "<custom-element>\n[hidden](missing.md)\n</custom-element>\n\n[visible](ok.md)",
+        )
+        for document in documents:
+            with self.subTest(document=document.splitlines()[0]):
+                links, problems = _extract_links(document, "README.md")
+                self.assertEqual(links, [("ok.md", len(document.splitlines()) - 1)])
+                self.assertEqual(problems, [])
 
 class LineLengthTests(unittest.TestCase):
     def test_long_inline_code_can_be_atomic(self):
@@ -437,6 +507,48 @@ class RepositoryValidationTests(unittest.TestCase):
                 any(
                     problem.path == "docs/reference.markdown"
                     and "characters (limit 88)" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_comment_only_navigation_does_not_satisfy_required_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "README.md").write_text(
+                "<!--\n[docs]: docs/README.md\n-->\n[docs]\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    "required navigation link is missing: docs/README.md" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_empty_destinations_resolve_to_the_current_markdown_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            self_doc = root / "docs" / "self.md"
+            self_doc.write_text(
+                "# Home\n"
+                "[self]()\n"
+                "[home](#home)\n"
+                "[empty]: <>\n"
+                "[reference][empty]\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    problem.path == "docs/self.md"
+                    and (
+                        "link destination is empty" in problem.message
+                        or "missing internal link target" in problem.message
+                        or "missing heading anchor" in problem.message
+                    )
                     for problem in problems
                 )
             )
