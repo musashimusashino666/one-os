@@ -308,6 +308,7 @@ class LinkParsingTests(unittest.TestCase):
         text = (
             "![inline](assets/logo.png)\n"
             "![reference][docs-image]\n"
+            "\n"
             "[docs-image]: docs/README.md\n"
             "[clickable](docs/README.md)\n"
         )
