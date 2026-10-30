@@ -875,11 +875,13 @@ def _parse_destination_suffix(
     if closing_delimiter is not None and text[index] == closing_delimiter:
         return index + 1, None
     if not had_separator:
-        return None, "unexpected characters after link destination"
+        return index, "unexpected characters after link destination"
 
     title_end, error = _parse_link_title(text, index)
     if error is not None:
-        return None, error
+        # Resume at the malformed title so later independent links remain
+        # visible to the scanner instead of being discarded with the error.
+        return index, error
     assert title_end is not None
     index = title_end
     while index < len(text) and text[index].isspace():
@@ -888,10 +890,10 @@ def _parse_destination_suffix(
     if closing_delimiter is None:
         if index == len(text):
             return index, None
-        return None, "unexpected text after link title"
+        return index, "unexpected text after link title"
     if index < len(text) and text[index] == closing_delimiter:
         return index + 1, None
-    return None, "unexpected text after link title"
+    return index, "unexpected text after link title"
 
 
 def _parse_inline_destination(
@@ -1082,6 +1084,58 @@ def _mask_inline_html_tags(text: str) -> str:
     parser.feed(text)
     parser.close()
     return "".join(output)
+
+
+def _strip_inline_html_tags(text: str) -> str:
+    """Remove syntactically recognized inline HTML tags, preserving text like '<3>'."""
+    lines = text.splitlines(keepends=True)
+    line_offsets = [0]
+    for line in lines:
+        line_offsets.append(line_offsets[-1] + len(line))
+
+    spans: list[tuple[int, int]] = []
+
+    def tag_end(start: int) -> int:
+        quote: str | None = None
+        index = start + 1
+        while index < len(text):
+            char = text[index]
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == ">":
+                return index + 1
+            index += 1
+        return start + 1
+
+    class InlineTagStripper(HTMLParser):
+        def _record_current_tag(self) -> None:
+            line, column = self.getpos()
+            if line < 1 or line > len(lines):
+                return
+            start = line_offsets[line - 1] + column
+            if start < len(text) and text[start] == "<" and not _is_escaped(text, start):
+                end = tag_end(start)
+                if end > start + 1:
+                    spans.append((start, end))
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._record_current_tag()
+
+        def handle_endtag(self, tag: str) -> None:
+            self._record_current_tag()
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._record_current_tag()
+
+    parser = InlineTagStripper(convert_charrefs=False)
+    parser.feed(text)
+    parser.close()
+    for start, end in sorted(set(spans), reverse=True):
+        text = text[:start] + text[end:]
+    return text
 
 
 def _extract_links(
@@ -1322,8 +1376,8 @@ def _extract_links(
     # Remove complete definition blocks from link-use scanning, preserving
     # offsets and line numbers for actual reference use sites.
     scannable_lines: list[str] = []
-    for line_number, line in enumerate(masked_lines, 1):
-        if line_number in definition_lines:
+    for line_index, line in enumerate(masked_lines):
+        if line_index in definition_lines:
             scannable_lines.append(
                 "".join(
                     "\n" if char == "\n" else "\r" if char == "\r" else " "
@@ -1348,7 +1402,7 @@ def _extract_links(
         context = contexts[line_index]
         block_start = (
             line_index in ignored_blocks
-            or line_index + 1 in definition_lines
+            or line_index in definition_lines
             or line_index in table_lines
             or not normalized_line.strip()
             or atx_start.match(normalized_line) is not None
@@ -1379,6 +1433,75 @@ def _extract_links(
             return
         links.append((target, source_line))
 
+    def collect_nested_images(
+        label_start: int, label_end: int, outer_index: int
+    ) -> None:
+        """Collect image links nested inside an enclosing link's label."""
+        cursor = label_start
+        while cursor < label_end:
+            if (
+                content[cursor] != "!"
+                or _is_escaped(content, cursor)
+                or cursor + 1 >= label_end
+                or content[cursor + 1] != "["
+            ):
+                cursor += 1
+                continue
+
+            image_open = cursor + 1
+            image_close = bracket_pairs.get(image_open)
+            if image_close is None or image_close >= label_end:
+                cursor += 1
+                continue
+
+            suffix = image_close + 1
+            image_line = line_number + content.count("\n", outer_index, cursor)
+            if suffix < label_end and content[suffix] == "(":
+                target, image_end, error = _parse_inline_destination(content, suffix)
+                if error:
+                    problems.append(DocProblem(path, image_line, error))
+                elif target is not None:
+                    collect_target(_unescape_destination(target), image_line, True)
+                cursor = max(image_end, suffix + 1)
+                continue
+
+            reference_label: str | None = None
+            reference_end = suffix
+            if suffix < label_end and content[suffix] == "[":
+                close_reference = bracket_pairs.get(suffix)
+                if close_reference is not None and close_reference < label_end:
+                    explicit_label = content[suffix + 1:close_reference]
+                    reference_label = (
+                        explicit_label
+                        if explicit_label
+                        else content[image_open + 1:image_close]
+                    )
+                    reference_end = close_reference + 1
+            else:
+                candidate = _normalize_reference_label(
+                    content[image_open + 1:image_close]
+                )
+                if candidate in definitions:
+                    reference_label = content[image_open + 1:image_close]
+
+            if reference_label is not None:
+                definition = definitions.get(
+                    _normalize_reference_label(reference_label)
+                )
+                if definition is None:
+                    problems.append(
+                        DocProblem(
+                            path,
+                            image_line,
+                            f"undefined Markdown reference: [{reference_label}]",
+                        )
+                    )
+                elif definition[0] is not None:
+                    collect_target(definition[0], image_line, True)
+                cursor = reference_end
+            else:
+                cursor = image_close + 1
+
     while index < len(content):
         if content[index] != "[" or _is_escaped(content, index):
             advance_to(index + 1)
@@ -1398,6 +1521,8 @@ def _extract_links(
         )
 
         if next_index < len(content) and content[next_index] == "(":
+            if image_targets is not None and not is_image:
+                collect_nested_images(index + 1, close_bracket, index)
             target, end, error = _parse_inline_destination(content, next_index)
             if error:
                 problems.append(DocProblem(path, line_number, error))
@@ -1420,6 +1545,8 @@ def _extract_links(
                 reference_label = visible_label
 
         if reference_label is not None:
+            if image_targets is not None and not is_image:
+                collect_nested_images(index + 1, close_bracket, index)
             normalized = _normalize_reference_label(reference_label)
             definition = definitions.get(normalized)
             if definition is None:
@@ -1476,7 +1603,7 @@ def _strip_heading_markup(heading: str) -> str:
         code_tokens.append((token, code_text))
         heading = heading[:start] + token + heading[end:]
     heading = _strip_heading_link_destinations(heading)
-    heading = re.sub(r"<[^>]+>", "", heading)
+    heading = _strip_inline_html_tags(heading)
     heading = re.sub(r"\\([\\*_{}\[\]()#+\-.!_>])", r"\1", heading).replace("\\" + BACKTICK, BACKTICK)
     heading = re.sub(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", heading)
     heading = unescape(heading)
