@@ -118,6 +118,37 @@ class LinkParsingTests(unittest.TestCase):
 
 
 
+    def test_list_fenced_code_is_ignored(self):
+        text = (
+            "- item\n\n"
+            "    " + FENCE + "md\n"
+            "    [example](missing-file.md)\n"
+            "    " + FENCE + "\n"
+            "[actual](existing.md)"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 6)])
+        self.assertEqual(problems, [])
+
+    def test_multiline_reference_definitions_in_containers(self):
+        text = (
+            "[top]:\n"
+            "  docs/guide.md\n"
+            "[open][top]\n\n"
+            "> [quoted]:\n"
+            ">   docs/guide.md\n"
+            "> [open][quoted]\n\n"
+            "- [listed]:\n"
+            "  docs/guide.md\n"
+            "  [open][listed]\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(
+            links,
+            [("docs/guide.md", 3), ("docs/guide.md", 7), ("docs/guide.md", 11)],
+        )
+        self.assertEqual(problems, [])
+
 class AnchorTests(unittest.TestCase):
     def test_github_style_heading_anchors_and_duplicates(self):
         anchors = _markdown_anchors("# Hello, World!\n\n## Hello, World!\n\n## " + BACKTICK + "Code" + BACKTICK + " & More\n")
@@ -134,6 +165,15 @@ class AnchorTests(unittest.TestCase):
         self.assertEqual(_resolve_target("docs/index.md", "guide.md#Getting%20Started"),
                          ("docs/guide.md", "Getting Started", False))
 
+
+    def test_blockquote_atx_and_setext_headings_create_anchors(self):
+        anchors = _markdown_anchors(
+            "> # Introduction\n\n"
+            "> Quoted Setext Heading\n"
+            "> ---------------------\n"
+        )
+        self.assertIn("introduction", anchors)
+        self.assertIn("quoted-setext-heading", anchors)
 
 class LineLengthTests(unittest.TestCase):
     def test_long_inline_code_can_be_atomic(self):
@@ -341,6 +381,65 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertFalse(any("missing internal link target" in p.message for p in problems))
             self.assertFalse(any(p.path == "CONTRIBUTING.md" for p in problems))
 
+
+    def test_blockquote_heading_fragment_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "guide.md").write_text(
+                "> # Introduction\n", encoding="utf-8"
+            )
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\n[quoted heading](docs/guide.md#introduction)\n")
+            self.assertEqual(validate_repository(root), [])
+
+    def test_list_fenced_code_is_excluded_from_link_and_line_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            block = (
+                "\n- example\n\n"
+                "    " + FENCE + "text\n"
+                "    " + "x" * 120 + " [ignored](missing.md)\n"
+                "    " + FENCE + "\n"
+            )
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(block)
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and (
+                        "missing internal link target" in problem.message
+                        or "characters (limit 88)" in problem.message
+                    )
+                    for problem in problems
+                )
+            )
+
+    def test_markdown_extension_is_validated_like_md(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "reference.markdown").write_text(
+                "[missing](not-found.md)\n" + "x" * 89 + "\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "docs/reference.markdown"
+                    and "missing internal link target" in problem.message
+                    for problem in problems
+                )
+            )
+            self.assertTrue(
+                any(
+                    problem.path == "docs/reference.markdown"
+                    and "characters (limit 88)" in problem.message
+                    for problem in problems
+                )
+            )
 
 if __name__ == "__main__":
     unittest.main()
