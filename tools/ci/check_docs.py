@@ -1037,10 +1037,11 @@ def _extract_links(
         index = next_index
 
     def collect_target(target: str, source_line: int, is_image: bool) -> None:
-        if is_image and image_targets is not None:
-            image_targets.append((target, source_line))
-        else:
-            links.append((target, source_line))
+        if is_image:
+            if image_targets is not None:
+                image_targets.append((target, source_line))
+            return
+        links.append((target, source_line))
 
     while index < len(content):
         if content[index] != "[" or _is_escaped(content, index):
