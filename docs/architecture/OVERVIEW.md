@@ -11,12 +11,29 @@ ONE OS starts with a small x86_64 Rust kernel and grows incrementally toward a s
 | Layer | Responsibilities | Placement target |
 | --- | --- | --- |
 | Hardware and boot | CPU features, boot protocol, memory map, integrity of initial image | Firmware/bootloader plus a small kernel handoff contract |
-| Kernel core | Scheduling, address spaces, interrupt/exception handling, physical memory, secure object lifecycle | Kernel; smallest trusted core practical |
+| Kernel core | Scheduling primitives, address spaces, interrupt/exception handling, physical memory, core IPC, kernel-enforced authority, secure object lifecycle | Capability-oriented microkernel; smallest trusted core practical as the long-term target, not a claim about the current bootstrap implementation |
 | Authority and isolation | Capability validation, process boundaries, IPC primitives, resource transfer and revocation | Enforcement in kernel; policy and user-facing explanation outside it |
 | System services | Storage, networking, device management, service supervision, update orchestration | Isolated user-space services where practical |
 | Application runtime | Native ABI, sandboxing, compatibility or virtualized execution paths | Explicitly separated execution contracts |
 | User environment | Shell/compositor or equivalent interaction model, settings, permission views, recovery UX | User space |
 | Automation and AI | Planning, delegated actions, tool access, provenance and audit records | Untrusted or separately constrained clients; never an implicit authority bypass |
+
+## World-class target architecture and device profiles
+
+The canonical long-term definition and full target design are in [World-Class OS: Definition and Design](../vision/WORLD_CLASS_OS.md). ONE OS targets one coherent platform across four domains: **PC/workstation, smartphone/mobile, server, and embedded/edge**. Common security semantics, authority rules, interface contracts, and evidence policy are shared; binaries, drivers, UI, and scheduling policies may differ by profile.
+
+The target architecture is a **capability-oriented microkernel** with a small trusted computing base, as recorded in [ADR-0003](../project/decisions/ADR-0003-capability-microkernel-platform.md). Core process/address-space management, interrupt and exception handling, essential scheduling primitives, core IPC, memory/resource lifecycle, and enforcement of protected operations remain in the kernel. Filesystems, networking, device drivers, service supervision, update orchestration, user environments, and AI/automation clients should run in isolated user space where the platform's required guarantees permit. Any security-boundary change must follow the ADR and acceptance-test process.
+
+| Target profile | Primary priorities | Profile-specific requirements |
+| --- | --- | --- |
+| Personal / PC | Responsiveness, accessibility, productivity, practical application compatibility | Windowing/input, graphics/audio, peripherals, compatibility and recovery UX |
+| Mobile | Energy efficiency, privacy, secure sensor/radio use | Power states, modem/camera/sensors, thermal limits and background lifecycle |
+| Server | Throughput, tail latency, resource isolation and service continuity | SMP and remote TLB protocols, NUMA where relevant, virtualization and remote operation |
+| Embedded / edge | Bounded resource use and predictable operation | Timing guarantees only where explicitly supported and verified, watchdogs, fail-safe state and long service life |
+
+The application platform must declare separate contracts for native APIs, POSIX compatibility, WebAssembly, containers, and virtual machines. These are different execution and isolation mechanisms, not one interchangeable compatibility promise. Hardware architecture support (initially x86_64, then separately validated AArch64; additional architectures only under an explicit support plan) must be tested per target.
+
+These are long-term targets. The current bootstrap does not yet implement the complete microkernel service architecture, four device profiles, application platform, or user environment.
 
 ## Required boundary rules
 

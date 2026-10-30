@@ -6,6 +6,8 @@
 
 “World-class” is an engineering ambition to be earned through comparative, reproducible evidence. It is not a claim implied by the name, language choice, architecture, or isolated passing tests.
 
+The canonical definition, seven quality dimensions, target architecture, device profiles, and comparative-evaluation model are specified in [World-Class OS: Definition and Design](WORLD_CLASS_OS.md). That document is the source of truth for the long-term target; this Vision summarizes the product purpose, and neither document implies that a target is already implemented.
+
 ## Product thesis
 
 People should not need to grant software broad, invisible, or permanent authority simply to use a computer. The operating system should make important authority boundaries enforceable, understandable, observable, and revocable. A buggy or compromised non-kernel service must not gain authority beyond its explicit grants or cross into unrelated protected components. This guarantee is about containment: a compromised service may still misuse the rights explicitly delegated to it and may deny service, so grants must be narrow, attributable, revocable, and tested. An ordinary service or broker must never be an unchecked alternative to kernel enforcement. Update interruption and automation/AI actions must remain subject to the same rules.
@@ -14,8 +16,8 @@ ONE OS treats security, owner control, recoverability, usability, and compatibil
 
 ## Intended users and initial validation cohort
 
-- **Long-term product audience:** people who use a general-purpose personal computer and need dependable control over their applications, data, devices, network access, and background activity.
-- **Initial validation cohort:** technically capable individual users, independent developers, and researchers who value inspectability and can help expose flaws in the authority, isolation, and recovery model.
+- **Long-term product audience:** people and organizations using PCs and workstations, smartphones and mobile devices, servers, and embedded/edge devices who need dependable control over software, data, devices, networks, and background activity.
+- **Initial validation cohort:** technically capable individual users, independent developers, and researchers who value inspectability and can help expose flaws in the authority, isolation, and recovery model. The initial cohort is deliberately narrower than the long-term four-domain platform scope.
 - **Product assumption to validate:** a coherent combination of enforceable least authority, clear owner controls, and tested recovery is valuable enough to justify any compatibility, setup, or performance trade-offs. User research and comparison against established alternatives must test this assumption; it must not be treated as fact.
 
 The initial cohort is a development and validation choice, not a statement that the eventual system should remain expert-only. User-facing controls must be understandable without requiring users to reason about page tables, capabilities, or kernel internals.
@@ -46,7 +48,7 @@ No hypothesis is validated by documentation alone. Comparative work must name th
 
 ## What “world-class” means for ONE OS
 
-The phrase does **not** mean universally best at every workload or a single score that hides severe weaknesses. It means becoming demonstrably best-in-class for the declared target users and priority outcomes, while meeting explicit minimum gates in every safety-critical dimension.
+The phrase does **not** mean universally best at every workload or a single score that hides severe weaknesses. It means becoming demonstrably best-in-class for the declared target users and priority outcomes, while meeting explicit minimum gates in every safety-critical dimension. The canonical seven-dimension model and proposed strategic weights are in [World-Class OS: Definition and Design](WORLD_CLASS_OS.md); the release gates and detailed acceptance evidence remain authoritative in [Success Criteria](SUCCESS_CRITERIA.md).
 
 A defensible claim requires all of the following:
 

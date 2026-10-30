@@ -4,13 +4,14 @@ This directory is the authoritative documentation set for ONE OS. Documents desc
 
 ## Start here
 
-1. [Vision](vision/VISION.md) — what ONE OS is trying to become and what “world-class” means in evidence-based terms.
-2. [Principles](vision/PRINCIPLES.md) — rules that constrain design and implementation.
-3. [Success criteria](vision/SUCCESS_CRITERIA.md) — outcomes and evidence needed to evaluate progress.
-4. [Architecture overview](architecture/OVERVIEW.md) — target system layers and current boundaries.
-5. [Security model](architecture/SECURITY_MODEL.md) — assets, threats, assumptions, controls, and explicit limits.
-6. [Implementation status](project/IMPLEMENTATION_STATUS.md) — what exists now, what has been tested, and what has not been proved.
-7. [Roadmap](project/ROADMAP.md) — ordered milestones and exit criteria.
+1. [World-class OS definition and design](vision/WORLD_CLASS_OS.md) — canonical definition, seven quality dimensions, target architecture, device profiles, and evaluation model.
+2. [Vision](vision/VISION.md) — why ONE OS exists, the product thesis, and evidence-based goals.
+3. [Principles](vision/PRINCIPLES.md) — rules that constrain design and implementation.
+4. [Success criteria](vision/SUCCESS_CRITERIA.md) — detailed outcomes, acceptance evidence, and release gates.
+5. [Architecture overview](architecture/OVERVIEW.md) — target system layers, device profiles, and current boundaries.
+6. [Security model](architecture/SECURITY_MODEL.md) — assets, threats, assumptions, controls, and explicit limits.
+7. [Implementation status](project/IMPLEMENTATION_STATUS.md) — what exists now, what has been tested, and what has not been proved.
+8. [Roadmap](project/ROADMAP.md) — ordered milestones and exit criteria.
 
 ## Top-level entry points
 
@@ -18,7 +19,7 @@ The files `SECURITY.md`, `DEVELOPMENT.md`, and `ROADMAP.md` are concise entry po
 
 ## By purpose
 
-- **Vision:** `vision/VISION.md`, `vision/PRINCIPLES.md`, `vision/SUCCESS_CRITERIA.md`
+- **Vision:** `vision/WORLD_CLASS_OS.md`, `vision/VISION.md`, `vision/PRINCIPLES.md`, `vision/SUCCESS_CRITERIA.md`
 - **Architecture:** `architecture/OVERVIEW.md`, `architecture/SECURITY_MODEL.md`, `architecture/USER_EXPERIENCE.md`, `architecture/UPDATES_AND_RECOVERY.md`
 - **Normative specifications:** `specs/BOOT_AND_MEMORY.md`, `specs/VIRTUAL_MEMORY_ACCEPTANCE.md`, `specs/ADDRESS_SPACE_LIFECYCLE.md`, `specs/PROCESS_AND_CAPABILITIES.md`, `specs/RING3_ISOLATION_ACCEPTANCE.md`
 - **Engineering and evidence:** `engineering/DEVELOPMENT.md`, `engineering/VERIFICATION.md`

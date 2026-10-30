@@ -2,6 +2,8 @@
 
 These principles are constraints on architecture, code, interface behavior, and project claims. They are intended to resolve design disagreements consistently.
 
+The long-term definition and target design—including the seven quality dimensions and the PC, mobile, server, and embedded/edge scope—are specified in [World-Class OS: Definition and Design](WORLD_CLASS_OS.md). This document supplies the normative principles that constrain implementation; it does not change the status of any feature.
+
 ## P1. Least authority by default
 
 Every component begins with no authority beyond what is required to start. Additional access is granted explicitly, scoped to a resource and operation, and revocable. Security-critical checks MUST be enforced by a trusted component, not only by application libraries or UI conventions.
