@@ -324,9 +324,9 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                 errors.append(f"{path}:{line}: {escape_error}")
                 continue
 
-            # GNU as accepts statement separators within one template string.
-            # Normalize Rust escapes first, then inspect every possible statement.
-            statements = re.split(r"[;\r\n\t]+", value)
+            # Newlines and semicolons delimit statements. Tabs remain whitespace:
+            # this catches directives after a tab without hiding "jmp<TAB>*%rax".
+            statements = re.split(r"[;\r\n]+", value)
             for statement in statements:
                 candidate = statement.strip()
                 if not candidate:
@@ -336,6 +336,17 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                         errors.append(
                             f"{path}:{line}: assembler directive-like statement {candidate!r} is denied; "
                             "only .global symbol exports and local .L labels are allowed"
+                        )
+                else:
+                    # A directive can be hidden after an instruction and horizontal
+                    # whitespace. Ignore .L symbols, which are valid branch operands.
+                    for directive in re.finditer(
+                        r"(?<!\S)\.(?!L[A-Za-z0-9_.$@]*:?)([A-Za-z_][A-Za-z0-9_.$@]*)",
+                        candidate,
+                    ):
+                        errors.append(
+                            f"{path}:{line}: assembler directive-like token "
+                            f".{directive.group(1)} is denied inside a statement"
                         )
                 if _is_indirect_control_transfer(candidate):
                     errors.append(
