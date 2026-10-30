@@ -232,18 +232,24 @@ unsafe extern "C" {
 
 #[cfg(feature = "test-nx-protection")]
 global_asm!(
-    ".global oneos_vm_test_nx_execute",
     ".global oneos_vm_test_nx_recovery",
-    "oneos_vm_test_nx_execute:",
-    "mov rax, rdi",
-    "jmp rax",
     "oneos_vm_test_nx_recovery:",
     "ret",
 );
 
 #[cfg(feature = "test-nx-protection")]
+unsafe fn oneos_vm_test_nx_execute(target: u64) {
+    // SAFETY: the dedicated NX acceptance path passes the address of its
+    // deliberately non-executable test page after arming the exact #PF guard.
+    let entry: unsafe extern "C" fn() =
+        unsafe { core::mem::transmute::<usize, unsafe extern "C" fn()>(target as usize) };
+    // SAFETY: this indirect call is the operation under test; #PF recovery
+    // redirects the saved RIP to the assembly continuation below.
+    unsafe { entry() };
+}
+
+#[cfg(feature = "test-nx-protection")]
 unsafe extern "C" {
-    fn oneos_vm_test_nx_execute(target: u64);
     static oneos_vm_test_nx_recovery: u8;
 }
 
