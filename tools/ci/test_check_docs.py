@@ -37,7 +37,7 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_escaped_closing_parenthesis_adjacent_to_link_close_is_preserved(self):
-        links, problems = _extract_links(r"[guide](guide\\))", "README.md")
+        links, problems = _extract_links(r"[guide](guide\))", "README.md")
         self.assertEqual(links, [("guide)", 1)])
         self.assertEqual(problems, [])
 
