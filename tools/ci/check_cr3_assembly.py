@@ -1527,7 +1527,7 @@ def _asm_blocks_reading_control_register_with_locations(
 ) -> list[tuple[str, int]]:
     """Find asm! blocks which copy a control register into an output operand."""
     pattern = re.compile(
-        rf"\bmov(?:q)?\s+\{{\s*\}}\s*,\s*{re.escape(register)}\b",
+        rf"\bmov(?:q)?\s+\{{\s*(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*)?(?:\s*:[^{{}}]+)?\s*\}}\s*,\s*{re.escape(register)}\b",
         re.IGNORECASE,
     )
     blocks: list[tuple[str, int]] = []
@@ -1617,8 +1617,8 @@ def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
         ]
         if len(derivations) != 1:
             return False, (
-                f"CR3 switch sequence {switch_number} must derive the PGE-cleared "
-                "value from the exact CR4 snapshot later used for restoration"
+                f"CR3 switch sequence {switch_number} must restore the original cr4 "
+                "value from the exact CR4 snapshot used to derive the PGE-cleared value"
             )
 
         derivation_start = function_start + derivations[0].start()
@@ -1626,7 +1626,7 @@ def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
             read_start
             for read_block, read_start in reads
             if _rust_function_owner_at(source, read_start) == disable_owner
-            and original_value in _asm_register_bindings(read_block, "out")
+            and _asm_register_bindings(read_block, "out") == [original_value]
             and read_start < derivation_start
         ]
         if not read_offsets:
