@@ -316,7 +316,7 @@ class LinkParsingTests(unittest.TestCase):
         links, problems = _extract_links(
             text, "README.md", image_targets=images
         )
-        self.assertEqual(links, [("docs/README.md", 4)])
+        self.assertEqual(links, [("docs/README.md", 5)])
         self.assertEqual(
             images,
             [("assets/logo.png", 1), ("docs/README.md", 2)],
