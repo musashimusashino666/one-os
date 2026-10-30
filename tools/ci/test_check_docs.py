@@ -737,7 +737,7 @@ class RepositoryValidationTests(unittest.TestCase):
 
     def test_malformed_inline_link_does_not_hide_later_links(self):
         links, problems = _extract_links(
-            "[broken](unterminated\\n\\n[missing](missing.md)",
+            "[broken](unterminated\n\n[missing](missing.md)",
             "README.md",
         )
         self.assertEqual(links, [("missing.md", 3)])
@@ -752,7 +752,7 @@ class RepositoryValidationTests(unittest.TestCase):
             self.make_repo(root)
             with (root / "README.md").open("a", encoding="utf-8") as output:
                 output.write(
-                    "\\n[![logo](assets/missing.png)](docs/README.md)\\n"
+                    "\n[![logo](assets/missing.png)](docs/README.md)\n"
                 )
             problems = validate_repository(root)
             self.assertTrue(
@@ -769,9 +769,9 @@ class RepositoryValidationTests(unittest.TestCase):
             root = Path(directory)
             self.make_repo(root)
             with (root / "docs" / "guide.md").open("a", encoding="utf-8") as output:
-                output.write("\\n## <3>\\n")
+                output.write("\n## <3>\n")
             with (root / "README.md").open("a", encoding="utf-8") as output:
-                output.write("\\n[three](docs/guide.md#3)\\n")
+                output.write("\n[three](docs/guide.md#3)\n")
             problems = validate_repository(root)
             self.assertFalse(
                 any(
