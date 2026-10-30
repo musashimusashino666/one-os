@@ -1023,6 +1023,67 @@ def _normalize_reference_label(label: str) -> str:
     return " ".join(label.casefold().split())
 
 
+
+def _mask_inline_html_tags(text: str) -> str:
+    """Mask inline HTML tags so Markdown syntax in attributes is not parsed."""
+    lines = text.splitlines(keepends=True)
+    line_offsets = [0]
+    for line in lines:
+        line_offsets.append(line_offsets[-1] + len(line))
+    output = list(text)
+
+    def tag_end(start: int) -> int:
+        quote: str | None = None
+        index = start + 1
+        while index < len(text):
+            char = text[index]
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == ">":
+                return index + 1
+            index += 1
+        return start + 1
+
+    class InlineTagMasker(HTMLParser):
+        def _mask_current_tag(self) -> None:
+            line, column = self.getpos()
+            if line < 1 or line > len(lines):
+                return
+            start = line_offsets[line - 1] + column
+            if start >= len(text) or text[start] != "<" or _is_escaped(text, start):
+                return
+            end = tag_end(start)
+            for position in range(start, end):
+                if output[position] not in "\r\n":
+                    output[position] = " "
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._mask_current_tag()
+
+        def handle_endtag(self, tag: str) -> None:
+            self._mask_current_tag()
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self._mask_current_tag()
+
+        def handle_decl(self, decl: str) -> None:
+            self._mask_current_tag()
+
+        def handle_pi(self, data: str) -> None:
+            self._mask_current_tag()
+
+        def unknown_decl(self, data: str) -> None:
+            self._mask_current_tag()
+
+    parser = InlineTagMasker(convert_charrefs=False)
+    parser.feed(text)
+    parser.close()
+    return "".join(output)
+
+
 def _extract_links(
     text: str,
     path: str,
@@ -1042,6 +1103,7 @@ def _extract_links(
     ignored_blocks |= _indented_code_lines(original_lines, ignored_blocks)
     html_masked = _mask_html_blocks_and_comments(text)
     masked = _mask_inline_code(html_masked, ignored_blocks)
+    masked = _mask_inline_html_tags(masked)
     masked_lines = masked.splitlines(keepends=True)
 
     links: list[tuple[str, int]] = []
@@ -1069,19 +1131,102 @@ def _extract_links(
         r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
     )
 
+    normalized_content = "".join(normalized_lines)
+    line_offsets = [0]
+    for normalized_line in normalized_lines:
+        line_offsets.append(line_offsets[-1] + len(normalized_line) + 1)
+
+    table_lines = _markdown_table_lines(original_lines, ignored_blocks)
+    reference_boundaries: set[int] = set()
+    reference_offset = 0
+    previous_context: tuple[int, tuple[int, ...], bool] | None = None
+    for line_index, normalized_line in enumerate(normalized_lines):
+        context = contexts[line_index]
+        block_start = (
+            line_index in ignored_blocks
+            or line_index in table_lines
+            or not normalized_line.strip()
+            or atx_heading.match(normalized_line) is not None
+            or setext_underline.fullmatch(normalized_line) is not None
+            or thematic_break.fullmatch(normalized_line) is not None
+            or context[2]
+        )
+        if previous_context is not None and context[:2] != previous_context[:2]:
+            block_start = True
+        if block_start:
+            reference_boundaries.add(reference_offset)
+        reference_offset += len(normalized_line) + 1
+        previous_context = context
+
+    reference_pairs = _matching_bracket_pairs(
+        normalized_content, reference_boundaries
+    )
+
+    def reference_continuation_allowed(
+        candidate_index: int, base_context: tuple[int, tuple[int, ...], bool]
+    ) -> bool:
+        if candidate_index >= len(normalized_lines) or candidate_index in ignored_blocks:
+            return False
+        candidate = normalized_lines[candidate_index]
+        candidate_context = contexts[candidate_index]
+        if (
+            not candidate.strip()
+            or candidate_context[:2] != base_context[:2]
+            or candidate_context[2]
+        ):
+            return False
+        indentation = len(candidate) - len(candidate.lstrip(" \t"))
+        if indentation > 3:
+            return False
+        return True
+
     for index, line in enumerate(normalized_lines):
         if index in ignored_blocks:
             continue
-        match = re.match(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$", line)
-        if not match:
+        opening = re.match(r"^ {0,3}\[", line)
+        if opening is None:
+            continue
+
+        open_offset = line_offsets[index] + opening.end() - 1
+        close_offset = reference_pairs.get(open_offset)
+        if close_offset is None or close_offset + 1 >= len(normalized_content):
+            continue
+        if normalized_content[close_offset + 1] != ":":
+            continue
+
+        label_text = normalized_content[open_offset + 1:close_offset]
+        if not label_text.strip() or len(label_text) > 999:
+            continue
+        # Reference labels cannot contain unescaped opening brackets. Escaped
+        # closing brackets remain part of the label rather than ending it.
+        if any(
+            char == "[" and not _is_escaped(label_text, position)
+            for position, char in enumerate(label_text)
+        ):
+            continue
+
+        label_end_line = index
+        while (
+            label_end_line + 1 < len(normalized_lines)
+            and line_offsets[label_end_line + 1] <= close_offset
+        ):
+            label_end_line += 1
+        base_context = contexts[index]
+        if any(
+            candidate in ignored_blocks
+            or not normalized_lines[candidate].strip()
+            or contexts[candidate][:2] != base_context[:2]
+            or (candidate > index and contexts[candidate][2])
+            for candidate in range(index, label_end_line + 1)
+        ):
             continue
 
         line_number = index + 1
-        current_quote, current_lists, opened_item = contexts[index]
         if index > 0:
             previous = index - 1
             previous_line = normalized_lines[previous]
             previous_quote, previous_lists, _ = contexts[previous]
+            current_quote, current_lists, opened_item = contexts[index]
             starts_new_block = (
                 previous in ignored_blocks
                 or previous + 1 in definition_lines
@@ -1095,26 +1240,60 @@ def _extract_links(
                 # A reference definition cannot interrupt an open paragraph.
                 continue
 
-        label = _normalize_reference_label(match.group(1))
-        destination_text = match.group(2).strip()
-        continuation_line: int | None = None
+        label = _normalize_reference_label(label_text)
+        if not label:
+            continue
 
-        # CommonMark allows the destination to start on the following line.
-        if not destination_text and index + 1 < len(normalized_lines):
-            next_index = index + 1
-            next_quote, next_lists, next_opened = contexts[next_index]
-            next_text = normalized_lines[next_index].strip()
-            if (
-                next_index not in ignored_blocks
-                and next_text
-                and not next_opened
-                and next_quote == current_quote
-                and next_lists == current_lists
-            ):
-                destination_text = next_text
-                continuation_line = next_index + 1
+        label_line_end = line_offsets[label_end_line] + len(
+            normalized_lines[label_end_line]
+        )
+        payload = normalized_content[close_offset + 2:label_line_end].strip()
+        consumed_lines = set(range(index, label_end_line + 1))
+        destination_line = label_end_line
 
-        target, destination_error = _parse_reference_destination(destination_text)
+        if not payload:
+            next_index = destination_line + 1
+            if not reference_continuation_allowed(next_index, base_context):
+                payload = ""
+            else:
+                payload = normalized_lines[next_index].strip()
+                consumed_lines.add(next_index)
+                destination_line = next_index
+
+        if payload:
+            target, destination_error = _parse_reference_destination(payload)
+        else:
+            target, destination_error = (
+                None,
+                "link reference definition has no destination",
+            )
+
+        def title_can_start(candidate_index: int) -> bool:
+            if not reference_continuation_allowed(candidate_index, base_context):
+                return False
+            candidate = normalized_lines[candidate_index].lstrip(" \t")
+            return candidate.startswith(('"', "'", "("))
+
+        next_index = destination_line + 1
+        if destination_error is None and title_can_start(next_index):
+            payload += "\n" + normalized_lines[next_index].strip()
+            consumed_lines.add(next_index)
+            destination_line = next_index
+            target, destination_error = _parse_reference_destination(payload)
+
+        while destination_error in {
+            "link title is not closed",
+            "parenthesized link title is not closed",
+        }:
+            next_index = destination_line + 1
+            if not reference_continuation_allowed(next_index, base_context):
+                break
+            payload += "\n" + normalized_lines[next_index].strip()
+            consumed_lines.add(next_index)
+            destination_line = next_index
+            target, destination_error = _parse_reference_destination(payload)
+
+        definition_lines.update(consumed_lines)
         if destination_error is not None or target is None:
             detail = destination_error or "missing destination"
             problems.append(
@@ -1125,10 +1304,6 @@ def _extract_links(
                 )
             )
             continue
-
-        definition_lines.add(line_number)
-        if continuation_line is not None:
-            definition_lines.add(continuation_line)
 
         if label in definitions:
             first_line = definitions[label][1]
