@@ -751,7 +751,20 @@ def _line_length_is_exempt(
     if is_table_row:
         return False  # GFM table rows must always obey the line-length limit.
 
-    spans = list(code_ranges) if code_ranges is not None else _inline_code_ranges(line)
+    candidate_code_spans = code_ranges if code_ranges is not None else _inline_code_ranges(line)
+    spans: list[tuple[int, int]] = []
+    for start, end in candidate_code_spans:
+        code_text = line[start:end]
+        content_start = 0
+        while content_start < len(code_text) and code_text[content_start] == BACKTICK:
+            content_start += 1
+        content_end = len(code_text)
+        while content_end > content_start and code_text[content_end - 1] == BACKTICK:
+            content_end -= 1
+        # Spaces/tabs in a code span make it breakable under the documented
+        # policy; only a single unbroken code token is treated as atomic.
+        if not any(char.isspace() for char in code_text[content_start:content_end]):
+            spans.append((start, end))
     spans.extend((match.start(), match.end()) for match in re.finditer(r"https?://\S+", line))
     if not spans:
         return False
@@ -793,11 +806,16 @@ def _mask_inline_code(
                 output[index] = " "
     return "".join(output)
 
-def _matching_bracket_pairs(text: str) -> dict[int, int]:
-    """Pair nested square brackets in one left-to-right pass."""
+def _matching_bracket_pairs(
+    text: str, boundary_offsets: set[int] | None = None
+) -> dict[int, int]:
+    """Pair nested square brackets without crossing supplied block boundaries."""
     stack: list[int] = []
     pairs: dict[int, int] = {}
+    boundaries = boundary_offsets or set()
     for index, char in enumerate(text):
+        if index in boundaries:
+            stack.clear()
         if char not in "[]" or _is_escaped(text, index):
             continue
         if char == "[":
@@ -1027,7 +1045,36 @@ def _extract_links(
             scannable_lines.append(line)
     content = "".join(scannable_lines)
 
-    bracket_pairs = _matching_bracket_pairs(content)
+    # Inline bracket pairing must not bridge Markdown block boundaries. Soft
+    # line breaks inside a paragraph remain available to multiline link labels.
+    table_lines = _markdown_table_lines(original_lines, ignored_blocks)
+    block_boundaries: set[int] = set()
+    offset = 0
+    previous_context: tuple[int, tuple[int, ...], bool] | None = None
+    atx_start = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+    thematic_break = re.compile(r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+    setext_underline = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+    for line_index, line in enumerate(scannable_lines):
+        normalized_line = normalized_lines[line_index]
+        context = contexts[line_index]
+        block_start = (
+            line_index in ignored_blocks
+            or line_index + 1 in definition_lines
+            or line_index in table_lines
+            or not normalized_line.strip()
+            or atx_start.match(normalized_line) is not None
+            or thematic_break.fullmatch(normalized_line) is not None
+            or setext_underline.fullmatch(normalized_line) is not None
+            or context[2]
+        )
+        if previous_context is not None and context[:2] != previous_context[:2]:
+            block_start = True
+        if block_start:
+            block_boundaries.add(offset)
+        offset += len(line)
+        previous_context = context
+
+    bracket_pairs = _matching_bracket_pairs(content, block_boundaries)
     index = 0
     line_number = 1
 
@@ -1103,6 +1150,30 @@ def _extract_links(
 
     return links, problems
 
+def _strip_heading_link_destinations(heading: str) -> str:
+    """Remove inline/reference link destinations while retaining visible labels.
+
+    The shared bracket matcher and inline destination parser handle nested
+    brackets and balanced parentheses in destinations.
+    """
+    bracket_pairs = _matching_bracket_pairs(heading)
+    removals: list[tuple[int, int]] = []
+    for _, closing in bracket_pairs.items():
+        suffix = closing + 1
+        if suffix < len(heading) and heading[suffix] == "(":
+            _, end, error = _parse_inline_destination(heading, suffix)
+            if error is None:
+                removals.append((suffix, end))
+        elif suffix < len(heading) and heading[suffix] == "[":
+            reference_close = bracket_pairs.get(suffix)
+            if reference_close is not None:
+                removals.append((suffix, reference_close + 1))
+
+    for start, end in sorted(removals, reverse=True):
+        heading = heading[:start] + heading[end:]
+    return heading
+
+
 def _strip_heading_markup(heading: str) -> str:
     # Protect code-span contents from HTML character-reference decoding:
     # CommonMark leaves entities literal inside code spans.
@@ -1115,8 +1186,7 @@ def _strip_heading_markup(heading: str) -> str:
         code_text = heading[start + delimiter_length:end - delimiter_length]
         code_tokens.append((token, code_text))
         heading = heading[:start] + token + heading[end:]
-    heading = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    heading = re.sub(r"!?\[([^\]]*)\]\[[^]]*\]", r"\1", heading)
+    heading = _strip_heading_link_destinations(heading)
     heading = re.sub(r"<[^>]+>", "", heading)
     heading = re.sub(r"\\([\\*_{}\[\]()#+\-.!_>])", r"\1", heading).replace("\\" + BACKTICK, BACKTICK)
     heading = re.sub(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", heading)
@@ -1371,7 +1441,7 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
             if not is_image:
                 discovered_links[relative].append(resolved)
 
-            if fragment:
+            if fragment and not is_image:
                 anchor_file = target_path
                 if target_path.is_dir():
                     readme = target_path / "README.md"
