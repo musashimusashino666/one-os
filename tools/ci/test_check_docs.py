@@ -46,6 +46,26 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [])
         self.assertEqual(problems, [])
 
+    def test_unquoted_invalid_inline_link_title_is_rejected(self):
+        links, problems = _extract_links(
+            "[docs](docs/README.md invalid-title)", "README.md"
+        )
+        self.assertEqual(links, [])
+        self.assertTrue(any("link title must be quoted or parenthesized" in p.message
+                            for p in problems))
+
+    def test_valid_inline_link_title_forms_are_accepted(self):
+        examples = (
+            '[a](a.md "double quoted")',
+            "[b](b.md 'single quoted')",
+            "[c](c.md (parenthesized (nested) title))",
+        )
+        for source in examples:
+            with self.subTest(source=source):
+                links, problems = _extract_links(source, "README.md")
+                self.assertEqual(len(links), 1)
+                self.assertEqual(problems, [])
+
     def test_malformed_unclosed_destination_is_reported(self):
         links, problems = _extract_links("[broken](docs/guide.md", "README.md")
         self.assertEqual(links, [])
@@ -61,6 +81,35 @@ class LinkParsingTests(unittest.TestCase):
         _, problems = _extract_links("[guide][missing]", "README.md")
         self.assertEqual(len(problems), 1)
         self.assertIn("undefined Markdown reference", problems[0].message)
+
+    def test_reference_definition_inside_paragraph_is_not_recognized(self):
+        links, problems = _extract_links(
+            "Introduction\n[docs]: docs/README.md\n\n[docs]",
+            "README.md",
+        )
+        self.assertEqual(links, [])
+        self.assertEqual(problems, [])
+
+    def test_reference_definition_rejects_unquoted_invalid_title(self):
+        links, problems = _extract_links(
+            '[docs]: docs/README.md invalid-title\n[docs]',
+            "README.md",
+        )
+        self.assertEqual(links, [])
+        self.assertTrue(
+            any("link title must be quoted or parenthesized" in p.message
+                for p in problems)
+        )
+
+    def test_reference_definition_accepts_valid_title_forms(self):
+        for title in ('"double quoted"', "'single quoted'", "(parenthesized (nested))"):
+            with self.subTest(title=title):
+                links, problems = _extract_links(
+                    f"[docs]: docs/README.md {title}\n[docs]",
+                    "README.md",
+                )
+                self.assertEqual(links, [("docs/README.md", 2)])
+                self.assertEqual(problems, [])
 
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
@@ -519,6 +568,79 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertIn(
                 "required navigation link is missing: docs/README.md", messages
             )
+
+    def test_paragraph_embedded_reference_definition_does_not_satisfy_navigation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "README.md").write_text(
+                "Introduction\n"
+                "[docs]: docs/README.md\n\n"
+                "[docs]\n"
+                "[contrib](CONTRIBUTING.md)\n"
+                "[security](SECURITY.md)\n"
+                "[status](docs/project/IMPLEMENTATION_STATUS.md)\n"
+                "[dev](docs/engineering/DEVELOPMENT.md)\n"
+                "[verify](docs/engineering/VERIFICATION.md)\n"
+                "[mit](LICENSE-MIT)\n"
+                "[apache](LICENSE-APACHE)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    "required navigation link is missing: docs/README.md" in p.message
+                    for p in problems
+                )
+            )
+
+    def test_invalid_inline_link_title_does_not_satisfy_navigation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            readme = root / "README.md"
+            readme.write_text(
+                readme.read_text(encoding="utf-8").replace(
+                    "[docs](docs/README.md)",
+                    "[docs](docs/README.md invalid-title)",
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            messages = "\n".join(p.message for p in problems)
+            self.assertIn("link title must be quoted or parenthesized", messages)
+            self.assertIn("required navigation link is missing: docs/README.md", messages)
+
+    def test_invalid_reference_definition_title_does_not_satisfy_navigation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            readme = root / "README.md"
+            text = readme.read_text(encoding="utf-8")
+            text = text.replace(
+                "[docs](docs/README.md)",
+                "[docs]\n[docs]: docs/README.md invalid-title",
+                1,
+            )
+            readme.write_text(text, encoding="utf-8")
+            problems = validate_repository(root)
+            messages = "\n".join(p.message for p in problems)
+            self.assertIn("link title must be quoted or parenthesized", messages)
+            self.assertIn("required navigation link is missing: docs/README.md", messages)
+
+    def test_invalid_external_url_reports_path_and_line_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write("\n[invalid](http://[)\n")
+            problems = validate_repository(root)
+            matches = [
+                p for p in problems
+                if p.path == "CONTRIBUTING.md" and "malformed link URL" in p.message
+            ]
+            self.assertEqual(len(matches), 1)
+            self.assertGreater(matches[0].line, 0)
 
     def test_missing_path_and_anchor_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
