@@ -423,8 +423,16 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     return errors
 
 
-def _walk_package(root: Path, relative_package: str) -> tuple[list[Path], list[str]]:
+def _walk_package(
+    root: Path,
+    relative_package: str,
+    cargo_target_directory: Path | None = None,
+) -> tuple[list[Path], list[str]]:
+    """Walk a package, excluding only Cargo's resolved output directory."""
     package = root / relative_package
+    resolved_target_directory = (
+        cargo_target_directory.resolve() if cargo_target_directory is not None else None
+    )
     errors: list[str] = []
     if not package.is_dir():
         return [], [f"source package directory missing: {package}"]
@@ -435,10 +443,15 @@ def _walk_package(root: Path, relative_package: str) -> tuple[list[Path], list[s
         kept_names: list[str] = []
         for name in names:
             child = directory_path / name
-            if name in {".git", "target"}:
-                continue
             if child.is_symlink():
                 errors.append(f"symlink in Rust inventory is denied: {child}")
+                continue
+            if name == ".git":
+                continue
+            if (
+                resolved_target_directory is not None
+                and child.resolve() == resolved_target_directory
+            ):
                 continue
             kept_names.append(name)
         names[:] = kept_names
@@ -646,12 +659,50 @@ def _manifest_errors(root: Path) -> list[str]:
     return errors
 
 
+def _cargo_target_directory(root: Path) -> Path | None:
+    """Resolve the actual Cargo output directory; never infer it from a basename."""
+    command = [
+        "cargo",
+        "metadata",
+        "--format-version",
+        "1",
+        "--no-deps",
+        "--manifest-path",
+        str(root / "Cargo.toml"),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        metadata = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+    target_directory = metadata.get("target_directory")
+    if not isinstance(target_directory, str) or not target_directory:
+        return None
+    return Path(target_directory).resolve()
+
+
 def validate_source_policy(root: Path) -> tuple[bool, list[str]]:
     """Check the bounded Rust source closure and fail closed on new code inputs."""
     errors = _manifest_errors(root)
+    cargo_target_directory = _cargo_target_directory(root)
+    if cargo_target_directory is None:
+        errors.append("Cargo target directory could not be resolved; refusing an incomplete Rust source inventory")
     all_rust_files: list[Path] = []
     for package in SOURCE_PACKAGES:
-        files, package_errors = _walk_package(root, package)
+        files, package_errors = _walk_package(
+            root, package, cargo_target_directory
+        )
         all_rust_files.extend(files)
         errors.extend(package_errors)
 
