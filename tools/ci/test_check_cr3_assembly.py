@@ -1,11 +1,13 @@
 """Regression tests for optimized CR3/PGE assembly validation."""
 
 import unittest
+from pathlib import Path
 
 from check_cr3_assembly import (
     _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
+    validate_cr3_writer_contract,
     validate_cr4_asm_pge_order,
     validate_function_body,
 )
@@ -585,6 +587,55 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr4_asm_pge_order(source)
         self.assertFalse(valid)
         self.assertIn("sequence 2 must restore the original cr4 value", message)
+
+
+
+
+
+class Cr3WriterContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[2]
+        cls.source_path = root / "kernel/src/address_space.rs"
+        cls.source = cls.source_path.read_text(encoding="utf-8")
+
+    def test_current_writer_contract_passes(self):
+        valid, message = validate_cr3_writer_contract(self.source)
+        self.assertTrue(valid, message)
+
+    def test_extra_writer_outside_reviewed_functions_fails(self):
+        extra_writer = """
+fn unreviewed_cr3_writer(root_physical: u64) {
+    unsafe {
+        asm!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));
+    }
+}
+"""
+        valid, message = validate_cr3_writer_contract(self.source + extra_writer)
+        self.assertFalse(valid)
+        self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
+        self.assertIn("unreviewed function", message)
+
+    def test_renamed_writer_function_fails_closed(self):
+        changed = self.source.replace(
+            "fn switch_address_space(",
+            "fn switch_address_space_renamed(",
+            1,
+        )
+        valid, message = validate_cr3_writer_contract(changed)
+        self.assertFalse(valid)
+        self.assertIn("switch_address_space", message)
+
+    def test_removing_root_registration_validation_fails(self):
+        changed = self.source.replace(
+            "validate_registered_root_for_activation(root_physical)",
+            "validate_registered_root_for_activation(unreviewed_root)",
+            1,
+        )
+        self.assertNotEqual(changed, self.source)
+        valid, message = validate_cr3_writer_contract(changed)
+        self.assertFalse(valid)
+        self.assertIn("root-validation step", message)
 
 
 if __name__ == "__main__":
