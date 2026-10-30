@@ -988,10 +988,24 @@ def _if_guard_unconditionally_returns_err(
         return False
 
     body = matching_bodies[0]
-    return any(
-        _brace_depth_at(body, match.start()) == 0
-        for match in re.finditer(r"\breturn\s+Err\s*\(", body)
-    )
+    return_match = re.match(r"\s*return\s+Err\s*\(", body)
+    if return_match is None:
+        return False
+
+    opening = body.find("(", return_match.start(), return_match.end())
+    depth = 0
+    closing: int | None = None
+    for index in range(opening, len(body)):
+        if body[index] == "(":
+            depth += 1
+        elif body[index] == ")":
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        return False
+    return body[closing + 1:].lstrip().startswith(";")
 
 
 def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
