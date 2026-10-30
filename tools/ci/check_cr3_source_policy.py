@@ -244,7 +244,8 @@ def _is_indirect_control_transfer(statement: str) -> bool:
 
 _ASM_OPERAND_PREFIX_RE = re.compile(
     r"^(?:(?:r#)?[A-Za-z_]\w*\s*=\s*)?"
-    r"(?:inlateout|lateout|inout|in|out|const|sym|options|clobber_abi)\b"
+    r"(?:(?:inlateout|lateout|inout|in|out|options|clobber_abi)\b\s*\("
+    r"|const\b(?:\s+|\{)|sym\b\s+)"
 )
 
 
