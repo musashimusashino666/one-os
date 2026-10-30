@@ -83,24 +83,120 @@ def _macro_count(source: str, macro: str) -> int:
     return len(MACROS[macro].findall(source))
 
 
+def _skip_quoted_string(source: str, start: int) -> int | None:
+    """Return the first index after a normal or raw Rust string literal."""
+    raw_prefix = re.match(r'(?:b)?r(?P<hashes>#{0,})"', source[start:])
+    if raw_prefix is not None:
+        closing = '"' + raw_prefix.group("hashes")
+        end = source.find(closing, start + raw_prefix.end())
+        return None if end < 0 else end + len(closing)
+
+    index = start + 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+        elif source[index] == '"':
+            return index + 1
+        else:
+            index += 1
+    return None
+
+
+def _matching_macro_paren(source: str, opening: int) -> int | None:
+    """Find a macro call's closing parenthesis, skipping Rust strings/comments."""
+    depth = 0
+    index = opening
+    while index < len(source):
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            comment_depth = 1
+            index += 2
+            while index < len(source) and comment_depth:
+                if source.startswith("/*", index):
+                    comment_depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    comment_depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if comment_depth:
+                return None
+            continue
+
+        raw_prefix = re.match(r'(?:b)?r#{0,}"', source[index:])
+        if raw_prefix is not None:
+            end = _skip_quoted_string(source, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if source[index] == '"':
+            end = _skip_quoted_string(source, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if source[index] == "'":
+            char_literal = re.match(r"'(?:\\.|[^'\\])'", source[index:])
+            if char_literal is not None:
+                index += char_literal.end()
+                continue
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _assembly_macro_bodies(source: str) -> tuple[list[tuple[int, str]], list[str]]:
+    """Extract direct asm!/global_asm! bodies without parsing general Rust syntax."""
+    bodies: list[tuple[int, str]] = []
+    errors: list[str] = []
+    pattern = re.compile(r"\b(?:asm|global_asm)\s*!\s*\(")
+    for match in pattern.finditer(source):
+        opening = source.find("(", match.start(), match.end())
+        closing = _matching_macro_paren(source, opening)
+        if closing is None:
+            line = source.count("\n", 0, match.start()) + 1
+            errors.append(f"assembly macro invocation at line {line} cannot be safely delimited")
+            continue
+        bodies.append((opening + 1, source[opening + 1 : closing]))
+    return bodies, errors
+
+
 def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
     path = Path(relative_path).as_posix()
     errors: list[str] = []
-    # Rust templates are ordinary string literals in the current allowlist.
-    # Raw strings still expose their quoted contents to this conservative scan.
-    for match in STRING_RE.finditer(source):
-        value = match.group(0)[1:-1].strip()
-        if not value.startswith("."):
-            continue
-        if GLOBAL_SYMBOL_RE.fullmatch(value) or LOCAL_LABEL_RE.fullmatch(value):
-            continue
-        line = source.count("\n", 0, match.start()) + 1
-        errors.append(
-            f"{path}:{line}: assembler directive-like string {value!r} is denied; "
-            "only .global symbol exports and local .L labels are allowed"
-        )
-    return errors
+    bodies, delimiter_errors = _assembly_macro_bodies(source)
+    errors.extend(f"{path}: {error}" for error in delimiter_errors)
 
+    # Escape checks apply only to assembly templates. Ordinary Rust strings in
+    # unrelated code (for example, ELF magic bytes) are not assembler inputs.
+    for body_start, body in bodies:
+        for match in STRING_RE.finditer(body):
+            value = match.group(0)[1:-1].strip()
+            line = source.count("\n", 0, body_start + match.start()) + 1
+            if FORBIDDEN_ESCAPED_STRING_RE.search(value):
+                errors.append(
+                    f"{path}:{line}: hexadecimal/Unicode escapes in assembly templates are denied"
+                )
+                continue
+            if not value.startswith("."):
+                continue
+            if GLOBAL_SYMBOL_RE.fullmatch(value) or LOCAL_LABEL_RE.fullmatch(value):
+                continue
+            errors.append(
+                f"{path}:{line}: assembler directive-like string {value!r} is denied; "
+                "only .global symbol exports and local .L labels are allowed"
+            )
+    return errors
 
 def source_policy_errors(relative_path: str, source: str) -> list[str]:
     """Apply simple deny rules and the explicit call-site count allowlist."""
@@ -169,9 +265,6 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
         errors.append(f"{path}: macro forwarding through a metavariable is denied")
     if re.search(r"\bconcat\s*!\s*\(", source):
         errors.append(f"{path}: concat! is denied until assembly templates can be inspected without expansion")
-    if FORBIDDEN_ESCAPED_STRING_RE.search(source):
-        errors.append(f"{path}: hexadecimal/Unicode string escapes are denied in the source inventory")
-
     errors.extend(_assembler_directive_errors(path, source))
 
     return errors
