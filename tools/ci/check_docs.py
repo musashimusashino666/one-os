@@ -984,15 +984,22 @@ def _slugify_heading(heading: str) -> str:
 
 def _markdown_anchors(text: str) -> set[str]:
     html_masked = _mask_html_blocks_and_comments(text)
-    masked = _mask_inline_code(html_masked)
-    lines = masked.splitlines()
-    fenced = _fenced_code_lines(lines)
+    lines = html_masked.splitlines()
+    fenced, html_blocks = _markdown_block_regions(lines)
+    ignored = fenced | html_blocks
+
+    # Keep inline-code contents: GitHub's heading slug algorithm includes
+    # their text (e.g. Code & More -> code-more). Only fenced code and raw
+    # HTML/comment blocks are excluded from heading processing.
+    for index in ignored:
+        lines[index] = ""
+
     list_stacks: dict[int, list[int]] = {}
     normalized: list[str] = []
     contexts: list[tuple[int, tuple[int, ...]]] = []
 
     for index, line in enumerate(lines):
-        if index in fenced:
+        if index in ignored:
             normalized.append("")
             contexts.append((0, ()))
             continue
@@ -1006,7 +1013,7 @@ def _markdown_anchors(text: str) -> set[str]:
     counts: dict[str, int] = {}
 
     for index, line in enumerate(normalized):
-        if index in fenced:
+        if index in ignored:
             continue
 
         explicit_ids = re.findall(
@@ -1019,7 +1026,7 @@ def _markdown_anchors(text: str) -> set[str]:
         atx = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         if atx:
             heading = atx.group(2)
-        elif index + 1 < len(lines) and index + 1 not in fenced:
+        elif index + 1 < len(lines) and index + 1 not in ignored:
             same_container = contexts[index] == contexts[index + 1]
             underline = re.match(r"^ {0,3}(=+|-+)\s*$", normalized[index + 1])
             heading = (
