@@ -290,6 +290,21 @@ def _assembly_template_argument_error(body: str) -> str | None:
     return None
 
 
+ASSEMBLER_LABEL_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:[A-Za-z_.$][A-Za-z0-9_.$@]*|\d+)\s*:\s*)+"
+)
+
+
+def _strip_leading_assembler_labels(statement: str) -> str:
+    """Remove one or more GAS label definitions before checking the statement."""
+    remaining = statement
+    while True:
+        match = ASSEMBLER_LABEL_PREFIX_RE.match(remaining)
+        if match is None:
+            return remaining.strip()
+        remaining = remaining[match.end():]
+
+
 def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
     path = Path(relative_path).as_posix()
     errors: list[str] = []
@@ -311,7 +326,7 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
             # an opcode from its indirect operand.
             directive_statements = re.split(r"[;\r\n\t]+", value)
             for statement in directive_statements:
-                candidate = statement.strip()
+                candidate = _strip_leading_assembler_labels(statement)
                 if not candidate:
                     continue
                 if candidate.startswith("."):
