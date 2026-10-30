@@ -632,6 +632,10 @@ class GitHubCompatibilityTests(unittest.TestCase):
         self.assertIn("foo_bar", anchors)
         self.assertNotIn("foobar", anchors)
 
+    def test_heading_slug_keeps_github_unicode_symbol_exceptions(self):
+        anchors = _markdown_anchors("# ⓔ emoji\n")
+        self.assertIn("ⓔ-emoji", anchors)
+
     def test_heading_slug_preserves_repeated_hyphens(self):
         anchors = _markdown_anchors("# foo--bar\n")
         self.assertIn("foo--bar", anchors)
