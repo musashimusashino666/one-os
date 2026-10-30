@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tomllib
 
+from rust_lexer import rust_macro_invocations
+
 # Counts are reviewed source call-site inventory, not inferred semantic proofs.
 # Any new site or moved site must be reviewed and explicitly approved here.
 EXPECTED_ASM_COUNTS = {
@@ -49,12 +51,6 @@ ALLOWED_TARGET_PATHS = {
     "crates/oneos-core": {"lib": {"src/lib.rs"}},
 }
 
-MACROS = {
-    "asm": re.compile(r"\basm\s*!"),
-    "global_asm": re.compile(r"\bglobal_asm\s*!"),
-    "naked_asm": re.compile(r"\bnaked_asm\s*!"),
-    "include": re.compile(r"\binclude\s*!"),
-}
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 GLOBAL_SYMBOL_RE = re.compile(r"^\.global\s+[A-Za-z_.$][A-Za-z0-9_.$@]*$")
 LOCAL_LABEL_RE = re.compile(r"^\.L[A-Za-z0-9_.$]*:$")
@@ -83,7 +79,7 @@ FORBIDDEN_ENV = (
 
 
 def _macro_count(source: str, macro: str) -> int:
-    return len(MACROS[macro].findall(source))
+    return len(rust_macro_invocations(source, {macro}))
 
 
 def _skip_quoted_string(source: str, start: int) -> int | None:
@@ -159,18 +155,20 @@ def _matching_macro_paren(source: str, opening: int) -> int | None:
 
 
 def _assembly_macro_bodies(source: str) -> tuple[list[tuple[int, str]], list[str]]:
-    """Extract direct asm!/global_asm! bodies without parsing general Rust syntax."""
+    """Extract direct asm!/global_asm! bodies with comment-aware token matching."""
     bodies: list[tuple[int, str]] = []
     errors: list[str] = []
-    pattern = re.compile(r"\b(?:asm|global_asm)\s*!\s*\(")
-    for match in pattern.finditer(source):
-        opening = source.find("(", match.start(), match.end())
-        closing = _matching_macro_paren(source, opening)
-        if closing is None:
-            line = source.count("\n", 0, match.start()) + 1
+    for invocation in rust_macro_invocations(source, {"asm", "global_asm"}):
+        if invocation.closing is None:
+            line = source.count("\n", 0, invocation.start) + 1
             errors.append(f"assembly macro invocation at line {line} cannot be safely delimited")
             continue
-        bodies.append((opening + 1, source[opening + 1 : closing]))
+        bodies.append(
+            (
+                invocation.opening + 1,
+                source[invocation.opening + 1 : invocation.closing],
+            )
+        )
     return bodies, errors
 
 
