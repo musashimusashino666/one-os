@@ -766,7 +766,7 @@ def _cr3_source_is_validated_active_reload(
     pre_write_body = pre_write[function_body_open + 1 :]
     if not _if_guard_unconditionally_returns(
         pre_write_body,
-        r"cr3\s*&\s*PHYSICAL_ADDRESS_MASK\s*!=\s*expected_root_physical",
+        "cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical",
     ):
         return False
 
@@ -1056,10 +1056,58 @@ def _if_guard_unconditionally_returns_err(
 
 
 def _if_guard_unconditionally_returns(
-    source: str, condition_pattern: str
+    source: str, condition_expression: str
 ) -> bool:
-    """Require a unique top-level if guard that immediately returns."""
+    """Require a unique top-level OR guard containing an exact invalid predicate."""
+    expected = re.sub(r"\s+", "", condition_expression)
     matching_bodies: list[str] = []
+
+    def strip_outer_parentheses(expression: str) -> str:
+        while expression.startswith("(") and expression.endswith(")"):
+            depth = 0
+            encloses_all = True
+            for index, character in enumerate(expression):
+                if character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0 and index != len(expression) - 1:
+                        encloses_all = False
+                        break
+            if depth != 0 or not encloses_all:
+                break
+            expression = expression[1:-1]
+        return expression
+
+    def has_top_level_invalid_or_term(condition: str) -> bool:
+        compact = re.sub(r"\s+", "", condition)
+        terms: list[str] = []
+        depth = 0
+        start = 0
+        index = 0
+        while index < len(compact):
+            character = compact[index]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth < 0:
+                    return False
+            elif (
+                character == "|"
+                and index + 1 < len(compact)
+                and compact[index + 1] == "|"
+                and depth == 0
+            ):
+                terms.append(compact[start:index])
+                index += 1
+                start = index + 1
+            index += 1
+        if depth != 0:
+            return False
+        terms.append(compact[start:])
+        return any(strip_outer_parentheses(term) == expected for term in terms)
+
     for match in re.finditer(r"\bif\b", source):
         # A nested guard can be skipped entirely on another path. The checked
         # active-root predicate must therefore be a direct function-level guard.
@@ -1087,7 +1135,7 @@ def _if_guard_unconditionally_returns(
         if body_start is None:
             continue
         condition = source[match.end():body_start]
-        if not re.search(condition_pattern, condition):
+        if not has_top_level_invalid_or_term(condition):
             continue
         body_end = _balanced_block_end(source, body_start)
         if body_end is None:
@@ -1096,7 +1144,7 @@ def _if_guard_unconditionally_returns(
 
     if len(matching_bodies) != 1:
         return False
-    return re.match(r"\s*return\b", matching_bodies[0]) is not None
+    return re.match(r"\s*return\s+Err\s*\(", matching_bodies[0]) is not None
 
 
 def validate_cr3_writer_contract(source: str) -> tuple[bool, str]:
