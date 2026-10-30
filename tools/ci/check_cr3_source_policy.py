@@ -60,6 +60,8 @@ LOCAL_LABEL_RE = re.compile(r"^\.L[A-Za-z0-9_.$]*:$")
 FORBIDDEN_ESCAPED_STRING_RE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\})")
 FORBIDDEN_DIRECT_MACRO_FORWARD_RE = re.compile(r"\$\s*[A-Za-z_]\w*\s*!")
 FORBIDDEN_REPEATED_PATH_FORWARD_RE = re.compile(r"\$\s*\([^)]*\)\s*::\s*\+?!")
+PATH_MODULE_ATTRIBUTE_RE = re.compile(r"#\s*\[\s*(?:r#)?path\b")
+CFG_ATTR_PATH_MODULE_RE = re.compile(r"#\s*\[\s*cfg_attr\b[^\]]*\b(?:r#)?path\s*=")
 TRUSTED_ROOT_SHADOW_RE = re.compile(
     r"\b(?:mod|struct|enum|trait|type|fn|const|static|let)\s+"
     r"(?:r#)?(?:core|std|alloc|bootloader_api)\b"
@@ -259,6 +261,10 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
         errors.append(f"{path}: aliases of trusted macro roots are denied")
     if re.search(r"#\s*\[\s*macro_use\b", source) or re.search(r"\bmacro_use\b", source):
         errors.append(f"{path}: macro_use imports are denied")
+    if PATH_MODULE_ATTRIBUTE_RE.search(source) or CFG_ATTR_PATH_MODULE_RE.search(source):
+        errors.append(
+            f"{path}: #[path] module source redirection is denied because it can load Rust code outside the inventory"
+        )
     if TRUSTED_ROOT_SHADOW_RE.search(source) or TRUSTED_ROOT_ALIAS_RE.search(source):
         errors.append(f"{path}: local declarations or imports shadow a trusted macro root")
     if FORBIDDEN_DIRECT_MACRO_FORWARD_RE.search(source) or FORBIDDEN_REPEATED_PATH_FORWARD_RE.search(source):
