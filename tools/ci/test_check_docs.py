@@ -255,9 +255,9 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_empty_inline_and_reference_destinations_are_valid(self):
-        text = "[self]()\n[empty]: <>\n[reference][empty]"
+        text = "[self]()\n\n[empty]: <>\n[reference][empty]"
         links, problems = _extract_links(text, "README.md")
-        self.assertEqual(links, [("", 1), ("", 3)])
+        self.assertEqual(links, [("", 1), ("", 4)])
         self.assertEqual(problems, [])
 
     def test_inline_code_spans_do_not_pair_across_blank_paragraphs(self):
@@ -644,12 +644,11 @@ class RepositoryValidationTests(unittest.TestCase):
             self.make_repo(root)
             readme = root / "README.md"
             text = readme.read_text(encoding="utf-8")
-            text = text.replace(
-                "[docs](docs/README.md)",
-                "[docs]\n[docs]: docs/README.md invalid-title",
-                1,
+            text = text.replace("[docs](docs/README.md)\n", "", 1)
+            readme.write_text(
+                "[docs]: docs/README.md invalid-title\n\n" + text,
+                encoding="utf-8",
             )
-            readme.write_text(text, encoding="utf-8")
             problems = validate_repository(root)
             messages = "\n".join(p.message for p in problems)
             self.assertIn("link title must be quoted or parenthesized", messages)
