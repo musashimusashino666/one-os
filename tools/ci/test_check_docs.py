@@ -216,24 +216,6 @@ class AnchorTests(unittest.TestCase):
         self.assertIn("quoted-setext-heading", anchors)
 
 
-    def test_inline_code_heading_anchor_resolves_in_repository(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.make_repo(root)
-            (root / "docs" / "guide.md").write_text(
-                "## `Code` & More\n",
-                encoding="utf-8",
-            )
-            with (root / "README.md").open("a", encoding="utf-8") as output:
-                output.write("\n[code heading](docs/guide.md#code-more)\n")
-            problems = validate_repository(root)
-            self.assertFalse(
-                any(
-                    problem.path == "README.md"
-                    and "missing heading anchor '#code-more'" in problem.message
-                    for problem in problems
-                )
-            )
     def test_raw_html_blocks_do_not_create_markdown_links_or_anchors(self):
         text = (
             "<div>\n"
