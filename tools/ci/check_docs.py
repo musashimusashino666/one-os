@@ -153,10 +153,10 @@ def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | No
         return "terminator", "-->"
     if stripped.startswith("<?"):
         return "terminator", r"\?>"
+    if stripped.startswith("<![CDATA["):
+        return "terminator", "]]>"
     if re.match(r"^<![A-Z]", stripped):
         return "terminator", ">"
-    if stripped.startswith("<![CDATA["):
-        return "terminator", r"\]\]>"
 
     block_tags = (
         "address|article|aside|base|basefont|blockquote|body|caption|center|col|"
