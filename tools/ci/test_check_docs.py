@@ -124,6 +124,55 @@ class LinkParsingTests(unittest.TestCase):
                 self.assertEqual(links, [("docs/README.md", 2)])
                 self.assertEqual(problems, [])
 
+    def test_reference_label_accepts_escaped_closing_bracket(self):
+        text = "[Foo*bar\\]]: missing.md\n\n[open][Foo*bar\\]]"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertEqual(problems, [])
+
+    def test_reference_label_can_span_multiple_lines(self):
+        text = "[Foo\n  Bar]: missing.md\n\n[open][Foo Bar]"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 4)])
+        self.assertEqual(problems, [])
+
+    def test_reference_definition_title_can_span_multiple_lines(self):
+        text = (
+            '[ref]: missing.md "first line\n'
+            '  second line\n'
+            '  third line"\n'
+            '[open][ref]'
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 4)])
+        self.assertEqual(problems, [])
+
+    def test_reference_definition_title_can_start_on_following_line(self):
+        text = '[ref]: missing.md\n  "title"\n[open][ref]'
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertEqual(problems, [])
+
+    def test_reference_destination_and_multiline_title_can_start_on_following_lines(self):
+        text = (
+            "[ref]:\n"
+            "  missing.md\n"
+            '  "first line\n'
+            '  second line"\n'
+            "\n"
+            "[open][ref]"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 6)])
+        self.assertEqual(problems, [])
+
+    def test_markdown_links_inside_inline_html_attributes_are_ignored(self):
+        text = '<span title="[sample](missing.md)">[visible](existing.md)</span>'
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 1)])
+        self.assertEqual(problems, [])
+
+    def test_reference_definition_is_extracted(self):
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
         self.assertEqual(links, [("docs/guide.md", 1)])
@@ -669,6 +718,25 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertEqual(len(matches), 1)
             self.assertGreater(matches[0].line, 0)
 
+    def test_repository_resolves_escaped_reference_label_and_reports_missing_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[Foo*bar\\]]: missing.md\n\n"
+                    "[open][Foo*bar\\]]\n"
+                )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "README.md"
+                    and "missing internal link target: missing.md" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_missing_path_and_anchor_are_reported(self):
     def test_missing_path_and_anchor_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
