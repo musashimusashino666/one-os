@@ -863,7 +863,7 @@ pub fn enforce_kernel_executable_alias_wx(boot_info: &BootInfo) -> Result<usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ValidatedExecutablePageTranslation {
+struct ValidatedPageTranslation {
     physical_address: u64,
     page_size: u64,
     writable: bool,
@@ -974,7 +974,7 @@ fn validate_executable_load_virtual_page(
     root_table_physical: u64,
     recursive_index: u16,
     regions: &[MemoryRegion],
-) -> Result<ValidatedExecutablePageTranslation, PagingError> {
+) -> Result<ValidatedPageTranslation, PagingError> {
     let translation =
         translate_virtual_address(virtual_page, root_table_physical, recursive_index, regions)
             .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
@@ -988,7 +988,7 @@ fn validate_executable_load_virtual_page(
         return Err(PagingError::InvalidKernelLoadMapping);
     }
 
-    Ok(ValidatedExecutablePageTranslation {
+    Ok(ValidatedPageTranslation {
         physical_address: translation.physical_address,
         page_size: translation.page_size,
         writable: translation.writable,
@@ -1005,6 +1005,48 @@ fn physical_offset_alias(
         .checked_add(physical_page)
         .filter(|address| is_canonical_4level(*address) && (*address & (PAGE_SIZE - 1)) == 0)
         .ok_or(PagingError::PhysicalMemoryOffsetUnavailable)
+}
+
+fn validate_executable_page_aliases(
+    virtual_page: u64,
+    physical_memory_offset: u64,
+    root_table_physical: u64,
+    recursive_index: u16,
+    regions: &[MemoryRegion],
+) -> Result<(ValidatedPageTranslation, u64, ValidatedPageTranslation), PagingError> {
+    let executable = validate_executable_load_virtual_page(
+        virtual_page,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )?;
+    let direct_alias = physical_offset_alias(physical_memory_offset, executable.physical_address)?;
+    let direct = translate_virtual_address(
+        direct_alias,
+        root_table_physical,
+        recursive_index,
+        regions,
+    )
+    .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
+
+    if direct.physical_address != executable.physical_address
+        || !translation_preserves_page_offset(direct_alias, direct)
+        || direct.user_accessible
+    {
+        return Err(PagingError::InvalidKernelLoadMapping);
+    }
+
+    Ok((
+        executable,
+        direct_alias,
+        ValidatedPageTranslation {
+            physical_address: direct.physical_address,
+            page_size: direct.page_size,
+            writable: direct.writable,
+            user_accessible: direct.user_accessible,
+            executable: direct.executable,
+        },
+    ))
 }
 
 #[cfg(feature = "test-wx-runtime-audit")]
@@ -1058,27 +1100,14 @@ fn wx_executable_alias_snapshot(
         }
         let mut virtual_page = segment.first_page;
         loop {
-            let translation = validate_executable_load_virtual_page(
-                virtual_page,
-                root_table_physical,
-                recursive_index,
-                regions,
-            )?;
-            let direct_alias =
-                physical_offset_alias(physical_memory_offset, translation.physical_address)?;
-            let direct_translation = translate_virtual_address(
-                direct_alias,
-                root_table_physical,
-                recursive_index,
-                regions,
-            )
-            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
-            if direct_translation.physical_address != translation.physical_address
-                || !translation_preserves_page_offset(direct_alias, direct_translation)
-                || direct_translation.user_accessible
-            {
-                return Err(PagingError::InvalidKernelLoadMapping);
-            }
+            let (translation, direct_alias, direct_translation) =
+                validate_executable_page_aliases(
+                    virtual_page,
+                    physical_memory_offset,
+                    root_table_physical,
+                    recursive_index,
+                    regions,
+                )?;
 
             for word in [
                 virtual_page,
@@ -1269,15 +1298,14 @@ fn enforce_kernel_executable_alias_wx_inner(
         let last_page = segment.last_page;
         let mut virtual_page = first_page;
         loop {
-            let translation = validate_executable_load_virtual_page(
-                virtual_page,
-                root_table_physical,
-                recursive_index,
-                regions,
-            )?;
-
-            let direct_alias =
-                physical_offset_alias(physical_memory_offset, translation.physical_address)?;
+            let (translation, direct_alias, _direct_translation) =
+                validate_executable_page_aliases(
+                    virtual_page,
+                    physical_memory_offset,
+                    root_table_physical,
+                    recursive_index,
+                    regions,
+                )?;
             restrict_physical_offset_alias_read_only_nx(
                 boot_info,
                 root_table_physical,
