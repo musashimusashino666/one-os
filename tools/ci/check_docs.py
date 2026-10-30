@@ -67,11 +67,11 @@ def _is_escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
-def _blockquote_content(line: str) -> tuple[str, int]:
-    """Remove consecutive blockquote prefixes and return the nesting depth."""
+def _blockquote_content(line: str, max_depth: int | None = None) -> tuple[str, int]:
+    """Remove blockquote prefixes, optionally stopping at a container depth."""
     offset = 0
     depth = 0
-    while offset < len(line):
+    while offset < len(line) and (max_depth is None or depth < max_depth):
         cursor = offset
         spaces = 0
         while cursor < len(line) and line[cursor] == " " and spaces < 4:
@@ -112,16 +112,22 @@ def _fenced_code_lines(lines: list[str]) -> set[int]:
         )
 
         if marker is not None:
-            fenced.add(index)
-            close = re.match(
-                rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}[ \t]*$",
-                container_line,
-            )
-            if close and current_quote_depth >= quote_depth:
+            fence_content, matched_quote_depth = _blockquote_content(line, quote_depth)
+            if matched_quote_depth < quote_depth:
                 marker = None
                 marker_length = 0
                 quote_depth = 0
-            continue
+            else:
+                fenced.add(index)
+                close = re.match(
+                    rf" {{0,3}}{re.escape(marker)}{{{marker_length},}}[ \t]*$",
+                    fence_content,
+                )
+                if close:
+                    marker = None
+                    marker_length = 0
+                    quote_depth = 0
+                continue
 
         if match:
             candidate = match.group(1)
