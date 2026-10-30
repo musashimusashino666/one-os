@@ -5,6 +5,7 @@ import unittest
 from check_cr3_source_policy import (
     EXPECTED_ASM_COUNTS,
     _assembler_directive_errors,
+    _resolved_local_dependency_errors,
     source_policy_errors,
 )
 
@@ -84,6 +85,116 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         )
         self.assertIn("core::arch as a module alias", joined)
         self.assertIn("shadow a trusted macro root", joined)
+
+
+    def test_directives_are_checked_after_every_template_separator(self):
+        templates = (
+            '"nop\\n.byte 0x0f, 0x22, 0xd8"',
+            '"nop; .byte 0x0f, 0x22, 0xd8"',
+            '"nop\\t.byte 0x0f, 0x22, 0xd8"',
+            '"nop\\r\\n.byte 0x0f, 0x22, 0xd8"',
+            'r#"nop
+.byte 0x0f, 0x22, 0xd8"#',
+        )
+        for template in templates:
+            with self.subTest(template=template):
+                errors = _assembler_directive_errors(
+                    "kernel/src/main.rs",
+                    f"global_asm!({template});",
+                )
+                self.assertTrue(any(".byte" in error for error in errors), errors)
+
+    def test_indirect_control_transfers_are_denied(self):
+        templates = (
+            'asm!("nop\\njmp *%rax");',
+            'asm!("call *%r12");',
+            'asm!("jmp rax");',
+            'asm!("call qword ptr [rax]");',
+            'asm!("nop; jmp *symbol(%rip)");',
+        )
+        for source in templates:
+            with self.subTest(source=source):
+                errors = _assembler_directive_errors("kernel/src/address_space.rs", source)
+                self.assertTrue(
+                    any("indirect x86 control transfer is denied" in error for error in errors),
+                    errors,
+                )
+
+    def test_direct_control_transfers_remain_allowed(self):
+        source = 'asm!("jmp .Llocal\\ncall reviewed_function\\n.Llocal:");'
+        self.assertEqual(
+            _assembler_directive_errors("kernel/src/address_space.rs", source),
+            [],
+        )
+
+    def test_resolved_workspace_dependency_graph_rejects_unscanned_path_crate(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifests = {
+                "kernel": root / "kernel" / "Cargo.toml",
+                "core": root / "crates" / "oneos-core" / "Cargo.toml",
+                "hidden": root / "crates" / "hidden-crate" / "Cargo.toml",
+                "nested": root / "crates" / "nested-crate" / "Cargo.toml",
+            }
+            package_ids = {
+                name: f"{name} 0.1.0 (path+file:///{name})"
+                for name in manifests
+            }
+            metadata = {
+                "packages": [
+                    {
+                        "id": package_ids[name],
+                        "manifest_path": str(manifest),
+                        "source": None,
+                    }
+                    for name, manifest in manifests.items()
+                ],
+                "resolve": {
+                    "nodes": [
+                        {"id": package_ids["kernel"], "deps": [{"pkg": package_ids["core"]}, {"pkg": package_ids["hidden"]}]},
+                        {"id": package_ids["core"], "deps": []},
+                        {"id": package_ids["hidden"], "deps": [{"pkg": package_ids["nested"]}]},
+                        {"id": package_ids["nested"], "deps": []},
+                    ]
+                },
+            }
+            errors = _resolved_local_dependency_errors(root, metadata)
+            joined = "\\n".join(errors)
+            self.assertIn("hidden-crate", joined)
+            self.assertIn("nested-crate", joined)
+
+    def test_resolved_workspace_dependency_graph_allows_reviewed_core_path(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            kernel_id = "kernel 0.1.0 (path+file:///kernel)"
+            core_id = "oneos-core 0.1.0 (path+file:///core)"
+            metadata = {
+                "packages": [
+                    {
+                        "id": kernel_id,
+                        "manifest_path": str(root / "kernel" / "Cargo.toml"),
+                        "source": None,
+                    },
+                    {
+                        "id": core_id,
+                        "manifest_path": str(root / "crates" / "oneos-core" / "Cargo.toml"),
+                        "source": None,
+                    },
+                ],
+                "resolve": {
+                    "nodes": [
+                        {"id": kernel_id, "deps": [{"pkg": core_id}]},
+                        {"id": core_id, "deps": []},
+                    ]
+                },
+            }
+            self.assertEqual(_resolved_local_dependency_errors(root, metadata), [])
 
     def test_path_module_source_redirection_is_denied(self):
         sources = (
