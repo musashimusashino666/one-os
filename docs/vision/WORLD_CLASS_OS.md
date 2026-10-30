@@ -145,20 +145,18 @@ migration, and rollback tests.
 5. Include negative results, variance, known limitations, and the exact candidate
    revision. Tests support only the properties and cases they cover; they do not prove
    the absence of every vulnerability.
-6. Use the 7-dimension scorecard to summarize value, and the detailed acceptance
-   criteria in [Success Criteria](SUCCESS_CRITERIA.md) to define
-testable contracts and release decisions.
+6. Use the 7-dimension scorecard to summarize value. The detailed acceptance
+   criteria in [Success Criteria](SUCCESS_CRITERIA.md) define testable contracts
+   and release decisions.
 
 ## 4. Target architecture
 
-The target is a capability-oriented microkernel platform with a small trusted computing
-base, isolated user-space services, explicit application execution contracts, and
-hardware-specific profiles. This is a long-term architecture target, not a description
-of the present bootstrap kernel; the architectural decision is
-recorded in
+The target is a capability-oriented microkernel with a small trusted computing base,
+isolated user-space services, explicit application execution contracts, and
+hardware-specific profiles. This is a long-term target, not a description of the
+present bootstrap kernel. The decision is recorded in
 [ADR-0003](../project/decisions/ADR-0003-capability-microkernel-platform.md).
-Changes
-to the kernel structure must follow the repository's ADR and acceptance-test process.
+Kernel changes that affect the architecture must follow the ADR and acceptance process.
 
 ### Layer model
 
@@ -198,9 +196,7 @@ to the kernel structure must follow the repository's ADR and acceptance-test pro
 - Use memory-safe abstractions where practical and document/test every required unsafe
   boundary.
 
-### Device profiles over a common platform
-
-### Profile-specific priorities
+### Device profiles and priorities
 
 #### Personal / PC
 
