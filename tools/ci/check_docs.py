@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import argparse
 from html.parser import HTMLParser
-
-from github_slugger_data import GITHUB_SLUG_REMOVAL_RE
 import posixpath
 import re
 import string
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+
+from github_slugger_data import GITHUB_SLUG_REMOVAL_RE
 
 DEFAULT_MAX_LINE_LENGTH = 88
 BACKTICK = chr(96)
