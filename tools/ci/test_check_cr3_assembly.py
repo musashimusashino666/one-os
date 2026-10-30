@@ -730,10 +730,13 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_cr4_named_operand_template_is_supported(self):
         source = """
-            let cr4_without_pge = cr4 & !CR4_PGE;
+            let cr4_at_switch: u64;
+            asm!("mov {snapshot}, cr4", snapshot = out(reg) cr4_at_switch,
+                 options(nomem, nostack, preserves_flags));
+            let cr4_without_pge = cr4_at_switch & !CR4_PGE;
             asm!("mov cr4, {value}", value = in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
-            asm!("mov cr4, {value}", value = in(reg) cr4,
+            asm!("mov cr4, {value}", value = in(reg) cr4_at_switch,
                  options(nomem, nostack, preserves_flags));
         """
         valid, message = validate_cr4_asm_pge_order(source)
@@ -741,6 +744,9 @@ class ActivationAssemblyTests(unittest.TestCase):
 
     def test_cr4_source_validator_checks_every_switch_sequence(self):
         source = """
+            let cr4: u64;
+            asm!("mov {}, cr4", out(reg) cr4,
+                 options(nomem, nostack, preserves_flags));
             let cr4_without_pge = cr4 & !CR4_PGE;
             asm!("mov cr4, {}", in(reg) cr4_without_pge,
                  options(nomem, nostack, preserves_flags));
