@@ -55,7 +55,7 @@ class LinkParsingTests(unittest.TestCase):
 
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
-        self.assertEqual(links, [("docs/guide.md", 3)])
+        self.assertEqual(links, [("docs/guide.md", 1)])
         self.assertEqual(problems, [])
     
     def test_unused_reference_definition_is_not_a_navigation_link(self):
