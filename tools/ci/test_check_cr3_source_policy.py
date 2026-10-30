@@ -85,6 +85,21 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         self.assertIn("core::arch as a module alias", joined)
         self.assertIn("shadow a trusted macro root", joined)
 
+    def test_path_module_source_redirection_is_denied(self):
+        sources = (
+            '#[path = "../../outside.rs"] mod outside;',
+            '# [ path = "../../outside.rs" ] mod outside;',
+            '#[cfg_attr(feature = "external", path = "../../outside.rs")] mod outside;',
+            '#[cfg_attr(feature = "outer", cfg_attr(feature = "inner", path = "../../outside.rs"))] mod outside;',
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                errors = source_policy_errors("kernel/src/module.rs", source)
+                self.assertTrue(
+                    any("#[path] module source redirection is denied" in error for error in errors),
+                    errors,
+                )
+
     def test_qualified_assembly_and_macro_use_are_denied(self):
         joined = "\n".join(
             source_policy_errors(
