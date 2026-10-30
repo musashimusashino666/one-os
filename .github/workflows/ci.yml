@@ -56,7 +56,7 @@ jobs:
           targets: x86_64-unknown-none
 
       - name: Install QEMU
-        run: sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y qemu-system-x86
+        run: sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y binutils qemu-system-x86
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -79,6 +79,9 @@ jobs:
       - name: Test CR3 assembly validator
         run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_assembly.py'
 
+      - name: Test linked ELF CR3 validator
+        run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_elf.py'
+
       - name: Test CR3 source policy
         run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_source_policy.py'
 
@@ -100,7 +103,22 @@ jobs:
             --source kernel/src/address_space.rs
 
       - name: Build BIOS image
-        run: cargo run --locked -p oneos-xtask -- image
+        shell: bash
+        run: |
+          build_log="$RUNNER_TEMP/one-os-image-build.log"
+          cargo run --locked -p oneos-xtask -- image | tee "$build_log"
+          kernel_elf="$(sed -n 's/^Kernel ELF: //p' "$build_log" | tail -n 1)"
+          if [[ -z "$kernel_elf" || ! -f "$kernel_elf" ]]; then
+            echo "oneos-xtask did not report an existing kernel ELF path" >&2
+            exit 1
+          fi
+          printf '%s\n' "$kernel_elf" > "$RUNNER_TEMP/kernel-elf-path.txt"
+
+      - name: Inspect final linked kernel ELF CR3 writes
+        shell: bash
+        run: |
+          kernel_elf="$(cat "$RUNNER_TEMP/kernel-elf-path.txt")"
+          python3 tools/ci/check_cr3_elf.py --elf "$kernel_elf"
 
       - name: Test QEMU serial-log validator
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py'
