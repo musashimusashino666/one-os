@@ -311,7 +311,7 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
     if include_count:
         errors.append(f"{path}: include! is denied because it hides source from the inventory")
 
-    macro_rules_count = len(re.findall(r"(?<![#\\w])macro_rules\\b\\s*!", code))
+    macro_rules_count = len(re.findall(r"(?<![#\w])macro_rules\b\s*!", code))
     expected_rules = EXPECTED_MACRO_RULES.get(path, 0)
     if macro_rules_count != expected_rules:
         errors.append(
@@ -333,27 +333,36 @@ def source_policy_errors(relative_path: str, source: str) -> list[str]:
                 f"{path}: aliases and wildcard imports involving core::arch are denied"
             )
 
-    if re.search(r"\b(?:core|std|alloc)\\s*::\\s*arch\\s*::\\s*(?:asm|global_asm|naked_asm)\s*!", code):
+    if re.search(
+        r"\b(?:core|std|alloc)\s*::\s*arch\s*::\s*(?:asm|global_asm|naked_asm)\s*!",
+        code,
+    ):
         errors.append(f"{path}: qualified assembly macro paths are denied; use reviewed imports")
     if re.search(r"\bpub\s+use\b[^;]*\b(?:asm|global_asm|naked_asm)\b", code):
         errors.append(f"{path}: public re-exports of assembly macros are denied")
-    if re.search(r"\b(?:pub\s+)?use\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b[^;]*\bas\b", code):
+    if re.search(
+        r"\b(?:pub\s+)?use\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b[^;]*\bas\b",
+        code,
+    ):
         errors.append(f"{path}: aliases of assembly or include macros are denied")
-    if re.search(r"\b(?:pub\s+)?use\b[^;]*\bas\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b", code):
+    if re.search(
+        r"\b(?:pub\s+)?use\b[^;]*\bas\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b",
+        code,
+    ):
         errors.append(f"{path}: aliases of assembly or include macros are denied")
-    if re.search(r"\b(?:pub\s+)?use\s+core::arch\s*(?:as\b|;)", code):
+    if re.search(r"\b(?:pub\s+)?use\s+core\s*::\s*arch\s*(?:as\b|;)", code):
         errors.append(f"{path}: importing core::arch as a module alias is denied")
     if re.search(r"\bextern\s+crate\s+(?:core|std|alloc|bootloader_api)\s+as\b", code):
         errors.append(f"{path}: aliases of trusted macro roots are denied")
-    if re.search(r"#\s*\[\s*macro_use\b", code) or re.search(r"\bmacro_use\b", source):
+    if re.search(r"#\s*\[\s*macro_use\b", code) or re.search(r"\bmacro_use\b", code):
         errors.append(f"{path}: macro_use imports are denied")
-    if PATH_MODULE_ATTRIBUTE_RE.search(code) or CFG_ATTR_PATH_MODULE_RE.search(source):
+    if PATH_MODULE_ATTRIBUTE_RE.search(code) or CFG_ATTR_PATH_MODULE_RE.search(code):
         errors.append(
             f"{path}: #[path] module source redirection is denied because it can load Rust code outside the inventory"
         )
-    if TRUSTED_ROOT_SHADOW_RE.search(code) or TRUSTED_ROOT_ALIAS_RE.search(source):
+    if TRUSTED_ROOT_SHADOW_RE.search(code) or TRUSTED_ROOT_ALIAS_RE.search(code):
         errors.append(f"{path}: local declarations or imports shadow a trusted macro root")
-    if FORBIDDEN_DIRECT_MACRO_FORWARD_RE.search(code) or FORBIDDEN_REPEATED_PATH_FORWARD_RE.search(source):
+    if FORBIDDEN_DIRECT_MACRO_FORWARD_RE.search(code) or FORBIDDEN_REPEATED_PATH_FORWARD_RE.search(code):
         errors.append(f"{path}: macro forwarding through a metavariable is denied")
     if rust_macro_invocations(source, {"concat"}):
         errors.append(f"{path}: concat! is denied until assembly templates can be inspected without expansion")
