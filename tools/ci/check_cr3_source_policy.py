@@ -493,8 +493,8 @@ def _resolved_local_dependency_errors(root: Path, metadata: dict) -> list[str]:
 
     source_package_ids: set[str] = set()
     allowed_manifests = {
-        (root / relative).resolve()
-        for relative in (*SOURCE_PACKAGES, *ALLOWED_LOCAL_DEPENDENCY_MANIFESTS)
+        *((root / relative / "Cargo.toml").resolve() for relative in SOURCE_PACKAGES),
+        *((root / relative).resolve() for relative in ALLOWED_LOCAL_DEPENDENCY_MANIFESTS),
     }
     for relative_package in SOURCE_PACKAGES:
         expected_manifest = (root / relative_package / "Cargo.toml").resolve()
