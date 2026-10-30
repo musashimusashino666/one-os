@@ -24,6 +24,7 @@ The inventory does not attempt general Rust namespace resolution or macro expans
 
 - Imports of asm!/global_asm! are accepted only through the explicit per-file import allowlist. Unreviewed import paths, aliases, public re-exports, qualified assembly-macro paths, wildcard imports, aliases of core::arch, and aliases of trusted macro roots are rejected.
 - include!, #[macro_use], macro metavariable forwarding, and concat! are rejected.
+- `#[path = "..."]` and `#[cfg_attr(..., path = "...")]` module redirection attributes are rejected in every inventoried Rust source file; they could otherwise load code from outside the scanned package trees.
 - Declarations that shadow core, std, alloc, or bootloader_api are rejected.
 - Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings so instructions or assembler directives cannot be obscured. Unrelated Rust strings, including binary-format markers, remain valid.
 
