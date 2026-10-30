@@ -2,7 +2,7 @@
 
 ## Purpose and invariant
 
-The source gate pins the reviewed CR3 writer functions and rejects new or relocated assembly-macro sites unless their inventory is explicitly updated and reviewed. The three reviewed writers are in **kernel/src/address_space.rs**:
+The source gate pins the reviewed CR3 writer functions and rejects new or relocated assembly-macro sites unless their inventory is explicitly updated and reviewed. Rust source traversal excludes only the exact output directory reported by `cargo metadata`; a source module named `target` at any other path remains part of the inventory. The three reviewed writers are in **kernel/src/address_space.rs**:
 
 - activate_supervisor_kernel_root
 - switch_address_space
@@ -39,7 +39,7 @@ Every decoded assembler statement is checked. Statements beginning with a dot ar
 
 ## CR3 root and optimized assembly checks
 
-The focused CR3 checker verifies the source-level writer contract: exactly three CR3-writing asm! blocks, one in each reviewed function; expected signatures and root-handle types; checked root provenance; error handling and validation order before each write. It also verifies that CR3 templates bind directly to the reviewed source operands and preserve compiler ordering (no nomem).
+The focused CR3 checker verifies the source-level writer contract: exactly three CR3-writing asm! blocks, one in each reviewed function; expected signatures and root-handle types; checked root provenance; error handling and validation order before each write. For the runtime switch, each reviewed invalid-root predicate (uninitialized target, same target/current root, physical-address-width mismatch, and active-root mismatch) must be part of an `if` condition whose own block contains a top-level `return Err(...)`; merely retaining the predicate elsewhere in the function is insufficient. It also verifies that CR3 templates bind directly to the reviewed source operands and preserve compiler ordering (no nomem).
 
 CI separately validates optimized assembly for the reviewed CR3/PGE switch sequence, including CR4/PGE ordering and the required memory barrier. The final linked-ELF inspection lives in a separate PR so source and linked-artifact checks can be reviewed independently.
 
