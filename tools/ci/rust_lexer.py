@@ -102,20 +102,25 @@ def rust_macro_invocations(
         return []
 
     names = "|".join(re.escape(name) for name in sorted(macro_names, key=len, reverse=True))
-    pattern = re.compile(rf"(?<![#\w])(?P<name>{names})\b\s*!\s*\(")
+    pattern = re.compile(rf"(?<![#\w])(?P<name>{names})\b\s*!\s*(?P<delimiter>[\(\[\{])")
     code = mask_rust_comments_and_literals(source)
     invocations: list[RustMacroInvocation] = []
 
     for match in pattern.finditer(code):
-        opening = code.find("(", match.start(), match.end())
-        depth = 0
+        opening = code.find(match.group("delimiter"), match.start(), match.end())
+        closing_for = {"(": ")", "[": "]", "{": "}"}
+        closing_to = set(closing_for.values())
+        stack = [closing_for[code[opening]]]
         closing: int | None = None
-        for index in range(opening, len(code)):
-            if code[index] == "(":
-                depth += 1
-            elif code[index] == ")":
-                depth -= 1
-                if depth == 0:
+        for index in range(opening + 1, len(code)):
+            character = code[index]
+            if character in closing_for:
+                stack.append(closing_for[character])
+            elif character in closing_to:
+                if not stack or character != stack[-1]:
+                    break
+                stack.pop()
+                if not stack:
                     closing = index
                     break
         invocations.append(
