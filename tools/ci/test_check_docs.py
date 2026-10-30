@@ -769,7 +769,7 @@ class RepositoryValidationTests(unittest.TestCase):
             root = Path(directory)
             self.make_repo(root)
             with (root / "docs" / "guide.md").open("a", encoding="utf-8") as output:
-                output.write("\n## <3>\n")
+                output.write("\n## <3> <!-- heading comment -->\n")
             with (root / "README.md").open("a", encoding="utf-8") as output:
                 output.write("\n[three](docs/guide.md#3)\n")
             problems = validate_repository(root)
