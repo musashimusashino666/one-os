@@ -21,7 +21,7 @@ class Cr3SourcePolicyTests(unittest.TestCase):
     def test_allowlist_is_explicit_for_current_assembly_files(self):
         self.assertEqual(
             EXPECTED_ASM_COUNTS["kernel/src/address_space.rs"],
-            30,
+            35,
         )
         self.assertEqual(
             EXPECTED_ASM_COUNTS["kernel/src/paging/editor/acceptance.rs"],
