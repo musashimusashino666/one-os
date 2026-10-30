@@ -102,14 +102,17 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         self.assertIn("macro forwarding through a metavariable is denied", joined)
 
     def test_concat_templates_and_encoded_strings_are_denied(self):
-        joined = "\n".join(
-            source_policy_errors(
-                "kernel/src/new_writer.rs",
-                'asm!(concat!("mov ", "cr3, rax")); let hidden = "\\\\x2e";',
-            )
-        )
+        source = 'asm!(concat!("mov ", "cr3, rax")); asm!("\\x6dov cr3, rax");'
+        joined = "\n".join(source_policy_errors("kernel/src/new_writer.rs", source))
         self.assertIn("concat! is denied", joined)
-        self.assertIn("hexadecimal/Unicode string escapes are denied", joined)
+        self.assertIn("hexadecimal/Unicode escapes in assembly templates are denied", joined)
+
+    def test_non_assembly_rust_string_escapes_are_allowed(self):
+        source = 'let elf_magic = b"\\x7fELF";'
+        self.assertEqual(
+            source_policy_errors("crates/oneos-core/src/elf64.rs", source),
+            [],
+        )
 
     def test_relocation_directive_is_rejected(self):
         errors = _assembler_directive_errors(
