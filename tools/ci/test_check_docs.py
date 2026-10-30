@@ -173,7 +173,6 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_reference_definition_is_extracted(self):
-    def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
         self.assertEqual(links, [("docs/guide.md", 1)])
         self.assertEqual(problems, [])
@@ -736,7 +735,51 @@ class RepositoryValidationTests(unittest.TestCase):
                 )
             )
 
-    def test_missing_path_and_anchor_are_reported(self):
+    def test_malformed_inline_link_does_not_hide_later_links(self):
+        links, problems = _extract_links(
+            "[broken](unterminated\\n\\n[missing](missing.md)",
+            "README.md",
+        )
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertTrue(
+            any("link title must be quoted or parenthesized" in p.message
+                for p in problems)
+        )
+
+    def test_nested_image_inside_link_is_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\\n[![logo](assets/missing.png)](docs/README.md)\\n"
+                )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "README.md"
+                    and "missing internal link target: assets/missing.png"
+                    in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_html_like_angle_text_is_preserved_in_heading_anchors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "docs" / "guide.md").open("a", encoding="utf-8") as output:
+                output.write("\\n## <3>\\n")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\\n[three](docs/guide.md#3)\\n")
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    "missing heading anchor '#3'" in problem.message
+                    for problem in problems
+                )
+            )
+
     def test_missing_path_and_anchor_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
