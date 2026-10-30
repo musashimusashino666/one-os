@@ -1126,6 +1126,10 @@ def _extract_links(
             )
             continue
 
+        definition_lines.add(line_number)
+        if continuation_line is not None:
+            definition_lines.add(continuation_line)
+
         if label in definitions:
             first_line = definitions[label][1]
             problems.append(
@@ -1138,9 +1142,6 @@ def _extract_links(
             )
             continue
 
-        definition_lines.add(line_number)
-        if continuation_line is not None:
-            definition_lines.add(continuation_line)
         definitions[label] = (_unescape_destination(target), line_number)
 
     # Remove complete definition blocks from link-use scanning, preserving
