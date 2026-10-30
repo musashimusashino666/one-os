@@ -36,7 +36,7 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             'asm// line comment\n!("mov cr3, rax");',
             'asm!/* after bang */("mov cr3, rax");',
             'asm/* outer /* nested */ inner */!("mov cr3, rax");',
-            'asm /* delimiter comment */ { "mov cr3, rax" }',
+            'asm /* delimiter comment */ ! { "mov cr3, rax" }',
         )
         for source in cases:
             with self.subTest(source=source):
@@ -54,7 +54,7 @@ class Cr3SourcePolicyTests(unittest.TestCase):
             'global_asm/* block comment */!("nop; .byte 0x90");',
             'global_asm// line comment\n!/* before delimiter */("nop; .byte 0x90");',
             'global_asm/* outer /* nested */ inner */!("nop; .byte 0x90");',
-            'global_asm /* delimiter comment */ ["nop; .byte 0x90"]',
+            'global_asm /* delimiter comment */ ! ["nop; .byte 0x90"]',
         )
         for source in cases:
             with self.subTest(source=source):
