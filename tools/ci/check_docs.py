@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from html import unescape
 from html.parser import HTMLParser
 import posixpath
 import re
@@ -502,16 +503,93 @@ def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
 
     return ranges
 
+def _leading_indent_columns(line: str) -> int:
+    """Return leading indentation columns with CommonMark tab stops."""
+    columns = 0
+    for char in line:
+        if char == " ":
+            columns += 1
+        elif char == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def _indented_code_lines(
+    lines: list[str], excluded_lines: set[int] | None = None
+) -> set[int]:
+    """Identify CommonMark indented code blocks outside other block types."""
+    excluded = set(excluded_lines or ())
+    list_stacks: dict[int, list[int]] = {}
+    code_lines: set[int] = set()
+    previous_blank = True
+    previous_context: tuple[int, tuple[int, ...]] | None = None
+    previous_block_ended = False
+    in_code_block = False
+    atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+    thematic_pattern = re.compile(
+        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    )
+
+    for index, raw_line in enumerate(lines):
+        if index in excluded:
+            in_code_block = False
+            previous_blank = True
+            previous_block_ended = True
+            previous_context = None
+            continue
+        content, quote_depth, list_context, opened = _container_content(
+            raw_line, list_stacks
+        )
+        if not content.strip():
+            previous_blank = True
+            continue
+        context = (quote_depth, list_context)
+        indent = _leading_indent_columns(content)
+        starts_indented_code = indent >= 4 and (
+            previous_blank or previous_context != context
+            or previous_block_ended or opened or in_code_block
+        )
+        if starts_indented_code:
+            code_lines.add(index)
+            in_code_block = True
+            previous_block_ended = False
+        else:
+            in_code_block = False
+            previous_block_ended = bool(
+                atx_pattern.match(content)
+                or thematic_pattern.fullmatch(content)
+                or re.match(r"^ {0,3}(?:=+|-+)[ \t]*$", content)
+            )
+        previous_blank = False
+        previous_context = context
+    return code_lines
+
+
 def _document_inline_code_ranges(
     text: str, fenced_lines: set[int] | None = None
 ) -> list[tuple[int, int]]:
-    """Find inline-code spans within paragraphs, never across blank lines."""
+    """Find inline-code spans without crossing Markdown block boundaries."""
     lines = text.splitlines(keepends=True)
-    fenced = fenced_lines if fenced_lines is not None else _fenced_code_lines(lines)
+    if fenced_lines is None:
+        fenced, html_blocks = _markdown_block_regions(lines)
+        excluded = fenced | html_blocks
+    else:
+        excluded = set(fenced_lines)
+    excluded |= _indented_code_lines(lines, excluded)
+
     ranges: list[tuple[int, int]] = []
     offset = 0
     segment_start: int | None = None
     segment_parts: list[str] = []
+    previous_context: tuple[int, tuple[int, ...]] | None = None
+    list_stacks: dict[int, list[int]] = {}
+    atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+    setext_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+    thematic_pattern = re.compile(
+        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    )
 
     def flush() -> None:
         nonlocal segment_start, segment_parts
@@ -524,19 +602,45 @@ def _document_inline_code_ranges(
         segment_start = None
         segment_parts = []
 
-    for index, line in enumerate(lines):
-        if index in fenced or not line.strip():
-            # CommonMark parses inline syntax per paragraph. Blank lines
-            # therefore terminate a backtick-search region just like fences.
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
             flush()
+            previous_context = None
+            offset += len(line)
+            continue
+        content, quote_depth, list_context, opened = _container_content(
+            line, list_stacks
+        )
+        if not content.strip():
+            flush()
+            previous_context = None
+            offset += len(line)
+            continue
+        context = (quote_depth, list_context)
+        is_atx = atx_pattern.match(content) is not None
+        is_setext = setext_pattern.fullmatch(content) is not None
+        is_thematic = thematic_pattern.fullmatch(content) is not None
+        if is_atx:
+            flush()
+            segment_start = offset
+            segment_parts = [line]
+            flush()
+            previous_context = None
+        elif is_setext or is_thematic:
+            flush()
+            previous_context = None
         else:
+            if opened or (
+                previous_context is not None and context != previous_context
+            ):
+                flush()
             if segment_start is None:
                 segment_start = offset
             segment_parts.append(line)
+            previous_context = context
         offset += len(line)
     flush()
     return ranges
-
 
 def _line_inline_code_ranges(text: str, fenced_lines: set[int]) -> dict[int, list[tuple[int, int]]]:
     """Map inline-code intersections to per-line offsets for line-length checks."""
@@ -663,25 +767,29 @@ def _line_length_is_exempt(
         reduced = reduced[:start] + "x" + reduced[end:]
     return len(reduced) <= max_line_length
 
-def _mask_inline_code(text: str) -> str:
-    """Mask fenced and inline code while preserving offsets and newlines."""
+def _mask_inline_code(
+    text: str, blocked_lines: set[int] | None = None
+) -> str:
+    """Mask fenced, indented, and inline code while preserving offsets."""
     lines = text.splitlines(keepends=True)
-    fenced = _fenced_code_lines(lines)
+    if blocked_lines is None:
+        fenced, html_blocks = _markdown_block_regions(lines)
+        blocked = fenced | html_blocks
+    else:
+        blocked = set(blocked_lines)
+    blocked |= _indented_code_lines(lines, blocked)
     output = list(text)
     offset = 0
-
     for line_number, line in enumerate(lines):
-        if line_number in fenced:
+        if line_number in blocked:
             for index in range(offset, offset + len(line)):
                 if output[index] not in "\r\n":
                     output[index] = " "
         offset += len(line)
-
-    for start, end in _document_inline_code_ranges(text, fenced):
+    for start, end in _document_inline_code_ranges(text, blocked):
         for index in range(start, end):
             if output[index] not in "\r\n":
                 output[index] = " "
-
     return "".join(output)
 
 def _matching_bracket_pairs(text: str) -> dict[int, int]:
@@ -800,9 +908,11 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
     separate from use sites and use CommonMark's first-definition-wins rule.
     """
     original_lines = text.splitlines(keepends=True)
-    fenced = _fenced_code_lines(original_lines)
+    fenced, html_blocks = _markdown_block_regions(original_lines)
+    ignored_blocks = fenced | html_blocks
+    ignored_blocks |= _indented_code_lines(original_lines, ignored_blocks)
     html_masked = _mask_html_blocks_and_comments(text)
-    masked = _mask_inline_code(html_masked)
+    masked = _mask_inline_code(html_masked, ignored_blocks)
     masked_lines = masked.splitlines(keepends=True)
 
     links: list[tuple[str, int]] = []
@@ -814,7 +924,7 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
     normalized_lines: list[str] = []
     contexts: list[tuple[int, tuple[int, ...], bool]] = []
     for index, line in enumerate(masked_lines):
-        if index in fenced:
+        if index in ignored_blocks:
             normalized_lines.append("")
             contexts.append((0, (), False))
             continue
@@ -825,7 +935,7 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
         contexts.append((quote_depth, list_context, opened))
 
     for index, line in enumerate(normalized_lines):
-        if index in fenced:
+        if index in ignored_blocks:
             continue
         match = re.match(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$", line)
         if not match:
@@ -843,7 +953,7 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
             next_quote, next_lists, next_opened = contexts[next_index]
             next_text = normalized_lines[next_index].strip()
             if (
-                next_index not in fenced
+                next_index not in ignored_blocks
                 and next_text
                 and not next_opened
                 and next_quote == current_quote
@@ -975,16 +1085,26 @@ def _extract_links(text: str, path: str) -> tuple[list[tuple[str, int]], list[Do
     return links, problems
 
 def _strip_heading_markup(heading: str) -> str:
-    heading = re.sub(re.escape(BACKTICK) + r"+([^" + re.escape(BACKTICK) + r"]*?)" + re.escape(BACKTICK) + r"+", r"\1", heading)
+    # Protect code-span contents from HTML character-reference decoding:
+    # CommonMark leaves entities literal inside code spans.
+    code_tokens: list[tuple[str, str]] = []
+    for start, end in reversed(_inline_code_ranges(heading)):
+        delimiter_length = 0
+        while start + delimiter_length < end and heading[start + delimiter_length] == BACKTICK:
+            delimiter_length += 1
+        token = f"\ue000{len(code_tokens)}\ue001"
+        code_text = heading[start + delimiter_length:end - delimiter_length]
+        code_tokens.append((token, code_text))
+        heading = heading[:start] + token + heading[end:]
     heading = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
     heading = re.sub(r"!?\[([^\]]*)\]\[[^]]*\]", r"\1", heading)
     heading = re.sub(r"<[^>]+>", "", heading)
     heading = re.sub(r"\\([\\*_{}\[\]()#+\-.!_>])", r"\1", heading).replace("\\" + BACKTICK, BACKTICK)
-    # Remove paired Markdown emphasis delimiters, but retain intraword
-    # underscores such as the literal underscore in "foo_bar".
     heading = re.sub(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", heading)
+    heading = unescape(heading)
+    for token, code_text in reversed(code_tokens):
+        heading = heading.replace(token, code_text)
     return heading.strip()
-
 
 def _slugify_heading(heading: str) -> str:
     """Generate a GitHub-compatible heading slug before duplicate handling."""
@@ -994,18 +1114,19 @@ def _slugify_heading(heading: str) -> str:
 def _html_anchor_targets(text: str) -> set[str]:
     """Collect HTML id anchors and legacy a[name] anchors outside code."""
     lines = text.splitlines(keepends=True)
-    fenced, _ = _markdown_block_regions(lines)
+    fenced, html_blocks = _markdown_block_regions(lines)
+    code_blocks = fenced | _indented_code_lines(lines, fenced | html_blocks)
     output = list(text)
 
     offset = 0
     for index, line in enumerate(lines):
-        if index in fenced:
+        if index in code_blocks:
             for position in range(offset, offset + len(line)):
                 if output[position] not in "\r\n":
                     output[position] = " "
         offset += len(line)
 
-    for start, end in _document_inline_code_ranges(text, fenced):
+    for start, end in _document_inline_code_ranges(text, code_blocks | html_blocks):
         for position in range(start, end):
             if output[position] not in "\r\n":
                 output[position] = " "
@@ -1037,53 +1158,74 @@ def _html_anchor_targets(text: str) -> set[str]:
     return parser.targets
 
 def _markdown_anchors(text: str) -> set[str]:
+    raw_lines = text.splitlines(keepends=True)
+    fenced, html_blocks = _markdown_block_regions(raw_lines)
+    indented = _indented_code_lines(raw_lines, fenced | html_blocks)
+    ignored = fenced | html_blocks | indented
     html_masked = _mask_html_blocks_and_comments(text)
     lines = html_masked.splitlines()
-    fenced, html_blocks = _markdown_block_regions(lines)
-    ignored = fenced | html_blocks
-
-    # Keep inline-code contents: GitHub's heading slug algorithm includes
-    # their text (e.g. Code & More -> code-more). Only fenced code and raw
-    # HTML/comment blocks are excluded from heading processing.
     for index in ignored:
         lines[index] = ""
 
     list_stacks: dict[int, list[int]] = {}
     normalized: list[str] = []
     contexts: list[tuple[int, tuple[int, ...]]] = []
-
+    opened_items: list[bool] = []
     for index, line in enumerate(lines):
         if index in ignored:
             normalized.append("")
             contexts.append((0, ()))
+            opened_items.append(False)
             continue
-        content, quote_depth, list_context, _ = _container_content(
+        content, quote_depth, list_context, opened = _container_content(
             line, list_stacks
         )
         normalized.append(content)
         contexts.append((quote_depth, list_context))
+        opened_items.append(opened)
 
     anchors: set[str] = _html_anchor_targets(text)
     occurrences: dict[str, int] = {}
+    atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+    underline_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+    thematic_pattern = re.compile(
+        r"^ {0,3}(?:(?:\\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    )
 
     for index, line in enumerate(normalized):
         if index in ignored:
             continue
-
-        atx = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        heading: str | None = None
+        atx = re.match(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", line)
         if atx:
-            heading = atx.group(2)
+            heading = atx.group(1)
         elif index + 1 < len(lines) and index + 1 not in ignored:
             same_container = contexts[index] == contexts[index + 1]
-            underline = re.match(r"^ {0,3}(=+|-+)\s*$", normalized[index + 1])
-            heading = (
-                line.strip()
-                if same_container and underline and line.strip()
-                else None
-            )
-        else:
-            heading = None
-
+            underline = underline_pattern.fullmatch(normalized[index + 1])
+            if same_container and underline and line.strip():
+                start = index
+                while start > 0:
+                    if opened_items[start]:
+                        break
+                    previous = start - 1
+                    previous_line = normalized[previous]
+                    if (
+                        previous in ignored
+                        or not previous_line.strip()
+                        or contexts[previous] != contexts[index]
+                        or atx_pattern.match(previous_line)
+                        or thematic_pattern.fullmatch(previous_line)
+                        or underline_pattern.fullmatch(previous_line)
+                    ):
+                        break
+                    if opened_items[previous]:
+                        start = previous
+                        break
+                    start = previous
+                heading = " ".join(
+                    part.strip() for part in normalized[start:index]
+                    if part.strip()
+                )
         if heading:
             base = _slugify_heading(heading)
             slug = base
@@ -1092,7 +1234,6 @@ def _markdown_anchors(text: str) -> set[str]:
                 slug = f"{base}-{occurrences[base]}"
             occurrences[slug] = 0
             anchors.add(slug)
-
     return anchors
 
 def _resolve_target(source: str, target: str) -> tuple[str | None, str | None, bool]:
@@ -1141,6 +1282,7 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
         lines = content.splitlines(keepends=True)
         fenced, html_blocks = _markdown_block_regions(lines)
         ignored_blocks = fenced | html_blocks
+        ignored_blocks |= _indented_code_lines(lines, ignored_blocks)
         table_lines = _markdown_table_lines(lines, ignored_blocks)
         inline_code_by_line = _line_inline_code_ranges(content, ignored_blocks)
         for index, raw_line in enumerate(lines):
