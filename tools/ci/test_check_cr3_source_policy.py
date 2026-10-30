@@ -4,6 +4,7 @@ import unittest
 
 from check_cr3_source_policy import (
     EXPECTED_ASM_COUNTS,
+    _assembly_macro_bodies,
     _assembler_directive_errors,
     _resolved_local_dependency_errors,
     source_policy_errors,
@@ -28,6 +29,55 @@ class Cr3SourcePolicyTests(unittest.TestCase):
     def test_changed_count_in_reviewed_file_fails_closed(self):
         errors = source_policy_errors("kernel/src/address_space.rs", 'asm!("mov cr3, {}");')
         self.assertTrue(any("asm! site count" in error for error in errors), errors)
+
+    def test_assembly_macro_tokens_allow_comments_as_whitespace(self):
+        cases = (
+            'asm/* block comment */!("mov cr3, rax");',
+            'asm// line comment\n!("mov cr3, rax");',
+            'asm!/* after bang */("mov cr3, rax");',
+            'asm/* outer /* nested */ inner */!("mov cr3, rax");',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                errors = source_policy_errors("kernel/src/new_writer.rs", source)
+                self.assertTrue(
+                    any("asm! site count is 1" in error for error in errors),
+                    errors,
+                )
+                bodies, delimiter_errors = _assembly_macro_bodies(source)
+                self.assertEqual(delimiter_errors, [])
+                self.assertEqual(len(bodies), 1)
+
+    def test_global_assembly_macro_tokens_allow_comments_as_whitespace(self):
+        cases = (
+            'global_asm/* block comment */!("nop; .byte 0x90");',
+            'global_asm// line comment\n!/* before delimiter */("nop; .byte 0x90");',
+            'global_asm/* outer /* nested */ inner */!("nop; .byte 0x90");',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                errors = source_policy_errors("kernel/src/new_writer.rs", source)
+                self.assertTrue(
+                    any("global_asm! site count is 1" in error for error in errors),
+                    errors,
+                )
+                directive_errors = _assembler_directive_errors(
+                    "kernel/src/new_writer.rs", source
+                )
+                self.assertTrue(any(".byte" in error for error in directive_errors), directive_errors)
+
+    def test_macro_text_inside_comments_and_literals_is_not_a_callsite(self):
+        source = '''
+            // asm!("mov cr3, rax");
+            let ordinary = "global_asm!(\\".byte 0x90\\")";
+            /* nested /* asm!("mov cr3, rax") */ comment */
+        '''
+        errors = source_policy_errors("kernel/src/new_writer.rs", source)
+        self.assertFalse(any("asm! site count" in error for error in errors), errors)
+        self.assertFalse(any("global_asm! site count" in error for error in errors), errors)
+        bodies, delimiter_errors = _assembly_macro_bodies(source)
+        self.assertEqual(delimiter_errors, [])
+        self.assertEqual(bodies, [])
 
     def test_naked_assembly_and_include_are_denied(self):
         errors = source_policy_errors(
