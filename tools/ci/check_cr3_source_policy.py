@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Fail closed on unreviewed assembly-macro sites and source-loading aliases.
+
+This deliberately uses a short, explicit inventory instead of attempting to
+implement Rust name resolution or macro expansion in a regex-based lexer.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+# Counts are reviewed source call-site inventory, not inferred semantic proofs.
+# Any new site or moved site must be reviewed and explicitly approved here.
+EXPECTED_ASM_COUNTS = {
+    "kernel/src/address_space.rs": 30,
+    "kernel/src/paging/inspection.rs": 4,
+    "kernel/src/paging/editor.rs": 13,
+    "kernel/src/paging/editor/acceptance.rs": 1,
+    "kernel/src/main.rs": 13,
+    "kernel/src/interrupts.rs": 16,
+}
+EXPECTED_GLOBAL_ASM_COUNTS = {"kernel/src/main.rs": 4}
+EXPECTED_ASSEMBLY_IMPORTS = {
+    "kernel/src/address_space.rs": {"use core::arch::asm;"},
+    "kernel/src/interrupts.rs": {"use core::arch::asm;"},
+    "kernel/src/main.rs": {
+        "use core::arch::asm;",
+        "use core::arch::global_asm;",
+    },
+    "kernel/src/paging/mod.rs": {"use core::arch::asm;"},
+}
+EXPECTED_MACRO_RULES = {
+    "kernel/src/paging/editor.rs": 1,
+    "kernel/src/interrupts.rs": 4,
+}
+SOURCE_PACKAGES = ("kernel", "crates/oneos-core")
+EXPECTED_LOCAL_PATH_DEPENDENCIES = {
+    "kernel": {"../crates/oneos-core"},
+    "crates/oneos-core": set(),
+}
+ALLOWED_TARGET_PATHS = {
+    "kernel": {"bin": {"src/main.rs"}},
+    "crates/oneos-core": {"lib": {"src/lib.rs"}},
+}
+
+MACROS = {
+    "asm": re.compile(r"\basm\s*!"),
+    "global_asm": re.compile(r"\bglobal_asm\s*!"),
+    "naked_asm": re.compile(r"\bnaked_asm\s*!"),
+    "include": re.compile(r"\binclude\s*!"),
+}
+STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
+GLOBAL_SYMBOL_RE = re.compile(r"^\.global\s+[A-Za-z_.$][A-Za-z0-9_.$@]*$")
+LOCAL_LABEL_RE = re.compile(r"^\.L[A-Za-z0-9_.$]*:$")
+FORBIDDEN_ESCAPED_STRING_RE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\})")
+FORBIDDEN_DIRECT_MACRO_FORWARD_RE = re.compile(r"\$\s*[A-Za-z_]\w*\s*!")
+FORBIDDEN_REPEATED_PATH_FORWARD_RE = re.compile(r"\$\s*\([^)]*\)\s*::\s*\+?!")
+TRUSTED_ROOT_SHADOW_RE = re.compile(
+    r"\b(?:mod|struct|enum|trait|type|fn|const|static|let)\s+"
+    r"(?:r#)?(?:core|std|alloc|bootloader_api)\b"
+)
+TRUSTED_ROOT_ALIAS_RE = re.compile(
+    r"\buse\b[^;]*\bas\s+(?:core|std|alloc|bootloader_api)\b"
+)
+FORBIDDEN_ENV = (
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTC_BOOTSTRAP",
+    "CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER",
+    "CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS",
+)
+
+
+def _macro_count(source: str, macro: str) -> int:
+    return len(MACROS[macro].findall(source))
+
+
+def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
+    path = Path(relative_path).as_posix()
+    errors: list[str] = []
+    # Rust templates are ordinary string literals in the current allowlist.
+    # Raw strings still expose their quoted contents to this conservative scan.
+    for match in STRING_RE.finditer(source):
+        value = match.group(0)[1:-1].strip()
+        if not value.startswith("."):
+            continue
+        if GLOBAL_SYMBOL_RE.fullmatch(value) or LOCAL_LABEL_RE.fullmatch(value):
+            continue
+        line = source.count("\n", 0, match.start()) + 1
+        errors.append(
+            f"{path}:{line}: assembler directive-like string {value!r} is denied; "
+            "only .global symbol exports and local .L labels are allowed"
+        )
+    return errors
+
+
+def source_policy_errors(relative_path: str, source: str) -> list[str]:
+    """Apply simple deny rules and the explicit call-site count allowlist."""
+    path = Path(relative_path).as_posix()
+    errors: list[str] = []
+    asm_count = _macro_count(source, "asm")
+    global_count = _macro_count(source, "global_asm")
+    naked_count = _macro_count(source, "naked_asm")
+    include_count = _macro_count(source, "include")
+
+    expected_asm = EXPECTED_ASM_COUNTS.get(path, 0)
+    if asm_count != expected_asm:
+        errors.append(
+            f"{path}: asm! site count is {asm_count}, expected {expected_asm}; "
+            "unreviewed or relocated assembly is denied"
+        )
+    expected_global = EXPECTED_GLOBAL_ASM_COUNTS.get(path, 0)
+    if global_count != expected_global:
+        errors.append(
+            f"{path}: global_asm! site count is {global_count}, expected {expected_global}"
+        )
+    if naked_count:
+        errors.append(f"{path}: naked_asm! is unsupported and denied")
+    if include_count:
+        errors.append(f"{path}: include! is denied because it hides source from the inventory")
+
+    macro_rules_count = len(re.findall(r"\bmacro_rules\s*!", source))
+    expected_rules = EXPECTED_MACRO_RULES.get(path, 0)
+    if macro_rules_count != expected_rules:
+        errors.append(
+            f"{path}: macro_rules! count is {macro_rules_count}, expected {expected_rules}"
+        )
+
+    for import_match in re.finditer(r"\b(?:pub\s+)?use\b[^;]*;", source):
+        statement = " ".join(import_match.group(0).split())
+        imports_assembly_macro = re.search(
+            r"\b(?:asm|global_asm|naked_asm|include)\b",
+            statement,
+        ) is not None
+        if imports_assembly_macro and statement not in EXPECTED_ASSEMBLY_IMPORTS.get(path, set()):
+            errors.append(
+                f"{path}: unreviewed import of an assembly/include macro is denied: {statement}"
+            )
+        if re.search(r"\bcore\b[^;]*\barch\b[^;]*(?:\bas\b|\*)", statement):
+            errors.append(
+                f"{path}: aliases and wildcard imports involving core::arch are denied"
+            )
+
+    if re.search(r"\b(?:core|std|alloc)::arch::(?:asm|global_asm|naked_asm)\s*!", source):
+        errors.append(f"{path}: qualified assembly macro paths are denied; use reviewed imports")
+    if re.search(r"\bpub\s+use\b[^;]*\b(?:asm|global_asm|naked_asm)\b", source):
+        errors.append(f"{path}: public re-exports of assembly macros are denied")
+    if re.search(r"\b(?:pub\s+)?use\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b[^;]*\bas\b", source):
+        errors.append(f"{path}: aliases of assembly or include macros are denied")
+    if re.search(r"\b(?:pub\s+)?use\b[^;]*\bas\b[^;]*\b(?:asm|global_asm|naked_asm|include)\b", source):
+        errors.append(f"{path}: aliases of assembly or include macros are denied")
+    if re.search(r"\b(?:pub\s+)?use\s+core::arch\s*(?:as\b|;)", source):
+        errors.append(f"{path}: importing core::arch as a module alias is denied")
+    if re.search(r"\bextern\s+crate\s+(?:core|std|alloc|bootloader_api)\s+as\b", source):
+        errors.append(f"{path}: aliases of trusted macro roots are denied")
+    if re.search(r"#\s*\[\s*macro_use\b", source) or re.search(r"\bmacro_use\b", source):
+        errors.append(f"{path}: macro_use imports are denied")
+    if TRUSTED_ROOT_SHADOW_RE.search(source) or TRUSTED_ROOT_ALIAS_RE.search(source):
+        errors.append(f"{path}: local declarations or imports shadow a trusted macro root")
+    if FORBIDDEN_DIRECT_MACRO_FORWARD_RE.search(source) or FORBIDDEN_REPEATED_PATH_FORWARD_RE.search(source):
+        errors.append(f"{path}: macro forwarding through a metavariable is denied")
+    if re.search(r"\bconcat\s*!\s*\(", source):
+        errors.append(f"{path}: concat! is denied until assembly templates can be inspected without expansion")
+    if FORBIDDEN_ESCAPED_STRING_RE.search(source):
+        errors.append(f"{path}: hexadecimal/Unicode string escapes are denied in the source inventory")
+
+    errors.extend(_assembler_directive_errors(path, source))
+
+    return errors
+
+
+def _walk_package(root: Path, relative_package: str) -> tuple[list[Path], list[str]]:
+    package = root / relative_package
+    errors: list[str] = []
+    if not package.is_dir():
+        return [], [f"source package directory missing: {package}"]
+
+    rust_files: list[Path] = []
+    for directory, names, filenames in os.walk(package, topdown=True, followlinks=False):
+        directory_path = Path(directory)
+        kept_names: list[str] = []
+        for name in names:
+            child = directory_path / name
+            if name in {".git", "target"}:
+                continue
+            if child.is_symlink():
+                errors.append(f"symlink in Rust inventory is denied: {child}")
+                continue
+            kept_names.append(name)
+        names[:] = kept_names
+
+        for filename in filenames:
+            path = directory_path / filename
+            if path.is_symlink():
+                errors.append(f"symlink in Rust inventory is denied: {path}")
+                continue
+            if path.suffix in {".S", ".s", ".asm", ".sx"}:
+                errors.append(f"native assembly input is outside the Rust inventory: {path}")
+            if path.name == "build.rs":
+                errors.append(f"build script is outside the Rust inventory: {path}")
+            if path.suffix == ".rs":
+                rust_files.append(path)
+    return rust_files, errors
+
+
+def _dependency_path_strings(manifest: dict) -> set[str]:
+    paths: set[str] = set()
+
+    def visit_dependencies(value: object) -> None:
+        if not isinstance(value, dict):
+            return
+        for dependency in value.values():
+            if not isinstance(dependency, dict):
+                continue
+            dep_path = dependency.get("path")
+            if isinstance(dep_path, str):
+                paths.add(dep_path)
+
+    for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+        visit_dependencies(manifest.get(table))
+    target_tables = manifest.get("target", {})
+    if isinstance(target_tables, dict):
+        for target in target_tables.values():
+            if isinstance(target, dict):
+                for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+                    visit_dependencies(target.get(table))
+    return paths
+
+
+def _manifest_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    manifest_paths = [root / "Cargo.toml"] + [root / p / "Cargo.toml" for p in SOURCE_PACKAGES]
+    package_manifests: dict[str, dict] = {}
+    for path in manifest_paths:
+        try:
+            manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"cannot read/parse Cargo manifest {path}: {error}")
+            continue
+
+        if "patch" in manifest or "replace" in manifest:
+            errors.append(f"Cargo patch/replace tables are denied until their source closure is inventoried: {path}")
+
+        rel_parent = path.parent.relative_to(root).as_posix()
+        if rel_parent in SOURCE_PACKAGES:
+            package_manifests[rel_parent] = manifest
+            build = manifest.get("package", {}).get("build")
+            if build not in (None, False):
+                errors.append(f"custom package.build script is denied: {path}")
+            expected_paths = EXPECTED_LOCAL_PATH_DEPENDENCIES[rel_parent]
+            observed_paths = _dependency_path_strings(manifest)
+            if observed_paths != expected_paths:
+                errors.append(
+                    f"{path}: local dependency paths changed; expected {sorted(expected_paths)!r}, "
+                    f"found {sorted(observed_paths)!r}"
+                )
+
+            targets = manifest.get("bin", [])
+            if isinstance(targets, dict):
+                targets = [targets]
+            allowed_bin = ALLOWED_TARGET_PATHS.get(rel_parent, {}).get("bin", set())
+            for target in targets:
+                if not isinstance(target, dict):
+                    continue
+                target_path = target.get("path")
+                if target_path is not None and target_path not in allowed_bin:
+                    errors.append(f"unsupported Cargo bin target path {target_path!r} in {path}")
+            lib = manifest.get("lib")
+            allowed_lib = ALLOWED_TARGET_PATHS.get(rel_parent, {}).get("lib", set())
+            if isinstance(lib, dict) and lib.get("path") is not None and lib["path"] not in allowed_lib:
+                errors.append(f"unsupported Cargo library target path {lib['path']!r} in {path}")
+            for target_name in ("example", "test", "bench"):
+                if manifest.get(target_name):
+                    errors.append(f"custom Cargo {target_name} targets are denied until inventoried: {path}")
+
+    config_path = root / ".cargo" / "config.toml"
+    legacy_config_path = root / ".cargo" / "config"
+    if legacy_config_path.exists():
+        errors.append(f"legacy Cargo config path is denied: {legacy_config_path}")
+    if config_path.exists():
+        try:
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"cannot read/parse Cargo config {config_path}: {error}")
+        else:
+            expected_config = {
+                "target": {
+                    "x86_64-unknown-none": {
+                        "rustflags": ["-C", "relocation-model=pic"]
+                    }
+                }
+            }
+            if config != expected_config:
+                errors.append(
+                    f"Cargo config differs from the pinned target rustflags policy: {config_path}"
+                )
+
+    for variable in FORBIDDEN_ENV:
+        if os.environ.get(variable):
+            errors.append(f"environment override {variable} is denied")
+    return errors
+
+
+def validate_source_policy(root: Path) -> tuple[bool, list[str]]:
+    """Check the bounded Rust source closure and fail closed on new code inputs."""
+    errors = _manifest_errors(root)
+    all_rust_files: list[Path] = []
+    for package in SOURCE_PACKAGES:
+        files, package_errors = _walk_package(root, package)
+        all_rust_files.extend(files)
+        errors.extend(package_errors)
+
+    found_rel_paths = {path.relative_to(root).as_posix() for path in all_rust_files}
+    for expected_path in EXPECTED_ASM_COUNTS:
+        if expected_path not in found_rel_paths:
+            errors.append(f"allowlisted assembly source is missing: {expected_path}")
+    for expected_path in EXPECTED_GLOBAL_ASM_COUNTS:
+        if expected_path not in found_rel_paths:
+            errors.append(f"allowlisted global assembly source is missing: {expected_path}")
+
+    for path in sorted(all_rust_files):
+        relative = path.relative_to(root).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"cannot read Rust source {path}: {error}")
+            continue
+        errors.extend(source_policy_errors(relative, source))
+
+    return not errors, errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    args = parser.parse_args()
+    valid, errors = validate_source_policy(args.root.resolve())
+    if not valid:
+        for error in errors:
+            print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print("PASS: Rust assembly sites match the explicit allowlist; aliases, include!, and unsupported code inputs are denied")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
