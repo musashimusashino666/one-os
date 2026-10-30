@@ -1,41 +1,178 @@
 # Implementation Status
 
-**Snapshot date:** 2026-10-28  
-**Reviewed main commit:** `d9b130e84da910da5057f71d924d277573b81bde`  
-**Purpose:** describe observed implementation status, not guarantee a current CI result.
+**Snapshot:** 2026-10-30
+**Reviewed main:** `f1d80da6a7db7d87749fd0f31a666878775d36d1`
 
-Update this document when main changes in a material way. “Implemented” means code exists; “verified” means the stated test path demonstrated the behavior; neither word implies a broader security guarantee.
+This document records observed implementation.
+It does not guarantee broader security properties.
 
 ## Status matrix
 
-| Area | Status | Evidence and boundary |
-| --- | --- | --- |
-| Rust workspace and BIOS image tooling | Implemented | Workspace contains oneos-core, bare-metal kernel, and oneos-xtask. |
-| Memory map and physical frame allocator | Implemented with fixed limits | Host tests and bootstrap checks exist. Capacity is bounded; only eligible Usable regions are allocatable. |
-| Selected boot mapping inspection | Implemented, bounded | ELF PT_LOAD, selected metadata, permissions, and ownership are checked. Not every boot mapping or alias is covered. |
-| Kernel virtual-memory mutation | Implemented for limited paths | Guarded 4 KiB map/unmap and related ownership/TLB checks; not a general VM subsystem. |
-| Selected protection and TLB tests | Acceptance paths implemented | QEMU profiles cover supervisor-write protection, NX, mapping transitions, large-page demotion, direct-map permission transitions, a QMP-injected asynchronous NMI during the verified non-present transition window, rejection of live-root unregistration, rejection of missing/duplicate root registration, rejection of allocator-unowned and permanently reserved roots at admission, real CR3-switch rejection when reservation metadata becomes inconsistent after registration, W^X-audit rejection of the same inconsistent root state, cross-root W^X conflict injection, PTE/reservation-state restoration, and a clean follow-up audit. These are scoped emulator tests, not physical-hardware, Machine Check, or system-wide security certification. |
-| Bounded x86 W^X transition risk review | Closed with residual risks recorded | [Issue #49](https://github.com/musashimusashino666/one-os/issues/49) was closed on 2026-10-28 after an AI-assisted review against the exact reviewed main revision and explicit maintainer residual-risk acceptance. No independent human sign-off or physical-hardware validation was performed. This is not a global W^X guarantee. |
-| W^X | Partial; global guarantee incomplete | Direct-map aliases for validated executable PT_LOAD pages are transitioned to RO/NX and bounded audits exist. Complete frame-wide root/alias inventory remains open under [#26](https://github.com/musashimusashino666/one-os/issues/26) and [#46](https://github.com/musashimusashino666/one-os/issues/46). |
-| Address-space lifecycle | Partial | CPL 0 root switch, selected user-data mapping, teardown/re-zero/reclaim scenarios are smoke-tested. This is not Ring 3 process isolation. |
-| Capability model | Reference model only | oneos-core is host-testable; rights are not yet enforced as a complete process boundary by the kernel. |
-| Ring 3 user execution | Not implemented as a complete path | No validated end-to-end user entry/return and isolation acceptance suite. |
-| Scheduler and IPC | Not implemented as a usable subsystem | Contracts and implementation remain roadmap work. |
-| Storage, networking, drivers, service manager | Not implemented as integrated services | Not a daily-use operating system. |
-| User-facing permission controls and AI delegation | Design target only | No integrated shell/desktop and no complete owner-control UX. |
-| Authenticated boot and signed updates/recovery | Not implemented | Must precede any corresponding product security claim. |
-| SMP and remote TLB shootdown | Not implemented | Current paging mutation contract assumes one CPU and maskable interrupts disabled. |
+### Foundations
 
-## Outstanding work items
+- **Rust workspace and BIOS tooling — Verified for scope**
+  Core crate, kernel, and xtask build paths exist.
+- **Physical memory — Partial**
+  Fixed-capacity frame allocator and host tests.
+- **Boot mapping inspection — Partial**
+  Selected mappings and ELF segments are checked.
+- **Page-table mutation — Partial**
+  Guarded 4 KiB paths and selected ownership/TLB checks.
 
-- [Issue #26](https://github.com/musashimusashino666/one-os/issues/26): complete frame-wide W^X and boot-mapping verification.
-- [Issue #46](https://github.com/musashimusashino666/one-os/issues/46): inventory all declared physical aliases before enforcing frame-wide W^X.
-- [Issue #23](https://github.com/musashimusashino666/one-os/issues/23): gate live user-page publication on lifecycle and isolation tests.
-- [Issue #24](https://github.com/musashimusashino666/one-os/issues/24): process address-space isolation and kernel-enforced capabilities.
-- [Issue #25](https://github.com/musashimusashino666/one-os/issues/25): SMP/preemption synchronization and remote TLB shootdown protocol.
+### Memory protection
 
-Issue #49 is a completed, bounded architecture-risk review, not an open implementation milestone. Its closure does not close #26 or #46, establish system-wide W^X, or validate Machine Check behavior or physical hardware.
+- **Large-page handling — Verified for scope**
+  Demotion and sibling-preservation QEMU cases exist.
+- **Direct-map W^X transition — Partial**
+  Validated executable PT_LOAD aliases are preflighted and transitioned.
+- **W^X alias audit — Verified for declared scope**
+  Bounded active/registered-root audit and cross-root conflict test.
+- **Global frame-wide W^X — Blocked**
+  Complete boot-map coverage and transactional enforcement remain open.
+- **CR3 write-site control — Verified for scope**
+  Source, optimized assembly, and normal linked BIOS ELF checks.
 
-## Evidence policy
+### Process and platform
 
-This snapshot was reconciled against the source tree, PR metadata, open issues, and GitHub Actions records on 2026-10-28. The latest relevant evidence reviewed here is PR #71: its required CI run [#40657289751](https://github.com/musashimusashino666/one-os/actions/runs/40657289751) passed on PR HEAD `b948771fb862fc6327d8c28a29925a49648c6658`. The merged main commit `d9b130e84da910da5057f71d924d277573b81bde` has the same Git tree (`f12c189c8478f43ae50be55754f08e48c6d06112`) as that tested HEAD, although the commit SHAs differ. This is QEMU/CI evidence for the tested source tree, not physical-hardware evidence or proof of global W^X. This documentation change has not itself run the CI suite; require CI for the exact new PR HEAD and inspect the relevant logs before merging.
+- **Address-space lifecycle — Partial**
+  CPL 0 root switching and selected teardown paths are tested.
+- **User-page initialization — Partial**
+  Kernel zeroing adapter and selected QEMU checks exist.
+- **Ring 3 process isolation — Not established**
+  No complete user entry/return and isolation boundary.
+- **Capability enforcement — Not established**
+  oneos-core is a host-testable reference model.
+- **IPC and scheduler — Not established**
+  No usable integrated subsystem.
+- **Storage, network, and drivers — Not established**
+  No integrated user-facing system.
+- **Permission UI and AI delegation — Not established**
+  Design target only.
+- **Secure boot and signed updates — Not established**
+  No production integrity or recovery path.
+- **SMP and remote TLB shootdown — Not established**
+  Current paging contract is single-CPU.
+
+## Verified implementation slices
+
+### Memory and paging
+
+- Fixed-capacity physical frame allocation.
+- Selected boot mapping inspection.
+- Guarded 4 KiB mapping and unmapping.
+- Supervisor-write and NX protection checks.
+- Large-page demotion and sibling permission checks.
+- Direct-map permission transition for validated executable
+  `PT_LOAD` pages.
+- Bounded W^X audit over the active and registered roots.
+- Cross-root writable/executable alias conflict injection.
+- Exact PTE restoration and clean follow-up audit.
+- Root admission, activation, and cleanup rejection tests.
+
+These are bounded results.
+They do not establish global frame-wide W^X.
+
+### CR3 write-site control
+
+- PR #73 adds source-level writer inventory and deny rules.
+- PR #73 checks the reviewed optimized assembly path.
+- PR #76 inspects the final linked ELF from the normal BIOS image.
+- The linked image must contain exactly three reviewed CR3 writes.
+
+The linked-ELF check does not inspect every feature-specific
+QEMU test image. It is not a whole-program or boot-mapping proof.
+
+### Process and authority
+
+- CPL 0 address-space root lifecycle paths exist.
+- Selected switching, zeroing, teardown, and reclamation paths
+  have bounded tests.
+- The capability model exists in the host-testable core crate.
+
+These are prerequisites only.
+They do not constitute Ring 3 isolation or kernel-enforced authority.
+
+## Open work
+
+### Product validation
+
+- [#83](https://github.com/musashimusashino666/one-os/issues/83):
+  validate the initial product thesis and comparators.
+
+### Memory protection
+
+- [#26](https://github.com/musashimusashino666/one-os/issues/26):
+  parent memory-protection gate.
+- [#46](https://github.com/musashimusashino666/one-os/issues/46):
+  authoritative physical-alias inventory.
+- [#80](https://github.com/musashimusashino666/one-os/issues/80):
+  complete boot-mapping classification.
+- [#81](https://github.com/musashimusashino666/one-os/issues/81):
+  transactional frame-wide W^X enforcement.
+
+### Process isolation and authority
+
+- [#23](https://github.com/musashimusashino666/one-os/issues/23):
+  safe user-page initialization and publication.
+- [#24](https://github.com/musashimusashino666/one-os/issues/24):
+  parent process-isolation milestone.
+- [#77](https://github.com/musashimusashino666/one-os/issues/77):
+  Ring 3 and independent address spaces.
+- [#78](https://github.com/musashimusashino666/one-os/issues/78):
+  kernel-enforced capabilities.
+- [#87](https://github.com/musashimusashino666/one-os/issues/87):
+  normative IPC specification.
+- [#79](https://github.com/musashimusashino666/one-os/issues/79):
+  kernel IPC implementation.
+
+### Concurrency and release
+
+- [#25](https://github.com/musashimusashino666/one-os/issues/25):
+  SMP, preemption, and remote TLB shootdown.
+- [#84](https://github.com/musashimusashino666/one-os/issues/84):
+  production integrity and release readiness.
+
+### Project governance
+
+- [#85](https://github.com/musashimusashino666/one-os/issues/85):
+  private vulnerability reporting and response policy.
+- [#86](https://github.com/musashimusashino666/one-os/issues/86):
+  automated documentation integrity checks.
+- [#88](https://github.com/musashimusashino666/one-os/issues/88):
+  issue labels and milestone taxonomy.
+- [#89](https://github.com/musashimusashino666/one-os/issues/89):
+  maintainability review for large implementation modules.
+
+## Verification evidence
+
+The latest relevant PR-context CI run checked on main is:
+
+- PR #75, run [#41022642740][ci75]:
+  passed on PR HEAD
+  `8eb7af0883da710da04433cbc861938009497a9b`.
+- PR #76, run [#41019578318][ci76]:
+  passed on PR HEAD
+  `c7b785dce8cf1b8681cf491147249c45beea9c90`.
+
+PR #75 is documentation-only and includes the project definition
+and ADR-0003 integration. PR #76 adds the linked-ELF CR3 check.
+
+CI and QEMU evidence applies only to the tested revisions and
+declared emulator profile. The current main commit is recorded
+above; this snapshot does not claim a new run on this documentation PR.
+
+## Explicit limitations
+
+- Global frame-wide W^X is incomplete.
+- Boot mapping classification is not exhaustive.
+- Ring 3 process isolation is incomplete.
+- Capability rights are not fully enforced by the kernel.
+- IPC and a usable scheduler are not integrated.
+- SMP and remote TLB shootdown are unsupported.
+- Physical hardware validation is not established.
+- Machine Check behavior is not validated.
+- No independent human security sign-off is claimed.
+- No production-readiness or certification claim is made.
+
+[ci75]: https://github.com/musashimusashino666/one-os/actions/runs/41022642740
+[ci76]: https://github.com/musashimusashino666/one-os/actions/runs/41019578318

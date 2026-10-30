@@ -2,68 +2,209 @@
 
 ## Status and scope
 
-This document describes the intended system shape and marks which boundaries exist today. It is not evidence that target components have already been implemented.
+This document describes the intended system shape.
+It also marks which boundaries exist today.
 
-ONE OS starts with a small x86_64 Rust kernel and grows incrementally toward a secure, user-controlled computing environment. Architecture should minimize the privileged core and make policy, resource ownership, and recovery explicit.
+ONE OS starts with a small x86_64 Rust kernel.
+It grows incrementally toward a secure, user-controlled environment.
+
+Architecture should minimize privileged code.
+Policy, resource ownership, and recovery must remain explicit.
 
 ## Target layers
 
-| Layer | Responsibilities | Placement target |
-| --- | --- | --- |
-| Hardware and boot | CPU features, boot protocol, memory map, integrity of initial image | Firmware/bootloader plus a small kernel handoff contract |
-| Kernel core | Scheduling primitives, address spaces, interrupt/exception handling, physical memory, core IPC, kernel-enforced authority, secure object lifecycle | Capability-oriented microkernel; smallest trusted core practical as the long-term target, not a claim about the current bootstrap implementation |
-| Authority and isolation | Capability validation, process boundaries, IPC primitives, resource transfer and revocation | Enforcement in kernel; policy and user-facing explanation outside it |
-| System services | Storage, networking, device management, service supervision, update orchestration | Isolated user-space services where practical |
-| Application runtime | Native ABI, sandboxing, compatibility or virtualized execution paths | Explicitly separated execution contracts |
-| User environment | Shell/compositor or equivalent interaction model, settings, permission views, recovery UX | User space |
-| Automation and AI | Planning, delegated actions, tool access, provenance and audit records | Untrusted or separately constrained clients; never an implicit authority bypass |
+### Hardware and boot
 
-## World-class target architecture and device profiles
+- CPU and device abstractions.
+- Firmware and boot protocol.
+- Memory-map validation.
+- Integrity of the initial image.
 
-The canonical long-term definition and full target design are in [World-Class OS: Definition and Design](../vision/WORLD_CLASS_OS.md). ONE OS targets one coherent platform across four domains: **PC/workstation, smartphone/mobile, server, and embedded/edge**. Common security semantics, authority rules, interface contracts, and evidence policy are shared; binaries, drivers, UI, and scheduling policies may differ by profile.
+**Placement:** firmware, bootloader, and a small kernel handoff contract.
 
-The target architecture is a **capability-oriented microkernel** with a small trusted computing base, as recorded in [ADR-0003](../project/decisions/ADR-0003-capability-microkernel-platform.md). Core process/address-space management, interrupt and exception handling, essential scheduling primitives, core IPC, memory/resource lifecycle, and enforcement of protected operations remain in the kernel. Filesystems, networking, device drivers, service supervision, update orchestration, user environments, and AI/automation clients should run in isolated user space where the platform's required guarantees permit. Any security-boundary change must follow the ADR and acceptance-test process.
+### Kernel core
 
-| Target profile | Primary priorities | Profile-specific requirements |
-| --- | --- | --- |
-| Personal / PC | Responsiveness, accessibility, productivity, practical application compatibility | Windowing/input, graphics/audio, peripherals, compatibility and recovery UX |
-| Mobile | Energy efficiency, privacy, secure sensor/radio use | Power states, modem/camera/sensors, thermal limits and background lifecycle |
-| Server | Throughput, tail latency, resource isolation and service continuity | SMP and remote TLB protocols, NUMA where relevant, virtualization and remote operation |
-| Embedded / edge | Bounded resource use and predictable operation | Timing guarantees only where explicitly supported and verified, watchdogs, fail-safe state and long service life |
+- Process and address-space control.
+- Scheduling primitives.
+- Interrupt and exception handling.
+- Physical memory and secure object lifecycle.
+- Core IPC and kernel-enforced authority.
 
-The application platform must declare separate contracts for native APIs, POSIX compatibility, WebAssembly, containers, and virtual machines. These are different execution and isolation mechanisms, not one interchangeable compatibility promise. Hardware architecture support (initially x86_64, then separately validated AArch64; additional architectures only under an explicit support plan) must be tested per target.
+**Placement:** a capability-oriented microkernel.
+The trusted core should remain as small as practical.
+This is a long-term target, not the current implementation.
 
-These are long-term targets. The current bootstrap does not yet implement the complete microkernel service architecture, four device profiles, application platform, or user environment.
+### Authority and isolation
+
+- Capability validation.
+- Process boundaries.
+- IPC primitives.
+- Resource transfer and revocation.
+
+**Placement:** enforcement in the kernel.
+Policy and user-facing explanation remain outside it.
+
+### System services
+
+- Storage and filesystems.
+- Networking.
+- Device management and drivers.
+- Service supervision.
+- Update orchestration.
+
+**Placement:** isolated user-space services where practical.
+
+### Application runtime
+
+- Native application interfaces.
+- Sandboxing and compatibility.
+- Virtualized execution paths.
+
+Each path has a separate execution contract.
+
+### User environment
+
+- Shell, desktop, or compositor.
+- Settings and permission views.
+- Recovery experience.
+
+**Placement:** user space.
+
+### Automation and AI
+
+- Planning and delegated actions.
+- Tool access and provenance.
+- Audit records.
+
+Automation is untrusted or separately constrained.
+It must never bypass the authority model.
+
+## World-class target architecture
+
+The canonical definition is in
+[World-Class OS](../vision/WORLD_CLASS_OS.md).
+
+ONE OS targets one coherent platform across four domains:
+
+- PC and workstation.
+- Smartphone and mobile.
+- Server.
+- Embedded and edge.
+
+Security semantics, authority rules, interface contracts,
+and evidence policy are shared across these profiles.
+
+Binaries, drivers, interfaces, and scheduling policies may differ.
+
+The target microkernel architecture is recorded in
+[ADR-0003](../project/decisions/ADR-0003-capability-microkernel-platform.md).
+
+Filesystems, networking, drivers, service supervision,
+update orchestration, user environments, and AI clients
+should run in isolated user space where guarantees permit.
+
+Any security-boundary change follows the ADR and acceptance process.
+
+## Target device profiles
+
+### PC and workstation
+
+- Responsiveness and accessibility.
+- Productivity and application compatibility.
+- Windowing, input, graphics, and audio.
+- Peripheral support and recovery UX.
+
+### Mobile
+
+- Energy efficiency and privacy.
+- Secure sensor and radio access.
+- Power and thermal management.
+- Background execution lifecycle.
+
+### Server
+
+- Throughput and tail latency.
+- Resource isolation and service continuity.
+- SMP, remote TLB, and NUMA where applicable.
+- Virtualization and remote operations.
+
+### Embedded and edge
+
+- Bounded resource use.
+- Predictable operation.
+- Verified timing guarantees where supported.
+- Watchdogs, fail-safe states, and long service life.
+
+Profiles are not separate products with unrelated security models.
+Each profile requires independent support and acceptance evidence.
+
+## Application and architecture support
+
+Native APIs, POSIX compatibility, WebAssembly, containers,
+and virtual machines are distinct execution paths.
+
+Their compatibility, isolation, licensing, and performance
+properties must be documented and tested separately.
+
+The initial architecture is x86_64.
+AArch64 and other targets require independent validation.
+
+These are long-term targets.
+The current bootstrap does not implement the complete
+microkernel service architecture or device profiles.
 
 ## Required boundary rules
 
-- Every transition between layers defines inputs, authority, ownership, error behavior, and lifetime.
-- User space must not gain privilege through mutable metadata, fabricated handles, or assumptions enforced only by convention.
-- The kernel validates resource ownership and authority at every protected boundary.
-- An isolated service failure should not automatically compromise unrelated services or the kernel.
-- The UI can request or explain an authorization decision but cannot substitute for the enforcement that makes the decision real.
-- Cross-boundary IPC must define framing, resource ownership, cancellation, error reporting, and revocation.
-- Each compatibility path must be distinguishable and constrained by an explicit policy.
+- Every layer transition defines inputs and authority.
+- Ownership, errors, and resource lifetimes are explicit.
+- User space cannot gain privilege through forged handles.
+- Protected operations validate authority in the kernel.
+- A service failure must not automatically compromise others.
+- UI decisions cannot substitute for kernel enforcement.
+- IPC defines framing, ownership, cancellation, and errors.
+- Compatibility paths are explicit and policy-constrained.
 
 ## Current implementation boundary
 
-As of the main-branch snapshot reviewed on 2026-10-28 (`d9b130e84da910da5057f71d924d277573b81bde`):
+Snapshot date: **2026-10-30**.
+Reviewed main commit:
+`f1d80da6a7db7d87749fd0f31a666878775d36d1`.
 
-- The workspace contains a no_std core crate, x86_64 bare-metal kernel, and BIOS image build tool.
-- The kernel validates the boot memory map, initializes a fixed-capacity frame allocator, inspects selected boot mappings, and performs guarded page-table operations.
-- Selected supervisor-write, NX, mapping-transition, large-page-demotion, direct-map W^X, and asynchronous NMI-transition cases have scoped QEMU acceptance paths in CI. Root admission checks allocator ownership and permanent-reservation state; dedicated QEMU fault injection verifies rejection before a CR3 switch and rejection by the declared-root W^X audit when reservation metadata becomes inconsistent.
-- Kernel-created roots, registry lifecycle, CPL 0 switching, and selected teardown/re-zero/reclaim scenarios are exercised. These tests do not constitute Ring 3 execution or independent process isolation.
-- The capability crate is a host-testable authorization model, not kernel enforcement.
-- Storage, networking, drivers, service management, a general scheduler, user-facing shell, and AI action-control UX are not implemented as a usable system.
-- Complete frame-wide W^X, independent Ring 3 isolation, kernel-enforced capabilities, SMP coordination, secure boot, and signed update/recovery mechanisms remain incomplete.
+- The workspace has a no_std core crate, x86_64 kernel,
+  and BIOS image build tool.
+- The kernel validates the memory map and initializes
+  a fixed-capacity frame allocator.
+- Selected boot mappings and guarded page-table operations
+  are implemented.
+- Selected supervisor-write, NX, mapping-transition,
+  large-page-demotion, and NMI cases have QEMU tests.
+- Root admission, activation, registry lifecycle,
+  and selected teardown paths have negative tests.
+- CR3 writes are checked in source and optimized assembly.
+- The normal linked BIOS kernel ELF is checked for
+  exactly three reviewed CR3 writes.
+- Feature-specific test-image ELFs are not covered
+  by that linked-ELF check.
+- CPL 0 address-space paths are tested.
+  Ring 3 process isolation is not implemented.
+- The capability crate is a host-testable reference model.
+  It is not kernel enforcement.
+- Storage, networking, integrated drivers, service management,
+  a usable scheduler, shell, and AI action-control UX are absent.
+- Global W^X, full boot-mapping classification, Ring 3 isolation,
+  kernel capabilities, SMP, secure boot, and signed recovery
+  remain incomplete.
 
-See [implementation status](../project/IMPLEMENTATION_STATUS.md) for the maintained status snapshot and [roadmap](../project/ROADMAP.md) for ordering.
+See [Implementation Status](../project/IMPLEMENTATION_STATUS.md)
+for detailed scope and evidence.
 
 ## Change control
 
-A change to a trust boundary, execution layer, public kernel contract, or resource-lifetime model MUST have:
+A change to a trust boundary, execution layer,
+kernel contract, or resource-lifetime model MUST have:
+
 1. An updated specification.
-2. A threat and failure analysis.
-3. Tests for both allowed and denied operations.
-4. A verification entry describing what the tests do and do not prove.
-5. An ADR when the architectural decision is consequential or hard to reverse.
+2. Threat and failure analysis.
+3. Tests for allowed and denied operations.
+4. A verification entry with exclusions.
+5. An ADR when the decision is consequential or hard to reverse.

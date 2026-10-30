@@ -2,47 +2,146 @@
 
 ## Purpose and invariant
 
-The source gate pins the reviewed CR3 writer functions and rejects new or relocated assembly-macro sites unless their inventory is explicitly updated and reviewed. Rust source traversal excludes only the exact output directory reported by `cargo metadata`; a source module named `target` at any other path remains part of the inventory. If Cargo's output directory is configured inside an inventoried `src/` tree, the gate fails closed instead of excluding that path. The three reviewed writers are in **kernel/src/address_space.rs**:
+The source gate pins the reviewed CR3 writer functions and rejects new or relocated
+assembly-macro sites unless their inventory is explicitly updated and reviewed. Rust
+source traversal excludes only the exact output directory
+reported by `cargo metadata`; a source
+module named `target` at any other path remains part of the inventory. If Cargo's output
+directory is configured inside an inventoried `src/` tree,
+the gate fails closed instead of
+excluding that path. The three reviewed writers are in **kernel/src/address_space.rs**:
 
 - activate_supervisor_kernel_root
 - switch_address_space
 - switch_address_space_flush_local_tlb
 
-This code-site gate is defense in depth. It does not prove that every bootloader mapping or physical alias has been classified.
+This code-site gate is defense in depth. It does not prove that every bootloader mapping
+or physical alias has been classified.
 
 ## Source inventory and allowlist
 
-CI scans Rust source under **kernel/** and **crates/oneos-core/**, excluding only generated target directories and VCS metadata. Symlinks, build.rs, custom package.build scripts, and native assembly inputs (.S, .s, .asm, .sx) fail closed.
+CI scans Rust source under **kernel/** and **crates/oneos-core/**, excluding only
+generated target directories and VCS metadata. Symlinks, build.rs, custom package.build
+scripts, and native assembly inputs (.S, .s, .asm, .sx) fail closed.
 
-The checked-in inventory records each asm!/global_asm! site independently by macro kind, owning Rust function (or module scope), normalized template digest, and a digest of the surrounding masked Rust code. The local context excludes comments and string literals and is bounded around the call site, so formatting and comment-only changes do not invalidate the record while same-count moves between functions or within a function do. A separate per-file call-site count remains as a coarse defense. global_asm! is allowed only at four reviewed sites in kernel/src/main.rs. naked_asm! is not allowed. The current macro_rules! definition count is also pinned for the two files that define local declarative macros. Adding, relocating, re-owning, or modifying a site fails CI until the inventory and review are updated together.
+The checked-in inventory records each asm!/global_asm! site independently by macro kind,
+owning Rust function (or module scope), normalized template digest, and a digest of the
+surrounding masked Rust code. The local context excludes comments and string literals
+and is bounded around the call site, so formatting and comment-only changes do not
+invalidate the record while same-count moves between functions or within a function do.
+A separate per-file call-site count remains as a coarse defense. global_asm! is allowed
+only at four reviewed sites in kernel/src/main.rs. naked_asm! is not allowed. The
+current macro_rules! definition count is also pinned for the two files that define local
+declarative macros. Adding, relocating, re-owning, or modifying a site fails CI until
+the inventory and review are updated together.
 
-The kernel package's resolved Cargo dependency closure is inspected with `cargo metadata --all-features --locked`; local path/workspace packages are allowed only when their resolved manifest is in the explicit source inventory or the reviewed `crates/oneos-core` package. This catches `workspace = true` dependencies and transitive local path crates instead of comparing manifest strings. Patch/replace tables and unreviewed custom Cargo targets are rejected. The only target rustflag permitted by `.cargo/config.toml` is `-C relocation-model=pic`. Compiler/linker wrappers, environment overrides, and alternate native/build-script inputs are rejected.
+The kernel package's resolved Cargo dependency closure is
+inspected with `cargo metadata --all-features --locked`; local
+path/workspace packages are allowed only when their resolved manifest is in the explicit
+source inventory or the reviewed `crates/oneos-core` package.
+This catches `workspace = true` dependencies and
+transitive local path crates instead of comparing manifest strings. Patch/replace tables
+and unreviewed custom Cargo targets are rejected. The only target rustflag permitted by
+`.cargo/config.toml` is `-C relocation-model=pic`.
+Compiler/linker wrappers, environment overrides, and alternate
+native/build-script inputs are rejected.
 
-The resolved graph is not a source scan of every dependency. Registry packages are traversed as graph nodes so that local path crates anywhere below them are still detected, but registry package Rust files are not scanned by this policy. Assembly or CR3 writes originating in registry code are therefore outside the source gate's guarantee. The companion linked-ELF gate in PR #76 checks actual CR3-writing instructions in the normal linked kernel artifact; it does not retroactively make PR #73's source scan cover registry crates.
+The resolved graph is not a source scan of every dependency. Registry packages are
+traversed as graph nodes so that local path crates anywhere below them are still
+detected, but registry package Rust files are not scanned by this policy. Assembly or
+CR3 writes originating in registry code are therefore outside the source gate's
+guarantee. The companion linked-ELF gate in PR #76 checks actual CR3-writing
+instructions in the normal linked kernel artifact; it does not retroactively make PR
+#73's source scan cover registry crates.
 
 ## Alias and source-loading deny rules
 
-The inventory does not attempt general Rust namespace resolution or macro expansion. Instead, it denies source forms that could hide an assembly call or load code outside the inventory:
+The inventory does not attempt general Rust namespace resolution or macro expansion.
+Instead, it denies source forms that could hide an assembly call or load code outside
+the inventory:
 
-- Imports of asm!/global_asm! are accepted only through the explicit per-file import allowlist. Unreviewed import paths, aliases, public re-exports, qualified assembly-macro paths, wildcard imports, aliases of core::arch, and aliases of trusted macro roots are rejected.
+- Imports of asm!/global_asm! are accepted only through the explicit per-file import
+  allowlist. Unreviewed import paths, aliases, public re-exports, qualified
+  assembly-macro paths, wildcard imports, aliases of core::arch, and aliases of trusted
+  macro roots are rejected.
 - include!, #[macro_use], macro metavariable forwarding, and concat! are rejected.
-- Assembly template arguments must be direct ordinary or raw string literals. Although Rust's inline-assembly grammar permits a macro invocation as a format string, the inventory rejects macro-expanded or computed templates so directive and CR3-writer checks always inspect the actual source text.
-- `#[path = "..."]` and `#[cfg_attr(..., path = "...")]` module redirection attributes are rejected in every inventoried Rust source file; they could otherwise load code from outside the scanned package trees.
+- Assembly template arguments must be direct ordinary or raw string literals. Although
+  Rust's inline-assembly grammar permits a macro invocation as a format string, the
+  inventory rejects macro-expanded or computed templates so directive and CR3-writer
+  checks always inspect the actual source text.
+- `#[path = "..."]` and `#[cfg_attr(..., path = "...")]`
+  module redirection attributes are rejected in every inventoried Rust
+  source file; they could otherwise load code from outside the scanned package trees.
 - Declarations that shadow core, std, alloc, or bootloader_api are rejected.
-- Hexadecimal and Unicode escapes are rejected inside `asm!` and `global_asm!` template strings. Cooked and raw Rust template strings are decoded, then every statement is checked after newline, carriage-return, semicolon, and tab separators; an allowlist-external directive is rejected regardless of its position in the template. Unrelated Rust strings, including binary-format markers, remain valid.
+- Hexadecimal and Unicode escapes are rejected inside `asm!`
+  and `global_asm!` template strings.
+  Cooked and raw Rust template strings are decoded, then every statement is checked
+  after newline, carriage-return, semicolon, and tab separators; an allowlist-external
+  directive is rejected regardless of its position in the template. Unrelated Rust
+  strings, including binary-format markers, remain valid.
 
-Macro-call discovery uses a shared Rust-aware lexical scanner rather than regular expressions. It treats line comments and nested block comments as whitespace, ignores macro-like text inside comments and string/character literals, recognizes comments between an identifier and `!`, and balances parenthesis, bracket, and brace token trees. It is deliberately not a Rust name resolver or macro expander; unsupported or ambiguous assembly-template forms fail closed.
+Macro-call discovery uses a shared Rust-aware lexical scanner rather than regular
+expressions. It treats line comments and nested block comments as whitespace, ignores
+macro-like text inside comments and string/character literals, recognizes comments
+between an identifier and `!`, and balances parenthesis, bracket, and brace token trees.
+It is deliberately not a Rust name resolver or macro expander; unsupported or ambiguous
+assembly-template forms fail closed.
 
 ## Assembler directive policy
 
-Every decoded assembler statement is checked after stripping one or more leading GAS label definitions. A label cannot hide a directive: forms such as `foo:.byte`, `foo:.insn`, and `foo:.include` are rejected just like their unlabelled equivalents. Statements beginning with a dot are rejected unless they are a non-emitting `.global` symbol export or a local `.L...:` label. In particular, `.reloc`, `.byte`, `.insn`, section switches, include directives, and assembler macro directives are not allowed in the source inventory. Indirect x86 `jmp` and `call` forms (AT&T `*operand` and Intel register/memory operands) are rejected because the source gate cannot prove their targets. Direct symbol calls and direct local-label branches remain permitted. This is a default-deny policy: unknown directive or control-flow forms must not be assumed harmless.
+Every decoded assembler statement is checked after stripping one or more leading GAS
+label definitions. A label cannot hide a directive. Forms
+such as `foo:.byte`, `foo:.insn`, and `foo:.include` are
+rejected just like their unlabelled equivalents. Statements beginning with a dot are
+rejected unless they are a non-emitting `.global` symbol
+export or a local `.L...:` label. In
+particular, `.reloc`, `.byte`, `.insn`, section switches,
+include directives, and assembler macro
+directives are not allowed in the source inventory.
+Indirect x86 `jmp` and `call` forms (AT&T
+`*operand` and Intel register/memory operands) are rejected
+because the source gate cannot
+prove their targets. Direct symbol calls and direct local-label branches remain
+permitted. This is a default-deny policy: unknown directive or control-flow forms must
+not be assumed harmless.
 
 ## CR3 root and optimized assembly checks
 
-The focused CR3 checker verifies the source-level writer contract: exactly three CR3-writing asm! blocks, one in each reviewed function; expected signatures and root-handle types; checked root provenance; error handling and validation order before each write. For the runtime switch, each reviewed invalid-root predicate (uninitialized target, same target/current root, physical-address-width mismatch, and active-root mismatch) must be part of an `if` condition whose own block contains a top-level `return Err(...)`; merely retaining the predicate elsewhere in the function is insufficient. It also verifies that CR3 templates bind directly to the reviewed source operands and preserve compiler ordering (no nomem). The CR4 source-order gate follows the value binding rather than assuming a particular Rust identifier: the value read from CR4 must feed the `& !CR4_PGE` derivation, the PGE-clear write, and the restoration write in that order and within the same function.
+The focused CR3 checker verifies the source-level writer contract: exactly three
+CR3-writing asm! blocks, one in each reviewed function; expected signatures and
+root-handle types; checked root provenance; error handling and validation order before
+each write. For the runtime switch, each reviewed invalid-root predicate (uninitialized
+target, same target/current root, physical-address-width mismatch, and active-root
+mismatch) must be part of an `if` condition whose own block
+contains a top-level `return Err(...)`;
+merely retaining the predicate elsewhere in the function is insufficient. It also
+verifies that CR3 templates bind directly to the reviewed source operands and preserve
+compiler ordering (no nomem). The CR4 source-order gate follows the value binding rather
+than assuming a particular Rust identifier: the value read
+from CR4 must feed the `& !CR4_PGE`
+derivation, the PGE-clear write, and the restoration write in that order and within the
+same function.
 
-CI separately validates optimized assembly for the reviewed CR3/PGE switch sequence, including CR4/PGE ordering and the required memory barrier. Its control-flow graph includes conditional jumps and LOOP-family branches with both taken and fallthrough edges; unresolved branch targets fail closed. Calls are rejected while CR4 provenance is live or while the PGE/CR3 transition is incomplete because callee CR4 side effects are not analyzed interprocedurally. Initial activation validates CPU paging preconditions before allocating a root, then explicitly clears the initial CR4 snapshot before any helper calls. After root registration and all other fallible helper work has completed, it re-reads CR0, CR4, EFER, and RFLAGS immediately before the hardware transition and uses that fresh CR4 value for PGE clear/restore; no callee runs while the transition snapshot is live. The local-TLB-flush active-root equality check must be a unique top-level early-return guard before the CR3 reload, not merely occur somewhere in the helper. The final linked-ELF inspection lives in a separate PR so source and linked-artifact checks can be reviewed independently.
+CI separately validates optimized assembly for the reviewed CR3/PGE switch sequence,
+including CR4/PGE ordering and the required memory barrier. Its control-flow graph
+includes conditional jumps and LOOP-family branches with both taken and fallthrough
+edges; unresolved branch targets fail closed. Calls are rejected while CR4 provenance is
+live or while the PGE/CR3 transition is incomplete because callee CR4 side effects are
+not analyzed interprocedurally. Initial activation validates CPU paging preconditions
+before allocating a root, then explicitly clears the initial CR4 snapshot before any
+helper calls. After root registration and all other fallible helper work has completed,
+it re-reads CR0, CR4, EFER, and RFLAGS immediately before the hardware transition and
+uses that fresh CR4 value for PGE clear/restore; no callee runs while the transition
+snapshot is live. The local-TLB-flush active-root equality check must be a unique
+top-level early-return guard before the CR3 reload, not merely occur somewhere in the
+helper. The final linked-ELF inspection lives in a separate PR so source and
+linked-artifact checks can be reviewed independently.
 
 ## Limits
 
-This is a narrow code-site/source-loading gate, not a proof of whole-program macro expansion or registry dependencies' internals. The separate linked-ELF gate is required to detect instructions introduced after source assembly. Neither gate establishes global frame-wide W^X, complete root-registry coverage, or that every bootloader-created mapping is expected. Issues #46 and #26 remain open until their broader mapping-source and physical-alias criteria are independently verified.
+This is a narrow code-site/source-loading gate, not a proof of whole-program macro
+expansion or registry dependencies' internals. The separate linked-ELF gate is required
+to detect instructions introduced after source assembly. Neither gate establishes global
+frame-wide W^X, complete root-registry coverage, or that every bootloader-created
+mapping is expected. Issues #46 and #26 remain open until their broader mapping-source
+and physical-alias criteria are independently verified.
