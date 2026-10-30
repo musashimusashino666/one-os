@@ -333,6 +333,25 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         self.assertIn("concat! is denied", joined)
         self.assertIn("hexadecimal/Unicode escapes in assembly templates are denied", joined)
 
+    def test_comment_separated_macro_rules_and_concat_are_still_detected(self):
+        macro_rules_source = "macro_rules/* comment */! { ($value:expr) => { $value }; }"
+        macro_rules_errors = source_policy_errors(
+            "kernel/src/new_writer.rs", macro_rules_source
+        )
+        self.assertTrue(
+            any("macro_rules! count is 1" in error for error in macro_rules_errors),
+            macro_rules_errors,
+        )
+
+        concat_source = 'asm!(concat/* comment */!("mov ", "cr3, rax"));'
+        concat_errors = source_policy_errors(
+            "kernel/src/new_writer.rs", concat_source
+        )
+        self.assertTrue(
+            any("concat! is denied" in error for error in concat_errors),
+            concat_errors,
+        )
+
     def test_non_assembly_rust_string_escapes_are_allowed(self):
         source = 'let elf_magic = b"\\x7fELF";'
         self.assertEqual(
