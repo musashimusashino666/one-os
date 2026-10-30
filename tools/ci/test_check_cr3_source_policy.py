@@ -108,6 +108,8 @@ class Cr3SourcePolicyTests(unittest.TestCase):
         templates = (
             'asm!("nop\\njmp *%rax");',
             'asm!("call *%r12");',
+            'asm!("jmp\\t*%rax");',
+            'asm!("call\\t%rax");',
             'asm!("jmp rax");',
             'asm!("call qword ptr [rax]");',
             'asm!("nop; jmp *symbol(%rip)");',
