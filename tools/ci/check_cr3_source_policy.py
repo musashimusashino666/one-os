@@ -692,12 +692,33 @@ def _cargo_target_directory(root: Path) -> Path | None:
     return Path(target_directory).resolve()
 
 
+def _cargo_target_directory_overlaps_source_tree(
+    root: Path, cargo_target_directory: Path
+) -> bool:
+    """Detect Cargo output configured inside an inventoried Rust source tree."""
+    target = cargo_target_directory.resolve()
+    for relative_package in SOURCE_PACKAGES:
+        source_root = (root / relative_package / "src").resolve()
+        try:
+            target.relative_to(source_root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def validate_source_policy(root: Path) -> tuple[bool, list[str]]:
     """Check the bounded Rust source closure and fail closed on new code inputs."""
     errors = _manifest_errors(root)
     cargo_target_directory = _cargo_target_directory(root)
     if cargo_target_directory is None:
         errors.append("Cargo target directory could not be resolved; refusing an incomplete Rust source inventory")
+    elif _cargo_target_directory_overlaps_source_tree(root, cargo_target_directory):
+        errors.append(
+            "Cargo target directory overlaps an inventoried Rust source tree; "
+            "refusing to exclude source files as generated output"
+        )
+        cargo_target_directory = None
     all_rust_files: list[Path] = []
     for package in SOURCE_PACKAGES:
         files, package_errors = _walk_package(
