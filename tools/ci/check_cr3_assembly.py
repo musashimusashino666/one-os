@@ -1522,28 +1522,131 @@ def validate_cr3_asm_memory_order(source: str) -> tuple[bool, str]:
     )
 
 
-def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
-    """Ensure every source-level CR3 switch clears PGE and restores original CR4."""
-    blocks = _asm_blocks_writing_control_register(source, "cr4")
-    if len(blocks) < 2 or len(blocks) % 2 != 0:
-        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
-    if not re.search(r"cr4_without_pge\s*=\s*cr4\s*&\s*!CR4_PGE\b", source):
-        return False, "cr4_without_pge must be derived from cr4 with CR4_PGE cleared"
+def _asm_blocks_reading_control_register_with_locations(
+    source: str, register: str
+) -> list[tuple[str, int]]:
+    """Find asm! blocks which copy a control register into an output operand."""
+    pattern = re.compile(
+        rf"\bmov(?:q)?\s+\{{\s*\}}\s*,\s*{re.escape(register)}\b",
+        re.IGNORECASE,
+    )
+    blocks: list[tuple[str, int]] = []
+    for invocation in rust_macro_invocations(source, {"asm"}):
+        if invocation.closing is None:
+            continue
+        body = source[invocation.opening + 1 : invocation.closing]
+        templates = [literal.value for literal in rust_string_literals(body)]
+        if any(pattern.search(template) for template in templates):
+            blocks.append((body, invocation.start))
+    return blocks
 
-    for pair_index in range(0, len(blocks), 2):
-        disable_block = blocks[pair_index]
-        restore_block = blocks[pair_index + 1]
+
+def _asm_register_bindings(block: str, operand_kind: str) -> list[str]:
+    """Return simple register-expression names for asm! input/output operands."""
+    if operand_kind not in {"in", "out"}:
+        raise ValueError(f"unsupported asm! operand kind: {operand_kind}")
+    code = mask_rust_comments_and_literals(block)
+    pattern = re.compile(
+        rf"\b{operand_kind}\s*\(\s*reg\s*\)\s*"
+        r"(?P<binding>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\b"
+    )
+    return [
+        match.group("binding").removeprefix("r#")
+        for match in pattern.finditer(code)
+    ]
+
+
+def _rust_function_owner_at(
+    source: str, offset: int
+) -> tuple[str, int, int] | None:
+    owners = [
+        (name, start, end)
+        for name, start, end in _rust_function_body_spans(source)
+        if start < offset < end
+    ]
+    return min(owners, key=lambda item: item[2] - item[1]) if owners else None
+
+
+def validate_cr4_asm_pge_order(source: str) -> tuple[bool, str]:
+    """Ensure each CR3 switch restores the exact CR4 snapshot it disabled."""
+    writes = _asm_blocks_writing_control_register_with_locations(source, "cr4")
+    if len(writes) < 2 or len(writes) % 2 != 0:
+        return False, "expected paired CR4 asm blocks for every PGE-clear/restore sequence"
+
+    reads = _asm_blocks_reading_control_register_with_locations(source, "cr4")
+    if not reads:
+        return False, "each CR4 restore must be tied to a value read from CR4"
+
+    code = _rust_code_without_literals_or_comments(source)
+    derivation_pattern = re.compile(
+        r"\blet\s+(?P<cleared>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"(?P<original>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*&\s*!CR4_PGE\b"
+    )
+
+    for pair_index in range(0, len(writes), 2):
+        disable_block, disable_start = writes[pair_index]
+        restore_block, restore_start = writes[pair_index + 1]
         switch_number = pair_index // 2 + 1
-        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4_without_pge\b", disable_block):
+
+        disable_inputs = _asm_register_bindings(disable_block, "in")
+        restore_inputs = _asm_register_bindings(restore_block, "in")
+        if len(disable_inputs) != 1 or len(restore_inputs) != 1:
             return False, (
-                f"CR3 switch sequence {switch_number} must first write the "
-                "PGE-cleared cr4_without_pge value"
+                f"CR3 switch sequence {switch_number} must use one explicit CR4 "
+                "input for PGE clear and one for restoration"
             )
-        if not re.search(r"\bin\(\s*reg\s*\)\s+cr4\b", restore_block):
+
+        cleared_value = disable_inputs[0]
+        original_value = restore_inputs[0]
+        disable_owner = _rust_function_owner_at(source, disable_start)
+        restore_owner = _rust_function_owner_at(source, restore_start)
+        if disable_owner != restore_owner:
             return False, (
-                f"CR3 switch sequence {switch_number} must restore the original cr4 value"
+                f"CR3 switch sequence {switch_number} must clear and restore CR4 "
+                "within the same function"
             )
-    return True, f"all {len(blocks) // 2} source CR3 switch sequences clear PGE and restore original CR4"
+
+        function_start = disable_owner[1] if disable_owner else 0
+        function_end = disable_owner[2] if disable_owner else len(code)
+        function_code = code[function_start:function_end]
+        derivations = [
+            match
+            for match in derivation_pattern.finditer(function_code)
+            if match.group("cleared").removeprefix("r#") == cleared_value
+            and match.group("original").removeprefix("r#") == original_value
+        ]
+        if len(derivations) != 1:
+            return False, (
+                f"CR3 switch sequence {switch_number} must derive the PGE-cleared "
+                "value from the exact CR4 snapshot later used for restoration"
+            )
+
+        derivation_start = function_start + derivations[0].start()
+        read_offsets = [
+            read_start
+            for read_block, read_start in reads
+            if _rust_function_owner_at(source, read_start) == disable_owner
+            and original_value in _asm_register_bindings(read_block, "out")
+            and read_start < derivation_start
+        ]
+        if not read_offsets:
+            return False, (
+                f"CR3 switch sequence {switch_number} must derive and restore CR4 "
+                "from a value explicitly read from CR4 in the same function"
+            )
+
+        # The binding chain must be ordered: CR4 read -> PGE mask -> CR4 clear
+        # -> CR3 write (checked elsewhere) -> restore from the original snapshot.
+        if not (max(read_offsets) < derivation_start < disable_start < restore_start):
+            return False, (
+                f"CR3 switch sequence {switch_number} has an out-of-order CR4 "
+                "read, PGE clear, or restoration"
+            )
+
+    return True, (
+        f"all {len(writes) // 2} source CR3 switch sequences clear PGE and restore "
+        "the exact CR4 snapshot used to derive the cleared value"
+    )
 
 
 def validate_assembly_directory(assembly_dir: Path) -> tuple[bool, list[str]]:
