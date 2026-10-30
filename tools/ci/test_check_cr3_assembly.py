@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from check_cr3_assembly import (
+    _asm_blocks_writing_control_register,
+    _asm_blocks_writing_control_register_with_locations,
     _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
@@ -615,6 +617,33 @@ fn unreviewed_cr3_writer(root_physical: u64) {
         self.assertFalse(valid)
         self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
         self.assertIn("unreviewed function", message)
+
+    def test_comment_separated_cr3_asm_cannot_hide_an_extra_writer(self):
+        invocations = (
+            'asm/* block comment */!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm// line comment\n!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm!/* after bang */("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+            'asm/* outer /* nested */ inner */!("mov cr3, {}", in(reg) root_physical, options(nostack, preserves_flags));',
+        )
+        for invocation in invocations:
+            with self.subTest(invocation=invocation):
+                extra_writer = f"""
+fn unreviewed_cr3_writer(root_physical: u64) {{
+    unsafe {{ {invocation} }}
+}}
+"""
+                self.assertEqual(
+                    len(_asm_blocks_writing_control_register(extra_writer, "cr3")),
+                    1,
+                )
+                self.assertEqual(
+                    len(_asm_blocks_writing_control_register_with_locations(extra_writer, "cr3")),
+                    1,
+                )
+                valid, message = validate_cr3_writer_contract(self.source + extra_writer)
+                self.assertFalse(valid)
+                self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
+                self.assertIn("unreviewed function", message)
 
     def test_renamed_writer_function_fails_closed(self):
         changed = self.source.replace(
