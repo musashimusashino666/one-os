@@ -29,8 +29,8 @@ It currently runs:
 - Formatting and core tests.
 - Clippy for core, kernel, and build tooling.
 - Kernel target checks.
-- CR3 source and optimized-assembly validation.
-- Final linked-ELF CR3 write inventory.
+- CR3 validator unit tests, source policy, and optimized-assembly validation.
+- BIOS image build and final linked-ELF CR3 write inventory.
 - Documentation integrity tests and local link/anchor validation.
 - Three independent normal QEMU boots.
 - W^X runtime-audit and CR3 rejection profiles.
