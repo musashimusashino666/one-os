@@ -324,10 +324,11 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                 errors.append(f"{path}:{line}: {escape_error}")
                 continue
 
-            # Newlines and semicolons delimit statements. Tabs remain whitespace:
-            # this catches directives after a tab without hiding "jmp<TAB>*%rax".
-            statements = re.split(r"[;\r\n]+", value)
-            for statement in statements:
+            # Check directive statements after all accepted delimiters, including
+            # tabs. Keep tabs in the control-flow view because they can separate
+            # an opcode from its indirect operand.
+            directive_statements = re.split(r"[;\r\n\t]+", value)
+            for statement in directive_statements:
                 candidate = statement.strip()
                 if not candidate:
                     continue
@@ -338,8 +339,8 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                             "only .global symbol exports and local .L labels are allowed"
                         )
                 else:
-                    # A directive can be hidden after an instruction and horizontal
-                    # whitespace. Ignore .L symbols, which are valid branch operands.
+                    # Also detect a directive hidden after spaces within one statement.
+                    # Ignore .L symbols, which are valid branch operands.
                     for directive in re.finditer(
                         r"(?<!\S)\.(?!L[A-Za-z0-9_.$@]*:?)([A-Za-z_][A-Za-z0-9_.$@]*)",
                         candidate,
@@ -348,7 +349,11 @@ def _assembler_directive_errors(relative_path: str, source: str) -> list[str]:
                             f"{path}:{line}: assembler directive-like token "
                             f".{directive.group(1)} is denied inside a statement"
                         )
-                if _is_indirect_control_transfer(candidate):
+
+            control_statements = re.split(r"[;\r\n]+", value)
+            for statement in control_statements:
+                candidate = statement.strip()
+                if candidate and _is_indirect_control_transfer(candidate):
                     errors.append(
                         f"{path}:{line}: indirect x86 control transfer is denied: {candidate!r}"
                     )
