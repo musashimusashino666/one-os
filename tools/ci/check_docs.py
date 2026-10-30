@@ -147,7 +147,7 @@ def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | No
     if len(content) - len(stripped) > 3:
         return None
 
-    if re.match(r"^<(?:pre|script|style|textarea)(?=[ \t/>]|$)", stripped, re.IGNORECASE):
+    if re.match(r"^<(?:pre|script|style|textarea)(?=[ \t>]|$)", stripped, re.IGNORECASE):
         return "terminator", r"</(?:pre|script|style|textarea)\s*>"
     if stripped.startswith("<!--"):
         return "terminator", "-->"
@@ -388,10 +388,8 @@ def _mask_html_blocks_and_comments(text: str) -> str:
     ignored = fenced | html_lines
     output = list(text)
 
-    offsets: list[int] = []
     offset = 0
     for index, line in enumerate(lines):
-        offsets.append(offset)
         if index in html_lines:
             for position in range(offset, offset + len(line)):
                 if output[position] not in "\r\n":
