@@ -1022,8 +1022,10 @@ fn validate_executable_page_aliases(
         regions,
     )?;
     let direct_alias = physical_offset_alias(physical_memory_offset, executable.physical_address)?;
-    // Earlier pages may demote a large direct-map leaf and publish
-    // allocator-owned table frames; the active-root editor can walk both kinds.
+    // This walk is read-only during preflight. Use the active-root editor,
+    // not a bootloader-only walker: the same helper also runs in the later
+    // mutation pass, where earlier pages may already have published
+    // allocator-owned demotion tables that must remain traversable.
     let mut direct_editor =
         KernelPageTableEditor::new_with_recursive_index(boot_info, direct_alias, recursive_index)?;
     let direct = translate_with_editor(&mut direct_editor, root_table_physical, direct_alias)
