@@ -166,37 +166,10 @@ microkernel service architecture or device profiles.
 
 ## Current implementation boundary
 
-Snapshot date: **2026-10-30**.
-Reviewed main commit:
-`f1d80da6a7db7d87749fd0f31a666878775d36d1`.
-
-- The workspace has a no_std core crate, x86_64 kernel,
-  and BIOS image build tool.
-- The kernel validates the memory map and initializes
-  a fixed-capacity frame allocator.
-- Selected boot mappings and guarded page-table operations
-  are implemented.
-- Selected supervisor-write, NX, mapping-transition,
-  large-page-demotion, and NMI cases have QEMU tests.
-- Root admission, activation, registry lifecycle,
-  and selected teardown paths have negative tests.
-- CR3 writes are checked in source and optimized assembly.
-- The normal linked BIOS kernel ELF is checked for
-  exactly three reviewed CR3 writes.
-- Feature-specific test-image ELFs are not covered
-  by that linked-ELF check.
-- CPL 0 address-space paths are tested.
-  Ring 3 process isolation is not implemented.
-- The capability crate is a host-testable reference model.
-  It is not kernel enforcement.
-- Storage, networking, integrated drivers, service management,
-  a usable scheduler, shell, and AI action-control UX are absent.
-- Global W^X, full boot-mapping classification, Ring 3 isolation,
-  kernel capabilities, SMP, secure boot, and signed recovery
-  remain incomplete.
-
-See [Implementation Status](../project/IMPLEMENTATION_STATUS.md)
-for detailed scope and evidence.
+This document describes the target architecture, not the current bootstrap.
+The current source state, tested scope, exact revision, and limitations
+are maintained in
+[Implementation Status](../project/IMPLEMENTATION_STATUS.md).
 
 ## Change control
 
