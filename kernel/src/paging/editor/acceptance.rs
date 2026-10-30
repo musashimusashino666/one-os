@@ -1020,7 +1020,10 @@ fn validate_executable_page_aliases(
         recursive_index,
         regions,
     )?;
-    let direct_alias = physical_offset_alias(physical_memory_offset, executable.physical_address)?;
+    let direct_alias = physical_offset_alias(
+        physical_memory_offset,
+        executable.physical_address,
+    )?;
     let direct = translate_virtual_address(
         direct_alias,
         root_table_physical,
@@ -1237,28 +1240,13 @@ fn enforce_kernel_executable_alias_wx_inner(
                 return Err(PagingError::InvalidKernelLoadMapping);
             }
 
-            let translation = validate_executable_load_virtual_page(
+            validate_executable_page_aliases(
                 virtual_page,
+                physical_memory_offset,
                 root_table_physical,
                 recursive_index,
                 regions,
             )?;
-
-            let direct_alias =
-                physical_offset_alias(physical_memory_offset, translation.physical_address)?;
-            let direct_translation = translate_virtual_address(
-                direct_alias,
-                root_table_physical,
-                recursive_index,
-                regions,
-            )
-            .map_err(|_| PagingError::InvalidKernelLoadMapping)?;
-            if direct_translation.physical_address != translation.physical_address
-                || !translation_preserves_page_offset(direct_alias, direct_translation)
-                || direct_translation.user_accessible
-            {
-                return Err(PagingError::InvalidKernelLoadMapping);
-            }
 
             executable_pages_preflighted = executable_pages_preflighted
                 .checked_add(1)
