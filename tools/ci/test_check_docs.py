@@ -289,6 +289,11 @@ class AnchorTests(unittest.TestCase):
         self.assertIn("some-heading", anchors)
         self.assertNotIn("heading", anchors)
 
+    def test_heading_inline_link_destination_with_nested_parentheses_is_removed(self):
+        anchors = _markdown_anchors("## [Guide](guide_(draft).md)\n")
+        self.assertIn("guide", anchors)
+        self.assertNotIn("guide-draftmd", anchors)
+
     def test_heading_html_character_references_are_decoded(self):
         anchors = _markdown_anchors("## AT&amp;T\n")
         self.assertIn("att", anchors)
@@ -358,6 +363,10 @@ class LineLengthTests(unittest.TestCase):
 
     def test_long_url_can_be_atomic(self):
         self.assertTrue(_line_length_is_exempt("Read https://example.test/" + "x" * 90))
+
+    def test_long_inline_code_with_spaces_is_not_atomic(self):
+        line = "See " + BACKTICK + "x" * 45 + " " + "y" * 45 + BACKTICK
+        self.assertFalse(_line_length_is_exempt(line))
 
     def test_long_prose_is_not_exempt(self):
         self.assertFalse(_line_length_is_exempt("ordinary prose " + "x" * 90))
@@ -495,6 +504,21 @@ class RepositoryValidationTests(unittest.TestCase):
                 output.write("\n" + "x" * 89 + "\n")
             problems = validate_repository(root)
             self.assertTrue(any(p.path == "README.md" and "89 characters" in p.message for p in problems))
+
+    def test_brackets_cannot_pair_across_blank_paragraph_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "README.md").write_text(
+                "[\n\n[broken](missing.md)\n\n](docs/README.md)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository(root)
+            messages = "\n".join(problem.message for problem in problems)
+            self.assertIn("missing internal link target: missing.md", messages)
+            self.assertIn(
+                "required navigation link is missing: docs/README.md", messages
+            )
 
     def test_missing_path_and_anchor_are_reported(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -813,6 +837,27 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertFalse(
                 any(
                     "missing internal link target: docs/README.md" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_image_fragments_are_not_validated_as_markdown_heading_anchors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            assets = root / "assets"
+            assets.mkdir()
+            (assets / "diagram.svg").write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg"><rect id="third"/></svg>\n',
+                encoding="utf-8",
+            )
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write("\n![region](assets/diagram.svg#third)\n")
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and "fragment target is not a Markdown file" in problem.message
                     for problem in problems
                 )
             )
