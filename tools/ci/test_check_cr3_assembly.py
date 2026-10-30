@@ -442,7 +442,7 @@ class ActivationAssemblyTests(unittest.TestCase):
                     options(nomem, nostack, preserves_flags)
                 );
                 if cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical {
-                    return;
+                    return Err(AddressSpaceError::InvalidKernelRoot);
                 }
                 asm!(
                     "mov cr3, {}",
@@ -512,6 +512,32 @@ class ActivationAssemblyTests(unittest.TestCase):
         valid, message = validate_cr3_asm_memory_order(source)
         self.assertFalse(valid)
         self.assertIn("checked active CR3", message)
+
+    def test_local_tlb_flush_rejects_weakened_active_cr3_guard(self):
+        conditions = (
+            "unrelated_condition && cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical",
+            "!(cr3 & PHYSICAL_ADDRESS_MASK != expected_root_physical)",
+        )
+        for condition in conditions:
+            with self.subTest(condition=condition):
+                source = f"""
+                    pub(super) fn switch_address_space_flush_local_tlb(
+                        expected_root_physical: u64,
+                    ) {{
+                        validate_kernel_root_activation_state(cr0, cr4, efer, rflags)?;
+                        let cr3: u64;
+                        asm!("mov {{}}, cr3", out(reg) cr3);
+                        if {condition} {{
+                            return Err(AddressSpaceError::InvalidKernelRoot);
+                        }}
+                        asm!("mov cr3, {{}}", in(reg) cr3);
+                    }}
+
+                    /// Performs the validated hardware CR3 transition.
+                """
+                valid, message = validate_cr3_asm_memory_order(source)
+                self.assertFalse(valid)
+                self.assertIn("checked active CR3", message)
 
     def test_local_tlb_flush_rejects_active_cr3_check_after_write(self):
         source = """
