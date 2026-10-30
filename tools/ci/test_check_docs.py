@@ -179,6 +179,16 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("", 1), ("", 3)])
         self.assertEqual(problems, [])
 
+    def test_inline_code_spans_do_not_pair_across_blank_paragraphs(self):
+        text = (
+            "`" + "\n\n"
+            "[broken](missing.md)\n\n"
+            "`"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertEqual(problems, [])
+
     def test_unmatched_brackets_are_paired_in_linear_pass(self):
         self.assertEqual(_matching_bracket_pairs("[" * 100_000), {})
         self.assertEqual(
@@ -245,6 +255,14 @@ class AnchorTests(unittest.TestCase):
                 links, problems = _extract_links(document, "README.md")
                 self.assertEqual(links, [("ok.md", len(document.splitlines()))])
                 self.assertEqual(problems, [])
+    def test_html_named_anchor_is_recognized(self):
+        anchors = _markdown_anchors('<a name="custom-anchor"></a>\n')
+        self.assertIn("custom-anchor", anchors)
+
+    def test_emoji_is_removed_from_github_heading_slug(self):
+        anchors = _markdown_anchors("## 😄 emoji\n")
+        self.assertIn("-emoji", anchors)
+        self.assertNotIn("😄-emoji", anchors)
 
 class LineLengthTests(unittest.TestCase):
     def test_long_inline_code_can_be_atomic(self):
@@ -569,6 +587,39 @@ class RepositoryValidationTests(unittest.TestCase):
                 any(
                     problem.path == "README.md"
                     and "missing heading anchor '#code-more'" in problem.message
+                    for problem in problems
+                )
+            )
+    def test_html_named_anchor_fragment_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "guide.md").write_text('<a name="custom-anchor"></a>\n',
+                encoding="utf-8",
+            )
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\n[custom](docs/guide.md#custom-anchor)\n")
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    problem.path == "README.md"
+                    and "missing heading anchor '#custom-anchor'" in problem.message
+                    for problem in problems
+                )
+            )
+
+    def test_emoji_heading_fragment_matches_github_slug(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "guide.md").write_text("## 😄 emoji\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write("\n[emoji](docs/guide.md#-emoji)\n")
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    problem.path == "README.md"
+                    and "missing heading anchor '#-emoji'" in problem.message
                     for problem in problems
                 )
             )
