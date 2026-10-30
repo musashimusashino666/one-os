@@ -130,6 +130,20 @@ class LinkParsingTests(unittest.TestCase):
         self.assertTrue(any("duplicate Markdown reference definition" in p.message for p in problems))
         self.assertTrue(any("first definition on line 1" in p.message for p in problems))
 
+    def test_consecutive_duplicate_reference_definitions_remain_block_definitions(self):
+        links, problems = _extract_links(
+            "[first]: first.md\n"
+            "[first]: duplicate.md\n"
+            "[second]: second.md\n"
+            "[Open][second]",
+            "README.md",
+        )
+        self.assertEqual(links, [("second.md", 4)])
+        self.assertTrue(
+            any("duplicate Markdown reference definition 'first'" in p.message
+                for p in problems)
+        )
+
     def test_multiline_inline_code_is_ignored(self):
         links, problems = _extract_links(
             "`\n[example](missing-file.md)\n`\n[actual](existing.md)",
