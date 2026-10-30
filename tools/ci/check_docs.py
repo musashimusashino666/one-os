@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 from html.parser import HTMLParser
+
+from github_slugger_data import GITHUB_SLUG_REMOVAL_RE
 import posixpath
 import re
 import string
 import sys
-import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -986,22 +987,9 @@ def _strip_heading_markup(heading: str) -> str:
 
 
 def _slugify_heading(heading: str) -> str:
-    """Generate the GitHub-style base slug for a parsed heading."""
-    heading = _strip_heading_markup(heading).lower()
-    output: list[str] = []
-    for char in heading:
-        category = unicodedata.category(char)
-        if char == " ":
-            output.append("-")
-        elif char in {"-", "_"}:
-            # GitHub preserves existing hyphens (including repeats) and
-            # underscores; only other punctuation and symbols are removed.
-            output.append(char)
-        elif category.startswith(("P", "S", "C", "Z")):
-            continue
-        else:
-            output.append(char)
-    return "".join(output)
+    """Generate a GitHub-compatible heading slug before duplicate handling."""
+    heading = _strip_heading_markup(heading).lower().replace(" ", "-")
+    return GITHUB_SLUG_REMOVAL_RE.sub("", heading)
 
 def _html_anchor_targets(text: str) -> set[str]:
     """Collect HTML id anchors and legacy a[name] anchors outside code."""
