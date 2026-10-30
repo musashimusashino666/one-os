@@ -1774,8 +1774,7 @@ pub fn activate_supervisor_kernel_root(
             options(nomem, nostack, preserves_flags)
         );
     }
-    let efer_at_switch =
-        (u64::from(efer_high_at_switch) << 32) | u64::from(efer_low_at_switch);
+    let efer_at_switch = (u64::from(efer_high_at_switch) << 32) | u64::from(efer_low_at_switch);
     validate_kernel_root_activation_state(
         cr0_at_switch,
         cr4_at_switch,
