@@ -1087,7 +1087,7 @@ def _mask_inline_html_tags(text: str) -> str:
 
 
 def _strip_inline_html_tags(text: str) -> str:
-    """Remove syntactically recognized inline HTML tags, preserving text like '<3>'."""
+    """Remove recognized inline HTML markup while preserving text like '<3>'."""
     lines = text.splitlines(keepends=True)
     line_offsets = [0]
     for line in lines:
@@ -1111,24 +1111,45 @@ def _strip_inline_html_tags(text: str) -> str:
         return start + 1
 
     class InlineTagStripper(HTMLParser):
-        def _record_current_tag(self) -> None:
+        def _record_current_markup(self) -> None:
             line, column = self.getpos()
             if line < 1 or line > len(lines):
                 return
             start = line_offsets[line - 1] + column
-            if start < len(text) and text[start] == "<" and not _is_escaped(text, start):
+            if start >= len(text) or text[start] != "<" or _is_escaped(text, start):
+                return
+
+            if text.startswith("<!--", start):
+                closing = text.find("-->", start + 4)
+                end = closing + 3 if closing >= 0 else start + 1
+            elif text.startswith("<?", start):
+                closing = text.find("?>", start + 2)
+                end = closing + 2 if closing >= 0 else start + 1
+            else:
                 end = tag_end(start)
-                if end > start + 1:
-                    spans.append((start, end))
+            if end > start + 1:
+                spans.append((start, end))
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            self._record_current_tag()
+            self._record_current_markup()
 
         def handle_endtag(self, tag: str) -> None:
-            self._record_current_tag()
+            self._record_current_markup()
 
         def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            self._record_current_tag()
+            self._record_current_markup()
+
+        def handle_comment(self, data: str) -> None:
+            self._record_current_markup()
+
+        def handle_decl(self, decl: str) -> None:
+            self._record_current_markup()
+
+        def handle_pi(self, data: str) -> None:
+            self._record_current_markup()
+
+        def unknown_decl(self, data: str) -> None:
+            self._record_current_markup()
 
     parser = InlineTagStripper(convert_charrefs=False)
     parser.feed(text)
