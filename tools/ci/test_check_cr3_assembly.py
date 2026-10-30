@@ -6,6 +6,7 @@ from pathlib import Path
 from check_cr3_assembly import (
     _asm_blocks_writing_control_register,
     _asm_blocks_writing_control_register_with_locations,
+    _cr3_template_sources,
     _instruction,
     activation_function_bodies,
     validate_cr3_asm_memory_order,
@@ -642,6 +643,11 @@ fn unreviewed_cr3_writer(root_physical: u64) {{
                     len(_asm_blocks_writing_control_register_with_locations(extra_writer, "cr3")),
                     1,
                 )
+                if 'r#"' in invocation:
+                    self.assertEqual(
+                        _cr3_template_sources(invocation)[0][0],
+                        "{}",
+                    )
                 valid, message = validate_cr3_writer_contract(self.source + extra_writer)
                 self.assertFalse(valid)
                 self.assertIn("expected exactly 3 CR3-writing asm blocks", message)
