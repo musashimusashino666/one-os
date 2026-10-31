@@ -224,6 +224,15 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("existing.md", 1)])
         self.assertEqual(problems, [])
 
+    def test_html_attribute_backtick_does_not_hide_visible_markdown_link(self):
+        text = (
+            '<span title="` [attribute](attribute.md)">'
+            '[visible](missing.md)`</span>'
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 1)])
+        self.assertEqual(problems, [])
+
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
         self.assertEqual(links, [("docs/guide.md", 1)])
@@ -748,6 +757,22 @@ class RepositoryValidationTests(unittest.TestCase):
             problems = validate_repository(root)
             self.assertTrue(any(p.path == "README.md" and "89 characters" in p.message for p in problems))
 
+    def test_visible_text_in_raw_html_block_obeys_line_length_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            visible_line = "Visible HTML prose: " + "x" * 90
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write("\n<div>\n" + visible_line + "\n</div>\n")
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and f"{len(visible_line)} characters (limit 88)" in problem.message
+                    for problem in problems
+                )
+            )
+
     def test_brackets_cannot_pair_across_blank_paragraph_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -882,6 +907,26 @@ class RepositoryValidationTests(unittest.TestCase):
                 )
             )
 
+    def test_repository_reports_visible_link_after_html_attribute_backtick(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    '\n<span title="` [attribute](attribute.md)">'
+                    '[visible](missing.md)`</span>\n'
+                )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and "missing internal link target: missing.md" in problem.message
+                    for problem in problems
+                )
+            )
+            self.assertFalse(
+                any("attribute.md" in problem.message for problem in problems)
+            )
     def test_html_like_angle_text_is_preserved_in_heading_anchors(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
