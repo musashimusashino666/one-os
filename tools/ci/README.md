@@ -28,6 +28,7 @@ python3 tools/ci/check_docs.py --root .
 
 The checker validates local Markdown links and heading fragments, required
 README navigation, and the 88-character line policy. It does not contact
-external websites or rewrite files. Fenced code is excluded; inline code and
-unbreakable URLs are atomic only when the remaining prose fits. Wide table
-rows receive no exemption.
+external websites or rewrite files. Fenced and indented code blocks are
+excluded. Raw HTML block content remains subject to the line limit. Inline
+code and unbreakable URLs are atomic only when the remaining prose fits. Wide
+table rows receive no exemption.
