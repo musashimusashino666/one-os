@@ -242,7 +242,7 @@ class LinkParsingTests(unittest.TestCase):
         links, problems = _extract_links(text, "README.md")
         self.assertEqual(links, [("missing.md", 3)])
         self.assertEqual(problems, [])
-        self.assertNotIn(1, _html_block_lines(text.splitlines(keepends=True)))
+        self.assertNotIn(1, _markdown_block_regions(text.splitlines(keepends=True))[1])
 
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
@@ -957,6 +957,7 @@ class RepositoryValidationTests(unittest.TestCase):
                     for problem in problems
                 )
             )
+
     def test_html_like_angle_text_is_preserved_in_heading_anchors(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
