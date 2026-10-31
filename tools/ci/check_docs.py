@@ -572,6 +572,47 @@ def _indented_code_lines(
     return code_lines
 
 
+def _is_lazy_continuation(
+    content: str,
+    quote_depth: int,
+    list_context: tuple[int, ...],
+    opened: bool,
+    previous_context: tuple[int, tuple[int, ...]] | None,
+) -> bool:
+    """Return whether an unmarked line lazily continues the prior paragraph."""
+    if previous_context is None or opened or not content.strip():
+        return False
+
+    previous_quote_depth, previous_list_context = previous_context
+    omitted_quote = (
+        quote_depth == 0
+        and previous_quote_depth > 0
+        and not list_context
+    )
+    omitted_list = (
+        quote_depth == previous_quote_depth
+        and len(list_context) < len(previous_list_context)
+        and previous_list_context[:len(list_context)] == list_context
+    )
+    if not (omitted_quote or omitted_list):
+        return False
+
+    # Lazy continuation is limited to paragraph text. Block starts that can
+    # interrupt a paragraph, plus indented code, must retain their own context.
+    if _leading_indent_columns(content) >= 4:
+        return False
+    if re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", content):
+        return False
+    if re.fullmatch(r"^ {0,3}(?:=+|-+)[ \t]*$", content):
+        return False
+    if re.fullmatch(
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$",
+        content,
+    ):
+        return False
+    return True
+
+
 def _document_inline_code_ranges(
     text: str, fenced_lines: set[int] | None = None
 ) -> list[tuple[int, int]]:
@@ -622,6 +663,13 @@ def _document_inline_code_ranges(
             offset += len(line)
             continue
         context = (quote_depth, list_context)
+        if _is_lazy_continuation(
+            content, quote_depth, list_context, opened, previous_context
+        ):
+            # A blockquote/list paragraph may continue without repeating its
+            # container marker or indentation. Keep the paragraph's effective
+            # context so inline spans can cross the physical line boundary.
+            context = previous_context
         is_atx = atx_pattern.match(content) is not None
         is_setext = setext_pattern.fullmatch(content) is not None
         is_thematic = thematic_pattern.fullmatch(content) is not None
@@ -675,9 +723,19 @@ def _line_inline_code_ranges(text: str, fenced_lines: set[int]) -> dict[int, lis
     return result
 
 
-def _split_gfm_table_cells(line: str) -> tuple[list[str], int] | None:
-    """Split a GFM table row, returning cells and its blockquote depth."""
-    content, quote_depth = _blockquote_content(line.rstrip("\r\n"))
+def _split_gfm_table_cells(
+    line: str, *, containers_normalized: bool = False
+) -> tuple[list[str], int] | None:
+    """Split a GFM table row, returning cells and its blockquote depth.
+
+    Callers that parse a sequence of block-container lines can pass normalized
+    content so list and blockquote prefixes are removed consistently first.
+    """
+    if containers_normalized:
+        content = line.rstrip("\r\n")
+        quote_depth = 0
+    else:
+        content, quote_depth = _blockquote_content(line.rstrip("\r\n"))
     separators = [
         index for index, char in enumerate(content)
         if char == "|" and not _is_escaped(content, index)
@@ -705,26 +763,47 @@ def _markdown_table_lines(lines: list[str], fenced_lines: set[int]) -> set[int]:
 
     A table is recognized from the header/delimiter pair, not from a count of
     leading/trailing pipe characters. This includes two-column tables written
-    without either optional edge pipe.
+    without either optional edge pipe. All rows are normalized through one
+    shared container parser so list and nested blockquote indentation remains
+    associated with the complete table.
     """
+    normalized_lines: list[str] = []
+    contexts: list[tuple[int, tuple[int, ...]] | None] = []
+    list_stacks: dict[int, list[int]] = {}
+    for line_index, line in enumerate(lines):
+        if line_index in fenced_lines:
+            normalized_lines.append("")
+            contexts.append(None)
+            continue
+        content, quote_depth, list_context, _ = _container_content(
+            line, list_stacks
+        )
+        normalized_lines.append(content)
+        contexts.append((quote_depth, list_context))
+
     table_lines: set[int] = set()
     index = 0
     delimiter_cell = re.compile(r":?-{3,}:?$")
 
     while index + 1 < len(lines):
-        if index in fenced_lines or index + 1 in fenced_lines:
+        if contexts[index] is None or contexts[index + 1] is None:
             index += 1
             continue
-        header = _split_gfm_table_cells(lines[index])
-        delimiter = _split_gfm_table_cells(lines[index + 1])
+        header = _split_gfm_table_cells(
+            normalized_lines[index], containers_normalized=True
+        )
+        delimiter = _split_gfm_table_cells(
+            normalized_lines[index + 1], containers_normalized=True
+        )
         if header is None or delimiter is None:
             index += 1
             continue
 
-        header_cells, header_quote_depth = header
-        delimiter_cells, delimiter_quote_depth = delimiter
+        header_cells, _ = header
+        delimiter_cells, _ = delimiter
+        header_context = contexts[index]
         if (
-            header_quote_depth != delimiter_quote_depth
+            header_context != contexts[index + 1]
             or not header_cells
             or len(header_cells) != len(delimiter_cells)
             or not all(delimiter_cell.fullmatch(cell) for cell in delimiter_cells)
@@ -734,9 +813,11 @@ def _markdown_table_lines(lines: list[str], fenced_lines: set[int]) -> set[int]:
 
         table_lines.update((index, index + 1))
         row = index + 2
-        while row < len(lines) and row not in fenced_lines:
-            candidate = _split_gfm_table_cells(lines[row])
-            if candidate is None or candidate[1] != header_quote_depth:
+        while row < len(lines) and contexts[row] is not None:
+            candidate = _split_gfm_table_cells(
+                normalized_lines[row], containers_normalized=True
+            )
+            if candidate is None or contexts[row] != header_context:
                 break
             table_lines.add(row)
             row += 1
