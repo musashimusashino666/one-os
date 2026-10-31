@@ -1049,8 +1049,16 @@ def _mask_inline_html_tags(text: str) -> str:
             index += 1
         return start + 1
 
+    inline_html_tag = re.compile(
+        r"</?[A-Za-z][A-Za-z0-9-]*"
+        r"(?:[ \t\n]+[A-Za-z_:][A-Za-z0-9_.:-]*"
+        r"(?:[ \t\n]*=[ \t\n]*(?:\"[^\"]*\"|'[^']*'|[^\s\"'=<>\\x60]+))?)*"
+        r"[ \t\n]*/?>",
+        re.DOTALL,
+    )
+
     class InlineTagMasker(HTMLParser):
-        def _mask_current_tag(self) -> None:
+        def _mask_current_tag(self, *, validate_tag: bool = True) -> None:
             line, column = self.getpos()
             if line < 1 or line > len(lines):
                 return
@@ -1058,6 +1066,11 @@ def _mask_inline_html_tags(text: str) -> str:
             if start >= len(text) or text[start] != "<" or _is_escaped(text, start):
                 return
             end = tag_end(start)
+            if validate_tag and not inline_html_tag.fullmatch(text[start:end]):
+                # HTMLParser is permissive and can tokenize a Markdown
+                # angle-bracket destination as a start tag. Mask only a
+                # complete inline HTML tag.
+                return
             for position in range(start, end):
                 if output[position] not in "\r\n":
                     output[position] = " "
@@ -1072,13 +1085,13 @@ def _mask_inline_html_tags(text: str) -> str:
             self._mask_current_tag()
 
         def handle_decl(self, decl: str) -> None:
-            self._mask_current_tag()
+            self._mask_current_tag(validate_tag=False)
 
         def handle_pi(self, data: str) -> None:
-            self._mask_current_tag()
+            self._mask_current_tag(validate_tag=False)
 
         def unknown_decl(self, data: str) -> None:
-            self._mask_current_tag()
+            self._mask_current_tag(validate_tag=False)
 
     parser = InlineTagMasker(convert_charrefs=False)
     parser.feed(text)
@@ -1309,7 +1322,7 @@ def _extract_links(
             current_quote, current_lists, opened_item = contexts[index]
             starts_new_block = (
                 previous in ignored_blocks
-                or previous + 1 in definition_lines
+                or previous in definition_lines
                 or not previous_line.strip()
                 or (previous_quote, previous_lists) != (current_quote, current_lists)
                 or atx_heading.match(previous_line) is not None
