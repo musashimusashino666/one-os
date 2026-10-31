@@ -1099,6 +1099,57 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertFalse(any("missing heading anchor" in p.message for p in problems))
 
 
+    def test_inline_link_destinations_decode_html_character_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "R&D.md").write_text("# Research and development\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[named](docs/R&amp;D.md)\n"
+                    "[decimal](docs/R&#38;D.md)\n"
+                    "[hex](docs/R&#x26;D.md)\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any("missing internal link target" in problem.message for problem in problems)
+            )
+
+    def test_reference_destinations_decode_html_character_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "R&D.md").write_text("# Research and development\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[named][named]\n"
+                    "[decimal][decimal]\n"
+                    "[hex][hex]\n\n"
+                    "[named]: docs/R&amp;D.md \"named entity\"\n"
+                    "[decimal]: docs/R&#38;D.md\n"
+                    "[hex]: docs/R&#x26;D.md\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any("missing internal link target" in problem.message for problem in problems)
+            )
+
+    def test_escaped_and_invalid_html_character_references_remain_literal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "docs" / "R&amp;D.md").write_text("# Literal entity text\n", encoding="utf-8")
+            (root / "docs" / "R&copy.md").write_text("# Missing semicolon\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[escaped](docs/R\\&amp;D.md)\n"
+                    "[missing semicolon](docs/R&copy.md)\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any("missing internal link target" in problem.message for problem in problems)
+            )
+
     def test_image_to_required_target_does_not_satisfy_navigation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
