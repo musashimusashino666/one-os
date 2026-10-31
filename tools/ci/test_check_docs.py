@@ -92,8 +92,8 @@ class LinkParsingTests(unittest.TestCase):
 
     def test_angle_bracket_reference_destination_with_title(self):
         text = (
-            '[guide]: <docs/guide with spaces.md> "Guide"\\n'
-            '\\n'
+            '[guide]: <docs/guide with spaces.md> "Guide"\n'
+            '\n'
             '[guide]'
         )
         links, problems = _extract_links(text, "README.md")
