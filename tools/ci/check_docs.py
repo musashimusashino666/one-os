@@ -1013,7 +1013,7 @@ def _unescape_destination(target: str) -> str:
         if len(prefix) % 2:
             # An odd backslash run escapes the ampersand itself.
             return match.group(0)
-        return prefix + unescape("&" + reference)
+        return prefix + unescape(reference)
 
     target = CHARACTER_REFERENCE_RE.sub(decode_reference, target)
     output: list[str] = []
