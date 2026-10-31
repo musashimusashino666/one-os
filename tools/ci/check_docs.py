@@ -16,6 +16,9 @@ from urllib.parse import unquote, urlsplit
 from github_slugger_data import GITHUB_SLUG_REMOVAL_RE
 
 DEFAULT_MAX_LINE_LENGTH = 88
+CHARACTER_REFERENCE_RE = re.compile(
+    r"(&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});)"
+)
 BACKTICK = chr(96)
 IGNORED_DIRS = {".git", "target", "vendor", "node_modules"}
 
@@ -1004,7 +1007,15 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
 
 
 def _unescape_destination(target: str) -> str:
-    """Apply CommonMark backslash escapes for every ASCII punctuation mark."""
+    """Decode CommonMark character references and backslash escapes."""
+    def decode_reference(match: re.Match[str]) -> str:
+        prefix, reference = match.groups()
+        if len(prefix) % 2:
+            # An odd backslash run escapes the ampersand itself.
+            return match.group(0)
+        return prefix + unescape("&" + reference)
+
+    target = CHARACTER_REFERENCE_RE.sub(decode_reference, target)
     output: list[str] = []
     index = 0
     while index < len(target):
