@@ -1052,7 +1052,7 @@ def _mask_inline_html_tags(text: str) -> str:
     inline_html_tag = re.compile(
         r"</?[A-Za-z][A-Za-z0-9-]*"
         r"(?:[ \t\n]+[A-Za-z_:][A-Za-z0-9_.:-]*"
-        r"(?:[ \t\n]*=[ \t\n]*(?:\"[^\"]*\"|'[^']*'|[^\s\"'=<>\\x60]+))?)*"
+        r"(?:[ \t\n]*=[ \t\n]*(?:\"[^\"]*\"|'[^']*'|[^\s\"'=<>\x60]+))?)*"
         r"[ \t\n]*/?>",
         re.DOTALL,
     )
