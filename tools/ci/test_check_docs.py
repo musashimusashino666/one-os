@@ -90,6 +90,16 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("docs/guide with spaces.md", 1)])
         self.assertEqual(problems, [])
 
+    def test_angle_bracket_reference_destination_with_title(self):
+        text = (
+            '[guide]: <docs/guide with spaces.md> "Guide"\\n'
+            '\\n'
+            '[guide]'
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("docs/guide with spaces.md", 3)])
+        self.assertEqual(problems, [])
+
     def test_undefined_reference_is_reported(self):
         _, problems = _extract_links("[guide][missing]", "README.md")
         self.assertEqual(len(problems), 1)
