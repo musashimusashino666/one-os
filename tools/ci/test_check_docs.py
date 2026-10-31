@@ -115,6 +115,33 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("docs/guide with spaces.md", 3)])
         self.assertEqual(problems, [])
 
+    def test_multiline_angle_bracket_reference_destinations_are_not_masked(self):
+        cases = (
+            (
+                "[reference]:\n"
+                "  <custom-element>\n"
+                "\n"
+                "[use][reference]",
+            ),
+            (
+                "> [reference]:\n"
+                ">   <custom-element>\n"
+                ">\n"
+                "> [use][reference]",
+            ),
+            (
+                "- [reference]:\n"
+                "    <custom-element>\n"
+                "\n"
+                "  [use][reference]",
+            ),
+        )
+        for (source,) in cases:
+            with self.subTest(source=source):
+                links, problems = _extract_links(source, "README.md")
+                self.assertEqual(links, [("custom-element", 4)])
+                self.assertEqual(problems, [])
+
     def test_undefined_reference_is_reported(self):
         _, problems = _extract_links("[guide][missing]", "README.md")
         self.assertEqual(len(problems), 1)
@@ -1196,6 +1223,26 @@ class RepositoryValidationTests(unittest.TestCase):
                 any("missing internal link target" in problem.message for problem in problems)
             )
 
+    def test_repository_link_with_multiline_angle_bracket_reference_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            (root / "custom-element").write_text("target\n", encoding="utf-8")
+            (root / "README.md").open("a", encoding="utf-8").write(
+                "\n[reference]:\n"
+                "  <custom-element>\n"
+                "\n"
+                "[use][reference]\n"
+            )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any(
+                    "malformed Markdown reference" in problem.message
+                    or "missing internal link target: custom-element" in problem.message
+                    for problem in problems
+                )
+            )
+
     def test_image_to_required_target_does_not_satisfy_navigation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1267,6 +1314,11 @@ class GitHubCompatibilityTests(unittest.TestCase):
         self.assertIn("foo_bar", anchors)
         self.assertNotIn("foobar", anchors)
 
+    def test_heading_slug_requires_semicolon_terminated_entity_reference(self):
+        anchors = _markdown_anchors("## AT&amp\n## AT&amp;\n")
+        self.assertIn("atamp", anchors)
+        self.assertIn("at", anchors)
+
     def test_heading_slug_keeps_github_unicode_symbol_exceptions(self):
         anchors = _markdown_anchors("# ⓔ emoji\n")
         self.assertIn("ⓔ-emoji", anchors)
@@ -1297,6 +1349,24 @@ class GitHubCompatibilityTests(unittest.TestCase):
         )
         self.assertIn("legacy-anchor", anchors)
         self.assertNotIn("not-an-anchor", anchors)
+
+    def test_repository_link_to_heading_with_missing_entity_semicolon_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            RepositoryValidationTests().make_repo(root)
+            (root / "docs" / "guide.md").write_text("## AT&amp\n", encoding="utf-8")
+            with (root / "README.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    "\n[literal entity](docs/guide.md#atamp)\n"
+                    "[incorrect decoded form](docs/guide.md#at)\n"
+                )
+            problems = validate_repository(root)
+            self.assertFalse(
+                any("missing heading anchor '#atamp'" in problem.message for problem in problems)
+            )
+            self.assertTrue(
+                any("missing heading anchor '#at'" in problem.message for problem in problems)
+            )
 
     def test_repository_link_to_non_anchor_html_id_resolves(self):
         with tempfile.TemporaryDirectory() as directory:
