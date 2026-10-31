@@ -17,7 +17,7 @@ from github_slugger_data import GITHUB_SLUG_REMOVAL_RE
 
 DEFAULT_MAX_LINE_LENGTH = 88
 CHARACTER_REFERENCE_RE = re.compile(
-    r"(&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});)"
+    r"(\\*)(&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});)"
 )
 BACKTICK = chr(96)
 IGNORED_DIRS = {".git", "target", "vendor", "node_modules"}
