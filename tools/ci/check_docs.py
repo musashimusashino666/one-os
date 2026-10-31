@@ -1418,7 +1418,7 @@ def _extract_links(
     for normalized_line in normalized_lines:
         line_offsets.append(line_offsets[-1] + len(normalized_line) + 1)
 
-    table_lines = _markdown_table_lines(original_lines, ignored_blocks)
+    table_lines = _markdown_table_lines(original_lines, markdown_ignored_blocks)
     reference_boundaries: set[int] = set()
     reference_offset = 0
     previous_context: tuple[int, tuple[int, ...], bool] | None = None
@@ -1618,7 +1618,7 @@ def _extract_links(
 
     # Inline bracket pairing must not bridge Markdown block boundaries. Soft
     # line breaks inside a paragraph remain available to multiline link labels.
-    table_lines = _markdown_table_lines(original_lines, ignored_blocks)
+    table_lines = _markdown_table_lines(original_lines, markdown_ignored_blocks)
     block_boundaries: set[int] = set()
     offset = 0
     previous_context: tuple[int, tuple[int, ...], bool] | None = None
