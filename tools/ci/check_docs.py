@@ -1381,11 +1381,11 @@ def _extract_links(
     """
     original_lines = text.splitlines(keepends=True)
     fenced, html_blocks = _markdown_block_regions(original_lines)
-    ignored_blocks = fenced | html_blocks
-    ignored_blocks |= _indented_code_lines(original_lines, ignored_blocks)
+    markdown_ignored_blocks = fenced | html_blocks
+    markdown_ignored_blocks |= _indented_code_lines(original_lines, markdown_ignored_blocks)
     html_masked = _mask_html_blocks_and_comments(text)
-    masked = _mask_inline_code(html_masked, ignored_blocks)
-    masked = _mask_inline_html_tags(masked)
+    html_tags_masked = _mask_inline_html_tags(html_masked)
+    masked = _mask_inline_code(html_tags_masked, markdown_ignored_blocks)
     masked_lines = masked.splitlines(keepends=True)
 
     links: list[tuple[str, int]] = []
@@ -1397,7 +1397,7 @@ def _extract_links(
     normalized_lines: list[str] = []
     contexts: list[tuple[int, tuple[int, ...], bool]] = []
     for index, line in enumerate(masked_lines):
-        if index in ignored_blocks:
+        if index in markdown_ignored_blocks:
             normalized_lines.append("")
             contexts.append((0, (), False))
             continue
@@ -1425,7 +1425,7 @@ def _extract_links(
     for line_index, normalized_line in enumerate(normalized_lines):
         context = contexts[line_index]
         block_start = (
-            line_index in ignored_blocks
+            line_index in markdown_ignored_blocks
             or line_index in table_lines
             or not normalized_line.strip()
             or atx_heading.match(normalized_line) is not None
@@ -1447,7 +1447,7 @@ def _extract_links(
     def reference_continuation_allowed(
         candidate_index: int, base_context: tuple[int, tuple[int, ...], bool]
     ) -> bool:
-        if candidate_index >= len(normalized_lines) or candidate_index in ignored_blocks:
+        if candidate_index >= len(normalized_lines) or candidate_index in markdown_ignored_blocks:
             return False
         candidate = normalized_lines[candidate_index]
         candidate_context = contexts[candidate_index]
@@ -1463,7 +1463,7 @@ def _extract_links(
         return True
 
     for index, line in enumerate(normalized_lines):
-        if index in ignored_blocks:
+        if index in markdown_ignored_blocks:
             continue
         opening = re.match(r"^ {0,3}\[", line)
         if opening is None:
@@ -1495,7 +1495,7 @@ def _extract_links(
             label_end_line += 1
         base_context = contexts[index]
         if any(
-            candidate in ignored_blocks
+            candidate in markdown_ignored_blocks
             or not normalized_lines[candidate].strip()
             or contexts[candidate][:2] != base_context[:2]
             or (candidate > index and contexts[candidate][2])
@@ -1510,7 +1510,7 @@ def _extract_links(
             previous_quote, previous_lists, _ = contexts[previous]
             current_quote, current_lists, opened_item = contexts[index]
             starts_new_block = (
-                previous in ignored_blocks
+                previous in markdown_ignored_blocks
                 or previous in definition_lines
                 or not previous_line.strip()
                 or (previous_quote, previous_lists) != (current_quote, current_lists)
@@ -1629,7 +1629,7 @@ def _extract_links(
         normalized_line = normalized_lines[line_index]
         context = contexts[line_index]
         block_start = (
-            line_index in ignored_blocks
+            line_index in markdown_ignored_blocks
             or line_index in definition_lines
             or line_index in table_lines
             or not normalized_line.strip()
@@ -2028,13 +2028,17 @@ def validate_repository(root: Path, max_line_length: int = DEFAULT_MAX_LINE_LENG
         file_contents[relative] = content
         lines = content.splitlines(keepends=True)
         fenced, html_blocks = _markdown_block_regions(lines)
-        ignored_blocks = fenced | html_blocks
-        ignored_blocks |= _indented_code_lines(lines, ignored_blocks)
-        table_lines = _markdown_table_lines(lines, ignored_blocks)
-        inline_code_by_line = _line_inline_code_ranges(content, ignored_blocks)
+        markdown_ignored_blocks = fenced | html_blocks
+        indented_code = _indented_code_lines(lines, markdown_ignored_blocks)
+        markdown_ignored_blocks |= indented_code
+        # Raw HTML blocks are ignored by Markdown link/anchor parsing, but
+        # their content is still documentation text subject to the line limit.
+        line_length_ignored = fenced | indented_code
+        table_lines = _markdown_table_lines(lines, markdown_ignored_blocks)
+        inline_code_by_line = _line_inline_code_ranges(content, markdown_ignored_blocks)
         for index, raw_line in enumerate(lines):
             line = raw_line.rstrip("\r\n")
-            if index in ignored_blocks or len(line) <= max_line_length:
+            if index in line_length_ignored or len(line) <= max_line_length:
                 continue
             # Inline code spans can cross line boundaries in CommonMark.
             # Table rows are never exempt, regardless of optional edge pipes.
