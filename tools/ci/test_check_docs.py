@@ -233,6 +233,17 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("missing.md", 1)])
         self.assertEqual(problems, [])
 
+    def test_meta_tag_does_not_interrupt_open_paragraph_or_hide_following_link(self):
+        text = (
+            "Intro paragraph\n"
+            '<meta charset="utf-8">\n'
+            "[broken](missing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 3)])
+        self.assertEqual(problems, [])
+        self.assertNotIn(1, _html_block_lines(text.splitlines(keepends=True)))
+
     def test_reference_definition_is_extracted(self):
         links, problems = _extract_links("[guide][ref]\n\n[ref]: docs/guide.md", "README.md")
         self.assertEqual(links, [("docs/guide.md", 1)])
@@ -926,6 +937,25 @@ class RepositoryValidationTests(unittest.TestCase):
             )
             self.assertFalse(
                 any("attribute.md" in problem.message for problem in problems)
+            )
+
+    def test_repository_reports_missing_link_after_meta_inside_paragraph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repo(root)
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(
+                    '\nIntro paragraph\n'
+                    '<meta charset="utf-8">\n'
+                    '[broken](missing.md)\n'
+                )
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and "missing internal link target: missing.md" in problem.message
+                    for problem in problems
+                )
             )
     def test_html_like_angle_text_is_preserved_in_heading_anchors(self):
         with tempfile.TemporaryDirectory() as directory:
