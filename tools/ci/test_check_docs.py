@@ -274,6 +274,17 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
+    def test_blockquote_lazy_continuation_keeps_multiline_inline_code(self):
+        text = (
+            "> " + BACKTICK + "code\n"
+            "[not-a-link](missing.md)" + BACKTICK + "\n"
+            "\n"
+            "[actual](existing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 4)])
+        self.assertEqual(problems, [])
+
     def test_quote_marker_does_not_close_plain_fence(self):
         links, problems = _extract_links(
             FENCE + "md\n> " + FENCE + "\n[example](missing-file.md)\n"
@@ -597,6 +608,61 @@ class LineLengthTests(unittest.TestCase):
         )
 
 
+
+    def test_list_and_nested_blockquote_tables_are_detected(self):
+        documents = (
+            (
+                "- | URL |\n"
+                "  | --- |\n"
+                "  | https://example.test/" + "x" * 100 + " |\n",
+                {0, 1, 2},
+            ),
+            (
+                "- outer\n"
+                "  - | URL |\n"
+                "    | --- |\n"
+                "    | https://example.test/" + "x" * 100 + " |\n",
+                {1, 2, 3},
+            ),
+            (
+                "> - | URL |\n"
+                ">   | --- |\n"
+                ">   | https://example.test/" + "x" * 100 + " |\n",
+                {0, 1, 2},
+            ),
+        )
+        for document, expected in documents:
+            with self.subTest(document=document):
+                lines = document.splitlines(keepends=True)
+                table_lines = _markdown_table_lines(lines, set())
+                self.assertEqual(table_lines, expected)
+                for row in expected:
+                    if row >= 2:
+                        self.assertFalse(
+                            _line_length_is_exempt(
+                                lines[row].rstrip("\n"), is_table_row=True
+                            )
+                        )
+
+    def test_list_contained_table_url_row_fails_repository_line_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            RepositoryValidationTests().make_repo(root)
+            table = (
+                "\n- | URL |\n"
+                "  | --- |\n"
+                "  | https://example.test/" + "x" * 100 + " |\n"
+            )
+            with (root / "CONTRIBUTING.md").open("a", encoding="utf-8") as output:
+                output.write(table)
+            problems = validate_repository(root)
+            self.assertTrue(
+                any(
+                    problem.path == "CONTRIBUTING.md"
+                    and "characters (limit 88)" in problem.message
+                    for problem in problems
+                )
+            )
 
 class RepositoryValidationTests(unittest.TestCase):
     def make_repo(self, root: Path):
