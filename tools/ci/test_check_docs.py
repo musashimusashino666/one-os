@@ -611,7 +611,7 @@ class AnchorTests(unittest.TestCase):
     def test_type7_html_block_accepts_greater_than_in_quoted_attribute(self):
         text = (
             "\n"
-            '<custom-element title="a > b">\n'
+            '<custom-element title="a > b" data-value="c > d">\n'
             "[hidden](hidden.md)\n"
             "</custom-element>\n"
             "\n"

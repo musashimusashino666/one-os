@@ -227,6 +227,10 @@ def _is_complete_html_tag(line: str) -> bool:
                     cursor += 1
                 if cursor == value_start:
                     return False
+        else:
+            # Leave separating whitespace for the next iteration. This lets
+            # the parser distinguish another attribute from adjacent text.
+            cursor = whitespace_start
 
     return False
 
@@ -272,7 +276,13 @@ def _markdown_block_regions(lines: list[str]) -> tuple[set[int], set[int]]:
     code fences. Block parsing takes precedence over inline syntax.
     """
     text = "".join(lines)
-    inline_ranges = _document_inline_code_ranges(text, set()) if "<!--" in text and BACKTICK in text else []
+    if "<!--" in text and BACKTICK in text:
+        # An explicit empty exclusion set avoids recursion into block discovery,
+        # while retaining paragraph and container boundaries for code spans.
+        inline_ranges = _document_inline_code_ranges(text, set())
+    else:
+        inline_ranges = []
+
     range_index = 0
 
     def is_inline_code(position: int) -> bool:
