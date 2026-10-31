@@ -92,10 +92,10 @@ class LinkParsingTests(unittest.TestCase):
 
     def test_html_tag_like_angle_destinations_are_not_masked(self):
         text = (
-            "[inline](<custom-element>)\\n"
-            "\\n"
-            "[reference]: <custom-element>\\n"
-            "\\n"
+            "[inline](<custom-element>)\n"
+            "\n"
+            "[reference]: <custom-element>\n"
+            "\n"
             "[reference]"
         )
         links, problems = _extract_links(text, "README.md")
