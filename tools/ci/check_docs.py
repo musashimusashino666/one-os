@@ -1044,7 +1044,7 @@ def _mask_inline_html_tags(text: str) -> str:
         if start >= len(text) or text[start] != "<":
             return
         index = start + 1
-        while index < len(text) and text[index] not in "\\r\\n":
+        while index < len(text) and text[index] not in "\r\n":
             if text[index] == ">" and not _is_escaped(text, index):
                 protected_angles.add(start)
                 return
@@ -1060,20 +1060,20 @@ def _mask_inline_html_tags(text: str) -> str:
                 cursor += 1
             protect_angle_destination(cursor)
         elif text[suffix] == ":":
-            line_start = text.rfind("\\n", 0, opening) + 1
+            line_start = text.rfind("\n", 0, opening) + 1
             prefix = text[line_start:opening]
             # Permit a reference definition after ordinary blockquote/list
             # container markers, but not in the middle of a paragraph.
             while prefix:
-                quote = re.match(r"^ {0,3}>[ \\t]?", prefix)
-                item = re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \\t]+", prefix)
+                quote = re.match(r"^ {0,3}>[ \t]?", prefix)
+                item = re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", prefix)
                 marker = quote or item
                 if marker is None:
                     break
                 prefix = prefix[marker.end():]
             if not prefix.strip():
                 cursor = suffix + 1
-                while cursor < len(text) and text[cursor] in " \\t":
+                while cursor < len(text) and text[cursor] in " \t":
                     cursor += 1
                 protect_angle_destination(cursor)
 
