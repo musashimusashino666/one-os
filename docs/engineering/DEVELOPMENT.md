@@ -40,9 +40,10 @@ python3 tools/ci/check_docs.py --root .
 
 The validator checks repository-relative Markdown links and heading anchors,
 the canonical README navigation, and the 88-character line policy. It does
-not access external URLs or modify documentation. Fenced code is excluded.
-Inline code and unbreakable URLs are atomic only when the remaining prose
-fits; wide Markdown table rows are never exempt.
+not access external URLs or modify documentation. Fenced and indented code
+blocks are excluded, but raw HTML block content remains subject to the line
+limit. Inline code and unbreakable URLs are atomic only when the remaining
+prose fits; wide Markdown table rows are never exempt.
 
 ## Build a BIOS image
 
