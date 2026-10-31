@@ -148,6 +148,89 @@ def _container_content(
     return content, quote_depth, tuple(stack), opened_list_item
 
 
+def _is_complete_html_tag(line: str) -> bool:
+    """Return whether one line is a complete CommonMark open or closing tag.
+
+    Attribute values are scanned with quote awareness: a greater-than sign
+    terminates a tag only outside single- or double-quoted values.
+    """
+    cursor = 1
+    if not line.startswith("<"):
+        return False
+
+    closing = line.startswith("</")
+    if closing:
+        cursor = 2
+
+    name = re.match(r"[A-Za-z][A-Za-z0-9-]*", line[cursor:])
+    if name is None:
+        return False
+    tag_name = name.group(0).lower()
+    cursor += len(name.group(0))
+
+    # CommonMark type 7 excludes the four tags handled by type 1.
+    if tag_name in {"pre", "script", "style", "textarea"}:
+        return False
+
+    if closing:
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        return (
+            cursor < len(line)
+            and line[cursor] == ">"
+            and not line[cursor + 1:].strip(" \t")
+        )
+
+    while cursor < len(line):
+        whitespace_start = cursor
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        separated = cursor > whitespace_start
+
+        if cursor >= len(line):
+            return False
+        if line[cursor] == ">":
+            return not line[cursor + 1:].strip(" \t")
+        if line.startswith("/>", cursor):
+            return not line[cursor + 2:].strip(" \t")
+        if not separated:
+            return False
+
+        attribute = re.match(r"[A-Za-z_:][A-Za-z0-9_.:-]*", line[cursor:])
+        if attribute is None:
+            return False
+        cursor += len(attribute.group(0))
+
+        whitespace_start = cursor
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        if cursor < len(line) and line[cursor] == "=":
+            cursor += 1
+            while cursor < len(line) and line[cursor] in " \t":
+                cursor += 1
+            if cursor >= len(line):
+                return False
+
+            quote = line[cursor] if line[cursor] in "\"'" else None
+            if quote is not None:
+                cursor += 1
+                end = line.find(quote, cursor)
+                if end < 0:
+                    return False
+                cursor = end + 1
+            else:
+                value_start = cursor
+                while (
+                    cursor < len(line)
+                    and line[cursor] not in " \t\"'=<>"+BACKTICK
+                ):
+                    cursor += 1
+                if cursor == value_start:
+                    return False
+
+    return False
+
+
 def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | None] | None:
     """Return the CommonMark HTML-block kind and its terminator."""
     stripped = content.lstrip(" ")
@@ -173,13 +256,10 @@ def _html_block_start(content: str, previous_blank: bool) -> tuple[str, str | No
         "optgroup|option|p|param|search|section|summary|table|tbody|td|"
         "tfoot|th|thead|title|tr|track|ul"
     )
-    if re.match(rf"^</?(?:{block_tags})(?=[ \t/>])", stripped, re.IGNORECASE):
+    if re.match(rf"^</?(?:{block_tags})(?=[ \t]|$|>|/>)", stripped, re.IGNORECASE):
         return "blank", None
 
-    complete_tag = re.compile(
-        r"^</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*?)?[ \t]*/?>[ \t]*$"
-    )
-    if previous_blank and complete_tag.fullmatch(stripped):
+    if previous_blank and _is_complete_html_tag(stripped):
         return "blank", None
     return None
 
@@ -192,7 +272,7 @@ def _markdown_block_regions(lines: list[str]) -> tuple[set[int], set[int]]:
     code fences. Block parsing takes precedence over inline syntax.
     """
     text = "".join(lines)
-    inline_ranges = _inline_code_ranges(text) if "<!--" in text and BACKTICK in text else []
+    inline_ranges = _document_inline_code_ranges(text, set()) if "<!--" in text and BACKTICK in text else []
     range_index = 0
 
     def is_inline_code(position: int) -> bool:

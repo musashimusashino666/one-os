@@ -591,6 +591,51 @@ class AnchorTests(unittest.TestCase):
                 links, problems = _extract_links(document, "README.md")
                 self.assertEqual(links, [("ok.md", len(document.splitlines()))])
                 self.assertEqual(problems, [])
+    def test_type6_html_block_accepts_tag_name_at_end_of_line(self):
+        text = (
+            "<div\n"
+            "[hidden](hidden.md)\n"
+            "\n"
+            "[visible](existing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 4)])
+        self.assertEqual(problems, [])
+
+    def test_type6_html_block_rejects_arbitrary_slash_after_tag_name(self):
+        text = "<div/foo>\n[visible](missing.md)\n"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 2)])
+        self.assertEqual(problems, [])
+
+    def test_type7_html_block_accepts_greater_than_in_quoted_attribute(self):
+        text = (
+            "\n"
+            '<custom-element title="a > b">\n'
+            "[hidden](hidden.md)\n"
+            "</custom-element>\n"
+            "\n"
+            "[visible](existing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("existing.md", 6)])
+        self.assertEqual(problems, [])
+
+    def test_html_comment_backticks_do_not_pair_across_paragraph_boundary(self):
+        text = (
+            "\x60unmatched paragraph\n"
+            "\n"
+            "<!-- comment\n"
+            "\x60\n"
+            "\x60\x60\x60text\n"
+            "[hidden](hidden.md)\n"
+            "-->\n"
+            "[visible](missing.md)\n"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 8)])
+        self.assertEqual(problems, [])
+
     def test_html_named_anchor_is_recognized(self):
         anchors = _markdown_anchors('<a name="custom-anchor"></a>\n')
         self.assertIn("custom-anchor", anchors)
