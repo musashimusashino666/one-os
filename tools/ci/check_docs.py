@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 from html import unescape
 from html.parser import HTMLParser
 import posixpath
@@ -1006,16 +1007,21 @@ def _parse_reference_destination(text: str) -> tuple[str | None, str | None]:
     return text[start:index], None
 
 
-def _unescape_destination(target: str) -> str:
-    """Decode CommonMark character references and backslash escapes."""
+def _decode_commonmark_character_references(text: str) -> str:
+    """Decode only semicolon-terminated CommonMark character references."""
     def decode_reference(match: re.Match[str]) -> str:
-        prefix, reference = match.groups()
-        if len(prefix) % 2:
+        backslashes, reference = match.groups()
+        if len(backslashes) % 2:
             # An odd backslash run escapes the ampersand itself.
             return match.group(0)
-        return prefix + unescape(reference)
+        return backslashes + unescape(reference)
 
-    target = CHARACTER_REFERENCE_RE.sub(decode_reference, target)
+    return CHARACTER_REFERENCE_RE.sub(decode_reference, text)
+
+
+def _unescape_destination(target: str) -> str:
+    """Decode CommonMark character references and backslash escapes."""
+    target = _decode_commonmark_character_references(target)
     output: list[str] = []
     index = 0
     while index < len(target):
@@ -1045,6 +1051,18 @@ def _mask_inline_html_tags(text: str) -> str:
         line_offsets.append(line_offsets[-1] + len(line))
     output = list(text)
 
+    # Normalize block containers once so reference definitions and their
+    # continuation lines are evaluated in the same quote/list context.
+    container_lines: list[str] = []
+    container_contexts: list[tuple[int, tuple[int, ...], bool]] = []
+    list_stacks: dict[int, list[int]] = {}
+    for line in lines:
+        content, quote_depth, list_context, opened = _container_content(
+            line, list_stacks
+        )
+        container_lines.append(content)
+        container_contexts.append((quote_depth, list_context, opened))
+
     # Angle-bracket destinations are legal in inline links and reference
     # definitions. HTMLParser can mistake some of them for start tags, so
     # protect those spans before masking actual HTML markup.
@@ -1071,7 +1089,8 @@ def _mask_inline_html_tags(text: str) -> str:
                 cursor += 1
             protect_angle_destination(cursor)
         elif text[suffix] == ":":
-            line_start = text.rfind("\n", 0, opening) + 1
+            line_index = bisect_right(line_offsets, opening) - 1
+            line_start = line_offsets[line_index]
             prefix = text[line_start:opening]
             # Permit a reference definition after ordinary blockquote/list
             # container markers, but not in the middle of a paragraph.
@@ -1086,7 +1105,37 @@ def _mask_inline_html_tags(text: str) -> str:
                 cursor = suffix + 1
                 while cursor < len(text) and text[cursor] in " \t":
                     cursor += 1
-                protect_angle_destination(cursor)
+
+                definition_line_end = (
+                    line_start + len(lines[line_index].rstrip("\r\n"))
+                )
+                if cursor < definition_line_end:
+                    # Destination follows the colon on this line.
+                    protect_angle_destination(cursor)
+                elif cursor == definition_line_end and line_index + 1 < len(lines):
+                    # CommonMark also permits the destination to start on
+                    # the immediately following continuation line. Require
+                    # the same block-container context and indentation rule
+                    # used by reference extraction before protecting it.
+                    next_index = line_index + 1
+                    candidate = container_lines[next_index]
+                    candidate_context = container_contexts[next_index]
+                    base_context = container_contexts[line_index]
+                    indentation = len(candidate) - len(candidate.lstrip(" \t"))
+                    if (
+                        candidate.strip()
+                        and candidate_context[:2] == base_context[:2]
+                        and not candidate_context[2]
+                        and indentation <= 3
+                    ):
+                        raw_candidate = lines[next_index].rstrip("\r\n")
+                        candidate_start = (
+                            line_offsets[next_index]
+                            + len(raw_candidate)
+                            - len(candidate)
+                            + indentation
+                        )
+                        protect_angle_destination(candidate_start)
 
     def tag_end(start: int) -> int:
         quote: str | None = None
@@ -1704,7 +1753,7 @@ def _strip_heading_markup(heading: str) -> str:
     heading = _strip_inline_html_tags(heading)
     heading = re.sub(r"\\([\\*_{}\[\]()#+\-.!_>])", r"\1", heading).replace("\\" + BACKTICK, BACKTICK)
     heading = re.sub(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", heading)
-    heading = unescape(heading)
+    heading = _decode_commonmark_character_references(heading)
     for token, code_text in reversed(code_tokens):
         heading = heading.replace(token, code_text)
     return heading.strip()
