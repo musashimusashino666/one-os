@@ -614,16 +614,22 @@ def _is_lazy_continuation(
 
 
 def _document_inline_code_ranges(
-    text: str, fenced_lines: set[int] | None = None
+    text: str, blocked_lines: set[int] | None = None
 ) -> list[tuple[int, int]]:
-    """Find inline-code spans without crossing Markdown block boundaries."""
+    """Find inline-code spans without crossing Markdown block boundaries.
+
+    A supplied blocked-line set is complete and was computed from the original
+    Markdown. Do not infer indentation from a later masked representation:
+    inline HTML tags replaced with spaces must not turn visible text into an
+    apparent indented code block.
+    """
     lines = text.splitlines(keepends=True)
-    if fenced_lines is None:
+    if blocked_lines is None:
         fenced, html_blocks = _markdown_block_regions(lines)
         excluded = fenced | html_blocks
+        excluded |= _indented_code_lines(lines, excluded)
     else:
-        excluded = set(fenced_lines)
-    excluded |= _indented_code_lines(lines, excluded)
+        excluded = set(blocked_lines)
 
     ranges: list[tuple[int, int]] = []
     offset = 0
@@ -874,9 +880,11 @@ def _mask_inline_code(
     if blocked_lines is None:
         fenced, html_blocks = _markdown_block_regions(lines)
         blocked = fenced | html_blocks
+        blocked |= _indented_code_lines(lines, blocked)
     else:
+        # Callers passing blocked_lines have already parsed container/code
+        # context from the original source before any offset-preserving masks.
         blocked = set(blocked_lines)
-    blocked |= _indented_code_lines(lines, blocked)
     output = list(text)
     offset = 0
     for line_number, line in enumerate(lines):
