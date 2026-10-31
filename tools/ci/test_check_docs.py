@@ -1110,6 +1110,21 @@ class RepositoryValidationTests(unittest.TestCase):
                     "[decimal](docs/R&#38;D.md)\n"
                     "[hex](docs/R&#x26;D.md)\n"
                 )
+            links, parse_problems = _extract_links(
+                "[named](docs/R&amp;D.md)\n"
+                "[decimal](docs/R&#38;D.md)\n"
+                "[hex](docs/R&#x26;D.md)\n",
+                "README.md",
+            )
+            self.assertEqual(
+                links,
+                [
+                    ("docs/R&D.md", 1),
+                    ("docs/R&D.md", 2),
+                    ("docs/R&D.md", 3),
+                ],
+            )
+            self.assertEqual(parse_problems, [])
             problems = validate_repository(root)
             self.assertFalse(
                 any("missing internal link target" in problem.message for problem in problems)
@@ -1129,6 +1144,24 @@ class RepositoryValidationTests(unittest.TestCase):
                     "[decimal]: docs/R&#38;D.md\n"
                     "[hex]: docs/R&#x26;D.md\n"
                 )
+            links, parse_problems = _extract_links(
+                "[named][named]\n"
+                "[decimal][decimal]\n"
+                "[hex][hex]\n\n"
+                "[named]: docs/R&amp;D.md \"named entity\"\n"
+                "[decimal]: docs/R&#38;D.md\n"
+                "[hex]: docs/R&#x26;D.md\n",
+                "README.md",
+            )
+            self.assertEqual(
+                links,
+                [
+                    ("docs/R&D.md", 1),
+                    ("docs/R&D.md", 2),
+                    ("docs/R&D.md", 3),
+                ],
+            )
+            self.assertEqual(parse_problems, [])
             problems = validate_repository(root)
             self.assertFalse(
                 any("missing internal link target" in problem.message for problem in problems)
@@ -1145,6 +1178,19 @@ class RepositoryValidationTests(unittest.TestCase):
                     "\n[escaped](docs/R\\&amp;D.md)\n"
                     "[missing semicolon](docs/R&copy.md)\n"
                 )
+            links, parse_problems = _extract_links(
+                r"[escaped](docs/R\&amp;D.md)" + "\n"
+                "[missing semicolon](docs/R&copy.md)\n",
+                "README.md",
+            )
+            self.assertEqual(
+                links,
+                [
+                    ("docs/R&amp;D.md", 1),
+                    ("docs/R&copy.md", 2),
+                ],
+            )
+            self.assertEqual(parse_problems, [])
             problems = validate_repository(root)
             self.assertFalse(
                 any("missing internal link target" in problem.message for problem in problems)
