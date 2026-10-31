@@ -1034,6 +1034,49 @@ def _mask_inline_html_tags(text: str) -> str:
         line_offsets.append(line_offsets[-1] + len(line))
     output = list(text)
 
+    # Angle-bracket destinations are legal in inline links and reference
+    # definitions. HTMLParser can mistake some of them for start tags, so
+    # protect those spans before masking actual HTML markup.
+    protected_angles: set[int] = set()
+    bracket_pairs = _matching_bracket_pairs(text)
+
+    def protect_angle_destination(start: int) -> None:
+        if start >= len(text) or text[start] != "<":
+            return
+        index = start + 1
+        while index < len(text) and text[index] not in "\\r\\n":
+            if text[index] == ">" and not _is_escaped(text, index):
+                protected_angles.add(start)
+                return
+            index += 1
+
+    for opening, closing in bracket_pairs.items():
+        suffix = closing + 1
+        if suffix >= len(text):
+            continue
+        if text[suffix] == "(":
+            cursor = suffix + 1
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            protect_angle_destination(cursor)
+        elif text[suffix] == ":":
+            line_start = text.rfind("\\n", 0, opening) + 1
+            prefix = text[line_start:opening]
+            # Permit a reference definition after ordinary blockquote/list
+            # container markers, but not in the middle of a paragraph.
+            while prefix:
+                quote = re.match(r"^ {0,3}>[ \\t]?", prefix)
+                item = re.match(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \\t]+", prefix)
+                marker = quote or item
+                if marker is None:
+                    break
+                prefix = prefix[marker.end():]
+            if not prefix.strip():
+                cursor = suffix + 1
+                while cursor < len(text) and text[cursor] in " \\t":
+                    cursor += 1
+                protect_angle_destination(cursor)
+
     def tag_end(start: int) -> int:
         quote: str | None = None
         index = start + 1
@@ -1063,7 +1106,12 @@ def _mask_inline_html_tags(text: str) -> str:
             if line < 1 or line > len(lines):
                 return
             start = line_offsets[line - 1] + column
-            if start >= len(text) or text[start] != "<" or _is_escaped(text, start):
+            if (
+                start >= len(text)
+                or text[start] != "<"
+                or _is_escaped(text, start)
+                or start in protected_angles
+            ):
                 return
             end = tag_end(start)
             if validate_tag and not inline_html_tag.fullmatch(text[start:end]):
