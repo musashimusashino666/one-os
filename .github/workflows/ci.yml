@@ -85,6 +85,12 @@ jobs:
       - name: Test CR3 source policy
         run: python3 -m unittest discover -s tools/ci -p 'test_check_cr3_source_policy.py'
 
+      - name: Test documentation integrity validator
+        run: python3 -m unittest discover -s tools/ci -p 'test_check_docs.py'
+
+      - name: Validate repository documentation
+        run: python3 tools/ci/check_docs.py --root .
+
       - name: Validate CR3 source inventory
         run: python3 tools/ci/check_cr3_source_policy.py --root .
 

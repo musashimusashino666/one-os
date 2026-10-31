@@ -29,9 +29,9 @@ It currently runs:
 - Formatting and core tests.
 - Clippy for core, kernel, and build tooling.
 - Kernel target checks.
-- CR3 source and optimized-assembly validation.
-- Final linked-ELF CR3 write inventory.
-- Python validator tests and BIOS image build.
+- CR3 validator unit tests, source policy, and optimized-assembly validation.
+- BIOS image build and final linked-ELF CR3 write inventory.
+- Documentation integrity tests and local link/anchor validation.
 - Three independent normal QEMU boots.
 - W^X runtime-audit and CR3 rejection profiles.
 - Selected exception, interrupt-stack, supervisor-write,
@@ -114,6 +114,17 @@ It verifies that earlier mappings remain unchanged.
 - Teardown zeroes data before allocator reuse.
 - Cross-process denial tests must use the real Ring 3 path
   when that path is implemented.
+
+## Documentation integrity
+
+The documentation validator runs without network access. It checks
+repository-relative Markdown links, reference definitions, heading fragments,
+and the required navigation links in the repository README and documentation
+map. External website availability is explicitly out of scope.
+
+Markdown prose and table rows have an 88-character limit. Fenced code is
+excluded. Inline code and unbreakable URLs are atomic only when the remaining
+prose fits within the limit. Wide table rows receive no exemption.
 
 ## Reproducibility and reporting
 
