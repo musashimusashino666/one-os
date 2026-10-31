@@ -90,6 +90,21 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("docs/guide with spaces.md", 1)])
         self.assertEqual(problems, [])
 
+    def test_html_tag_like_angle_destinations_are_not_masked(self):
+        text = (
+            "[inline](<custom-element>)\\n"
+            "\\n"
+            "[reference]: <custom-element>\\n"
+            "\\n"
+            "[reference]"
+        )
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(
+            links,
+            [("custom-element", 1), ("custom-element", 5)],
+        )
+        self.assertEqual(problems, [])
+
     def test_angle_bracket_reference_destination_with_title(self):
         text = (
             '[guide]: <docs/guide with spaces.md> "Guide"\n'
