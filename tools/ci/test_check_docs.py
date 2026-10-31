@@ -305,6 +305,24 @@ class LinkParsingTests(unittest.TestCase):
         self.assertEqual(links, [("existing.md", 4)])
         self.assertEqual(problems, [])
 
+    def test_blockquote_lazy_continuation_link_is_extracted(self):
+        text = "> [broken\nlink](missing.md)\n"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 1)])
+        self.assertEqual(problems, [])
+
+    def test_nested_blockquote_lazy_continuation_link_is_extracted(self):
+        text = "> > [broken\n> link](missing.md)\n"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 1)])
+        self.assertEqual(problems, [])
+
+    def test_list_lazy_continuation_link_is_extracted(self):
+        text = "- [broken\nlink](missing.md)\n"
+        links, problems = _extract_links(text, "README.md")
+        self.assertEqual(links, [("missing.md", 1)])
+        self.assertEqual(problems, [])
+
     def test_quote_marker_does_not_close_plain_fence(self):
         links, problems = _extract_links(
             FENCE + "md\n> " + FENCE + "\n[example](missing-file.md)\n"
@@ -497,6 +515,23 @@ class AnchorTests(unittest.TestCase):
         self.assertIn("some-heading", anchors)
         self.assertNotIn("heading", anchors)
 
+    def test_lazy_blockquote_line_is_included_in_multiline_setext_heading(self):
+        anchors = _markdown_anchors(
+            "> First\n"
+            "Second\n"
+            "> =====\n"
+        )
+        self.assertIn("first-second", anchors)
+        self.assertNotIn("second", anchors)
+
+    def test_setext_underline_cannot_be_a_lazy_blockquote_continuation(self):
+        anchors = _markdown_anchors(
+            "> First\n"
+            "Second\n"
+            "=====\n"
+        )
+        self.assertNotIn("first-second", anchors)
+
     def test_heading_inline_link_destination_with_nested_parentheses_is_removed(self):
         anchors = _markdown_anchors("## [Guide](guide_(draft).md)\n")
         self.assertIn("guide", anchors)
@@ -571,6 +606,10 @@ class LineLengthTests(unittest.TestCase):
 
     def test_long_url_can_be_atomic(self):
         self.assertTrue(_line_length_is_exempt("Read https://example.test/" + "x" * 90))
+
+    def test_many_short_inline_code_spans_are_checked_without_rebuilding_the_line(self):
+        line = (chr(96) + "x" + chr(96) + " ") * 4096
+        self.assertTrue(_line_length_is_exempt(line.rstrip(), max_line_length=8192))
 
     def test_long_inline_code_with_spaces_is_not_atomic(self):
         line = "See " + BACKTICK + "x" * 45 + " " + "y" * 45 + BACKTICK

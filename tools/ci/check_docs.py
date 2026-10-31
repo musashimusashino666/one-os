@@ -578,16 +578,21 @@ def _is_lazy_continuation(
     list_context: tuple[int, ...],
     opened: bool,
     previous_context: tuple[int, tuple[int, ...]] | None,
+    previous_paragraph: bool,
 ) -> bool:
     """Return whether an unmarked line lazily continues the prior paragraph."""
-    if previous_context is None or opened or not content.strip():
+    if (
+        previous_context is None
+        or not previous_paragraph
+        or opened
+        or not content.strip()
+    ):
         return False
 
     previous_quote_depth, previous_list_context = previous_context
     omitted_quote = (
-        quote_depth == 0
-        and previous_quote_depth > 0
-        and not list_context
+        quote_depth < previous_quote_depth
+        and previous_list_context[:len(list_context)] == list_context
     )
     omitted_list = (
         quote_depth == previous_quote_depth
@@ -613,6 +618,43 @@ def _is_lazy_continuation(
     return True
 
 
+def _is_paragraph_content(content: str) -> bool:
+    """Return whether a normalized line can keep a paragraph open."""
+    if not content.strip():
+        return False
+    if re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", content):
+        return False
+    if re.fullmatch(r"^ {0,3}(?:=+|-+)[ \t]*$", content):
+        return False
+    if re.fullmatch(
+        r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$",
+        content,
+    ):
+        return False
+    return True
+
+
+def _effective_container_context(
+    content: str,
+    quote_depth: int,
+    list_context: tuple[int, ...],
+    opened: bool,
+    previous_context: tuple[int, tuple[int, ...]] | None,
+    previous_paragraph: bool,
+) -> tuple[int, tuple[int, ...]]:
+    """Return the effective container context, including paragraph laziness."""
+    if previous_context is not None and _is_lazy_continuation(
+        content,
+        quote_depth,
+        list_context,
+        opened,
+        previous_context,
+        previous_paragraph,
+    ):
+        return previous_context
+    return quote_depth, list_context
+
+
 def _document_inline_code_ranges(
     text: str, blocked_lines: set[int] | None = None
 ) -> list[tuple[int, int]]:
@@ -636,6 +678,7 @@ def _document_inline_code_ranges(
     segment_start: int | None = None
     segment_parts: list[str] = []
     previous_context: tuple[int, tuple[int, ...]] | None = None
+    previous_paragraph = False
     list_stacks: dict[int, list[int]] = {}
     atx_pattern = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
     setext_pattern = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
@@ -658,6 +701,7 @@ def _document_inline_code_ranges(
         if line_index in excluded:
             flush()
             previous_context = None
+            previous_paragraph = False
             offset += len(line)
             continue
         content, quote_depth, list_context, opened = _container_content(
@@ -666,16 +710,17 @@ def _document_inline_code_ranges(
         if not content.strip():
             flush()
             previous_context = None
+            previous_paragraph = False
             offset += len(line)
             continue
-        context = (quote_depth, list_context)
-        if _is_lazy_continuation(
-            content, quote_depth, list_context, opened, previous_context
-        ):
-            # A blockquote/list paragraph may continue without repeating its
-            # container marker or indentation. Keep the paragraph's effective
-            # context so inline spans can cross the physical line boundary.
-            context = previous_context
+        context = _effective_container_context(
+            content,
+            quote_depth,
+            list_context,
+            opened,
+            previous_context,
+            previous_paragraph,
+        )
         is_atx = atx_pattern.match(content) is not None
         is_setext = setext_pattern.fullmatch(content) is not None
         is_thematic = thematic_pattern.fullmatch(content) is not None
@@ -685,9 +730,11 @@ def _document_inline_code_ranges(
             segment_parts = [line]
             flush()
             previous_context = None
+            previous_paragraph = False
         elif is_setext or is_thematic:
             flush()
             previous_context = None
+            previous_paragraph = False
         else:
             if opened or (
                 previous_context is not None and context != previous_context
@@ -697,6 +744,7 @@ def _document_inline_code_ranges(
                 segment_start = offset
             segment_parts.append(line)
             previous_context = context
+            previous_paragraph = _is_paragraph_content(content)
         offset += len(line)
     flush()
     return ranges
@@ -867,10 +915,8 @@ def _line_length_is_exempt(
         else:
             merged.append([start, end])
 
-    reduced = line
-    for start, end in reversed(merged):
-        reduced = reduced[:start] + "x" + reduced[end:]
-    return len(reduced) <= max_line_length
+    reduced_length = len(line) - sum(end - start - 1 for start, end in merged)
+    return reduced_length <= max_line_length
 
 def _mask_inline_code(
     text: str, blocked_lines: set[int] | None = None
@@ -1429,24 +1475,43 @@ def _extract_links(
     table_lines = _markdown_table_lines(original_lines, markdown_ignored_blocks)
     reference_boundaries: set[int] = set()
     reference_offset = 0
-    previous_context: tuple[int, tuple[int, ...], bool] | None = None
+    previous_context: tuple[int, tuple[int, ...]] | None = None
+    previous_paragraph = False
     for line_index, normalized_line in enumerate(normalized_lines):
-        context = contexts[line_index]
+        quote_depth, list_context, opened = contexts[line_index]
+        ignored_or_table = (
+            line_index in markdown_ignored_blocks or line_index in table_lines
+        )
+        effective_context = _effective_container_context(
+            normalized_line,
+            quote_depth,
+            list_context,
+            opened,
+            previous_context,
+            previous_paragraph,
+        )
         block_start = (
-            line_index in markdown_ignored_blocks
-            or line_index in table_lines
+            ignored_or_table
             or not normalized_line.strip()
             or atx_heading.match(normalized_line) is not None
             or setext_underline.fullmatch(normalized_line) is not None
             or thematic_break.fullmatch(normalized_line) is not None
-            or context[2]
+            or opened
         )
-        if previous_context is not None and context[:2] != previous_context[:2]:
+        if previous_context is not None and effective_context != previous_context:
             block_start = True
         if block_start:
             reference_boundaries.add(reference_offset)
         reference_offset += len(normalized_line) + 1
-        previous_context = context
+        paragraph_line = (
+            not ignored_or_table and _is_paragraph_content(normalized_line)
+        )
+        if paragraph_line:
+            previous_context = effective_context
+            previous_paragraph = True
+        else:
+            previous_context = None
+            previous_paragraph = False
 
     reference_pairs = _matching_bracket_pairs(
         normalized_content, reference_boundaries
@@ -1629,29 +1694,49 @@ def _extract_links(
     table_lines = _markdown_table_lines(original_lines, markdown_ignored_blocks)
     block_boundaries: set[int] = set()
     offset = 0
-    previous_context: tuple[int, tuple[int, ...], bool] | None = None
+    previous_context: tuple[int, tuple[int, ...]] | None = None
+    previous_paragraph = False
     atx_start = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
     thematic_break = re.compile(r"^ {0,3}(?:(?:[*][ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
     setext_underline = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
     for line_index, line in enumerate(scannable_lines):
         normalized_line = normalized_lines[line_index]
-        context = contexts[line_index]
-        block_start = (
+        quote_depth, list_context, opened = contexts[line_index]
+        ignored_or_table = (
             line_index in markdown_ignored_blocks
             or line_index in definition_lines
             or line_index in table_lines
+        )
+        effective_context = _effective_container_context(
+            normalized_line,
+            quote_depth,
+            list_context,
+            opened,
+            previous_context,
+            previous_paragraph,
+        )
+        block_start = (
+            ignored_or_table
             or not normalized_line.strip()
             or atx_start.match(normalized_line) is not None
             or thematic_break.fullmatch(normalized_line) is not None
             or setext_underline.fullmatch(normalized_line) is not None
-            or context[2]
+            or opened
         )
-        if previous_context is not None and context[:2] != previous_context[:2]:
+        if previous_context is not None and effective_context != previous_context:
             block_start = True
         if block_start:
             block_boundaries.add(offset)
         offset += len(line)
-        previous_context = context
+        paragraph_line = (
+            not ignored_or_table and _is_paragraph_content(normalized_line)
+        )
+        if paragraph_line:
+            previous_context = effective_context
+            previous_paragraph = True
+        else:
+            previous_context = None
+            previous_paragraph = False
 
     bracket_pairs = _matching_bracket_pairs(content, block_boundaries)
     index = 0
@@ -1912,18 +1997,36 @@ def _markdown_anchors(text: str) -> set[str]:
     normalized: list[str] = []
     contexts: list[tuple[int, tuple[int, ...]]] = []
     opened_items: list[bool] = []
+    previous_context: tuple[int, tuple[int, ...]] | None = None
+    previous_paragraph = False
     for index, line in enumerate(lines):
         if index in ignored:
             normalized.append("")
             contexts.append((0, ()))
             opened_items.append(False)
+            previous_context = None
+            previous_paragraph = False
             continue
         content, quote_depth, list_context, opened = _container_content(
             line, list_stacks
         )
+        effective_context = _effective_container_context(
+            content,
+            quote_depth,
+            list_context,
+            opened,
+            previous_context,
+            previous_paragraph,
+        )
         normalized.append(content)
-        contexts.append((quote_depth, list_context))
+        contexts.append(effective_context)
         opened_items.append(opened)
+        if _is_paragraph_content(content):
+            previous_context = effective_context
+            previous_paragraph = True
+        else:
+            previous_context = None
+            previous_paragraph = False
 
     anchors: set[str] = _html_anchor_targets(text)
     atx_pattern = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
