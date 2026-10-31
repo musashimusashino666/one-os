@@ -1111,7 +1111,12 @@ def _strip_inline_html_tags(text: str) -> str:
         return start + 1
 
     class InlineTagStripper(HTMLParser):
-        def _record_current_markup(self) -> None:
+        def _record_current_markup(self, tag_name: str | None = None) -> None:
+            if (
+                tag_name is not None
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", tag_name) is None
+            ):
+                return
             line, column = self.getpos()
             if line < 1 or line > len(lines):
                 return
@@ -1131,13 +1136,13 @@ def _strip_inline_html_tags(text: str) -> str:
                 spans.append((start, end))
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            self._record_current_markup()
+            self._record_current_markup(tag)
 
         def handle_endtag(self, tag: str) -> None:
-            self._record_current_markup()
+            self._record_current_markup(tag)
 
         def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            self._record_current_markup()
+            self._record_current_markup(tag)
 
         def handle_comment(self, data: str) -> None:
             self._record_current_markup()
